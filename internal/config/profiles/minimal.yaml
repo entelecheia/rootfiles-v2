@@ -1,0 +1,23 @@
+extends: base
+
+modules:
+  users:
+    enabled: true
+  cloudflared:
+    enabled: true
+
+packages_extra:
+  - openssh-server
+  - ufw
+  - fail2ban
+
+users:
+  home_base: /home
+  default_shell: /usr/bin/zsh
+  default_groups:
+    - sudo
+  sudo_nopasswd: true
+
+ssh:
+  disable_root_login: true
+  disable_password_auth: false

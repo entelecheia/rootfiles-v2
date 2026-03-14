@@ -1,0 +1,30 @@
+locale: en_US.UTF-8
+timezone: Asia/Seoul
+
+modules:
+  locale:
+    enabled: true
+  packages:
+    enabled: true
+  ssh:
+    enabled: true
+
+packages:
+  - ca-certificates
+  - curl
+  - wget
+  - gnupg
+  - lsb-release
+  - git
+  - git-lfs
+  - vim
+  - tmux
+  - tree
+  - jq
+  - htop
+  - unzip
+  - zip
+  - build-essential
+  - locales
+  - zsh
+  - software-properties-common

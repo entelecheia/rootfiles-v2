@@ -1,0 +1,36 @@
+extends: minimal
+
+users:
+  home_base: /raid/home
+  default_groups:
+    - sudo
+    - docker
+
+modules:
+  docker:
+    enabled: true
+    storage_dir: /raid/docker
+  nvidia:
+    enabled: true
+  cloudflared:
+    enabled: true
+    private_network:
+      enabled: true
+      interface: vlan0
+      address: "172.16.229.32/32"
+  storage:
+    enabled: true
+    data_dir: /raid/data
+    symlinks:
+      /data: /raid/data
+  network:
+    enabled: true
+    ufw: true
+    allowed_ports:
+      - 22
+      - 80
+      - 443
+
+ssh:
+  disable_root_login: true
+  disable_password_auth: true
