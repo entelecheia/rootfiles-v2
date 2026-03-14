@@ -1,0 +1,29 @@
+FROM ubuntu:22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y \
+    sudo systemd systemd-sysv curl iproute2 rsync \
+    && rm -rf /var/lib/apt/lists/*
+
+# DGX OS simulation
+RUN echo "DGX_OS_VERSION=6.0" > /etc/dgx-release
+
+# Fake nvidia-smi (simulates 8x H100)
+COPY tests/integration/mock/nvidia-smi /usr/local/bin/nvidia-smi
+RUN chmod +x /usr/local/bin/nvidia-smi
+
+# Simulate RAID storage
+RUN mkdir -p /raid/home /raid/data /raid/docker
+
+# Copy binary and test scripts
+COPY rootfiles /usr/local/bin/rootfiles
+RUN chmod +x /usr/local/bin/rootfiles
+
+COPY tests/integration/assert.sh /tests/assert.sh
+COPY tests/integration/run-profile.sh /tests/run-profile.sh
+COPY tests/integration/run-module.sh /tests/run-module.sh
+COPY tests/scenarios/ /tests/scenarios/
+RUN chmod +x /tests/*.sh /tests/scenarios/*.sh
+
+WORKDIR /

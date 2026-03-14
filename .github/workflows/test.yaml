@@ -1,0 +1,133 @@
+name: Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  unit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+      - name: Run unit tests
+        run: go test ./... -race -count=1 -coverprofile=coverage.out
+      - name: Build binary
+        run: go build -o bin/rootfiles ./cmd/rootfiles/
+      - name: Verify CLI help
+        run: ./bin/rootfiles --help
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rootfiles-binary
+          path: bin/rootfiles
+
+  integration:
+    needs: unit
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Ubuntu 22.04 × profiles
+          - os: ubuntu-22.04
+            profile: base
+          - os: ubuntu-22.04
+            profile: minimal
+          - os: ubuntu-22.04
+            profile: gpu-server
+          - os: ubuntu-22.04
+            profile: full
+          # Ubuntu 24.04 × profiles
+          - os: ubuntu-24.04
+            profile: base
+          - os: ubuntu-24.04
+            profile: minimal
+          - os: ubuntu-24.04
+            profile: gpu-server
+          - os: ubuntu-24.04
+            profile: full
+          # DGX mock × profiles
+          - os: dgx-22.04
+            profile: minimal
+          - os: dgx-22.04
+            profile: dgx
+          - os: dgx-22.04
+            profile: full
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+      - name: Build binary
+        run: go build -o rootfiles ./cmd/rootfiles/
+      - name: Build test image
+        run: docker build -t rootfiles-test:${{ matrix.os }} -f tests/integration/Dockerfile.${{ matrix.os }} .
+      - name: Run integration test
+        run: |
+          docker run --rm --privileged \
+            -e ROOTFILES_YES=true \
+            -e ROOTFILES_PROFILE=${{ matrix.profile }} \
+            -e ROOTFILES_USER=testuser \
+            -e ROOTFILES_TUNNEL_TOKEN=test-token-dummy \
+            -e ROOTFILES_VLAN_ADDRESS=172.16.0.1/32 \
+            -e ROOTFILES_HOME_BASE=/raid/home \
+            rootfiles-test:${{ matrix.os }} \
+            /tests/run-profile.sh ${{ matrix.profile }}
+
+  module:
+    needs: unit
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        module: [locale, packages, ssh, users, cloudflared, storage, network]
+        os: [ubuntu-22.04, ubuntu-24.04]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+      - name: Build binary
+        run: go build -o rootfiles ./cmd/rootfiles/
+      - name: Build test image
+        run: docker build -t rootfiles-test:${{ matrix.os }} -f tests/integration/Dockerfile.${{ matrix.os }} .
+      - name: Test single module
+        run: |
+          docker run --rm --privileged \
+            -e ROOTFILES_YES=true \
+            -e ROOTFILES_USER=testuser \
+            -e ROOTFILES_HOME_BASE=/raid/home \
+            rootfiles-test:${{ matrix.os }} \
+            /tests/run-module.sh ${{ matrix.module }}
+
+  scenario:
+    needs: unit
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        scenario:
+          - dry-run-all-profiles
+          - user-backup-restore
+          - user-rehome
+          - tunnel-setup-teardown
+          - os-reinstall-recovery
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.23"
+      - name: Build binary
+        run: go build -o rootfiles ./cmd/rootfiles/
+      - name: Build test image
+        run: docker build -t rootfiles-test:dgx-22.04 -f tests/integration/Dockerfile.dgx-22.04 .
+      - name: Run scenario
+        run: |
+          docker run --rm --privileged \
+            -e ROOTFILES_YES=true \
+            rootfiles-test:dgx-22.04 \
+            /tests/scenarios/${{ matrix.scenario }}.sh

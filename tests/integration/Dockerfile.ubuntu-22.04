@@ -1,0 +1,22 @@
+FROM ubuntu:22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y \
+    sudo systemd systemd-sysv curl iproute2 rsync \
+    && rm -rf /var/lib/apt/lists/*
+
+# Simulate RAID storage
+RUN mkdir -p /raid/home /raid/data /raid/docker
+
+# Copy binary and test scripts
+COPY rootfiles /usr/local/bin/rootfiles
+RUN chmod +x /usr/local/bin/rootfiles
+
+COPY tests/integration/assert.sh /tests/assert.sh
+COPY tests/integration/run-profile.sh /tests/run-profile.sh
+COPY tests/integration/run-module.sh /tests/run-module.sh
+COPY tests/scenarios/ /tests/scenarios/
+RUN chmod +x /tests/*.sh /tests/scenarios/*.sh
+
+WORKDIR /
