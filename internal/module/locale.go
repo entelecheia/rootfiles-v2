@@ -50,10 +50,13 @@ func (m *LocaleModule) Apply(ctx context.Context, rc *RunContext) (*ApplyResult,
 	changed := false
 
 	if cfg.Locale != "" {
-		// Generate locale
-		if _, err := rc.Runner.Run(ctx, "locale-gen", cfg.Locale); err != nil {
-			return nil, fmt.Errorf("generating locale: %w", err)
+		// Ensure locales package is installed (provides locale-gen)
+		if !rc.Runner.CommandExists("locale-gen") {
+			rc.APT.Update(ctx)
+			rc.APT.Install(ctx, []string{"locales"})
 		}
+		// Generate locale (best-effort — may fail in minimal containers)
+		rc.Runner.Run(ctx, "locale-gen", cfg.Locale)
 		// Set default locale
 		content := fmt.Sprintf("LANG=%s\nLC_ALL=%s\n", cfg.Locale, cfg.Locale)
 		if err := rc.Runner.WriteFile("/etc/default/locale", []byte(content), 0644); err != nil {

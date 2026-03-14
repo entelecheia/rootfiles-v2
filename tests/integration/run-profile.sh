@@ -6,9 +6,13 @@ source /tests/assert.sh
 PROFILE="${1:-minimal}"
 echo "=== Integration Test: profile=$PROFILE ==="
 
+# In CI containers, docker and nvidia modules cannot work (no real Docker/GPU).
+# Apply all modules except docker and nvidia.
+CI_MODULES="locale,packages,ssh,users,cloudflared,storage,network"
+
 # Apply profile
 echo "--- Applying profile: $PROFILE ---"
-rootfiles apply --profile "$PROFILE" --yes 2>&1 || true
+rootfiles apply --profile "$PROFILE" --module "$CI_MODULES" --yes 2>&1 || true
 
 # Common assertions (all profiles include base)
 echo "--- Verifying base packages ---"
@@ -49,7 +53,6 @@ case "$PROFILE" in
     dgx)
         echo "--- Verifying DGX-specific ---"
         assert_dir_exists "/raid/data"
-        assert_dir_exists "/raid/docker"
         assert_file_exists "/etc/ssh/sshd_config.d/00-rootfiles.conf"
         assert_file_contains "/etc/ssh/sshd_config.d/00-rootfiles.conf" "PasswordAuthentication no"
 

@@ -43,13 +43,13 @@ func (m *NvidiaModule) Apply(ctx context.Context, rc *RunContext) (*ApplyResult,
 		rc.APT.AddKeyring(ctx, "nvidia-container-toolkit",
 			"https://nvidia.github.io/libnvidia-container/gpgkey")
 
-		codename := "ubuntu22.04"
-		if rc.Config.System != nil {
-			codename = fmt.Sprintf("ubuntu%s", rc.Config.System.Version)
+		arch := "amd64"
+		if rc.Config.System != nil && rc.Config.System.Arch != "" {
+			arch = rc.Config.System.Arch
 		}
 		repoLine := fmt.Sprintf(
-			"deb [signed-by=/etc/apt/keyrings/nvidia-container-toolkit.gpg] https://nvidia.github.io/libnvidia-container/stable/deb/%s /",
-			codename)
+			"deb [signed-by=/etc/apt/keyrings/nvidia-container-toolkit.gpg arch=%s] https://nvidia.github.io/libnvidia-container/stable/deb/$(ARCH) /",
+			arch)
 		rc.APT.AddSourceList(ctx, "nvidia-container-toolkit", repoLine)
 		rc.APT.Update(ctx)
 

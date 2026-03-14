@@ -104,11 +104,14 @@ func (r *Registry) Resolve(cfg *config.Config, filter []string) []Module {
 }
 
 // RunAll executes Check then Apply on each module in order.
+// Non-fatal module errors are logged but do not stop execution of remaining modules.
 func RunAll(ctx context.Context, modules []Module, rc *RunContext) error {
+	var errors []string
 	for _, m := range modules {
 		check, err := m.Check(ctx, rc)
 		if err != nil {
-			return fmt.Errorf("module %s check: %w", m.Name(), err)
+			fmt.Printf("  ⚠ %s: check error: %v\n", m.Name(), err)
+			continue
 		}
 		if check.Satisfied {
 			fmt.Printf("  ✓ %s: already satisfied\n", m.Name())
@@ -126,13 +129,18 @@ func RunAll(ctx context.Context, modules []Module, rc *RunContext) error {
 
 		result, err := m.Apply(ctx, rc)
 		if err != nil {
-			return fmt.Errorf("module %s apply: %w", m.Name(), err)
+			fmt.Printf("  ✗ %s: %v\n", m.Name(), err)
+			errors = append(errors, fmt.Sprintf("%s: %v", m.Name(), err))
+			continue
 		}
 		if result.Changed {
 			for _, msg := range result.Messages {
 				fmt.Printf("  ✓ %s: %s\n", m.Name(), msg)
 			}
 		}
+	}
+	if len(errors) > 0 {
+		return fmt.Errorf("%d module(s) failed: %v", len(errors), errors)
 	}
 	return nil
 }

@@ -378,7 +378,9 @@ func saveUserMeta(rc *RunContext, username, home, shell string, groups []string,
 		homeBase = "/home"
 	}
 
-	dbPath := filepath.Join(homeBase, ".rootfiles", "users.json")
+	metaDir := filepath.Join(homeBase, ".rootfiles")
+	rc.Runner.MkdirAll(metaDir, 0755)
+	dbPath := filepath.Join(metaDir, "users.json")
 	var db UsersDB
 
 	if data, err := rc.Runner.ReadFile(dbPath); err == nil {

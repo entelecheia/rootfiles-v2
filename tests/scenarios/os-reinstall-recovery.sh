@@ -25,9 +25,9 @@ echo "ssh-ed25519 TESTKEY" > /raid/home/devuser/.ssh/authorized_keys
 
 DEVUSER_UID=$(id -u devuser)
 
-# Apply full system config
-echo "--- Apply full DGX config ---"
-rootfiles apply --profile dgx --yes 2>&1 || true
+# Apply system config (skip docker/nvidia — not available in CI containers)
+echo "--- Apply DGX config (skip docker/nvidia) ---"
+rootfiles apply --profile dgx --module locale,packages,ssh,users,cloudflared,storage,network --yes 2>&1 || true
 
 # Verify metadata saved
 assert_file_exists "/raid/home/.rootfiles/users.json"
@@ -55,8 +55,8 @@ assert_file_exists "/raid/home/.rootfiles/users.json"
 echo ""
 echo "--- Phase 3: Recovery ---"
 
-# Re-apply system config
-rootfiles apply --profile dgx --yes 2>&1 || true
+# Re-apply system config (skip docker/nvidia — not available in CI)
+rootfiles apply --profile dgx --module locale,packages,ssh,users,cloudflared,storage,network --yes 2>&1 || true
 
 # Restore users from preserved metadata
 rootfiles user restore --profile dgx --yes 2>&1 || true

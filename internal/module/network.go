@@ -60,6 +60,7 @@ func (m *NetworkModule) Apply(ctx context.Context, rc *RunContext) (*ApplyResult
 	if cfg.UFW {
 		// Ensure UFW is installed
 		if !rc.Runner.CommandExists("ufw") {
+			rc.APT.Update(ctx)
 			if err := rc.APT.Install(ctx, []string{"ufw"}); err != nil {
 				return nil, fmt.Errorf("installing ufw: %w", err)
 			}
