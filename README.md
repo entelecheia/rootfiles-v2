@@ -20,12 +20,24 @@ Locale, timezone, firewall        Secrets (age)
 Storage mounts & symlinks
 ```
 
+## Install
+
+```bash
+# Latest stable release (recommended)
+curl -fsSL https://raw.githubusercontent.com/entelecheia/rootfiles-v2/main/scripts/install.sh | sudo bash
+
+# Specific version
+curl -fsSL ... | sudo bash -s -- --version v0.1.0
+
+# Dev channel (build from source, requires Go)
+curl -fsSL ... | sudo bash -s -- --channel dev
+```
+
+The installer downloads a prebuilt binary, verifies its SHA256 checksum, and places it at `/usr/local/bin/rootfiles`.
+
 ## Quick start
 
 ```bash
-# Install on a fresh server
-curl -fsSL https://github.com/entelecheia/rootfiles-v2/releases/latest/download/install.sh | sudo bash
-
 # Interactive mode (prompts for profile, modules, etc.)
 sudo rootfiles apply
 
