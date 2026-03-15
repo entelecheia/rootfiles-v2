@@ -4,8 +4,32 @@ on:
   push:
     branches: [main]
     tags: ["v*"]
+    paths:
+      - "cmd/**"
+      - "internal/**"
+      - "profiles/**"
+      - "templates/**"
+      - "scripts/**"
+      - "tests/**"
+      - "go.mod"
+      - "go.sum"
+      - "Makefile"
+      - ".github/workflows/**"
+      - ".goreleaser.yaml"
   pull_request:
     branches: [main]
+    paths:
+      - "cmd/**"
+      - "internal/**"
+      - "profiles/**"
+      - "templates/**"
+      - "scripts/**"
+      - "tests/**"
+      - "go.mod"
+      - "go.sum"
+      - "Makefile"
+      - ".github/workflows/**"
+      - ".goreleaser.yaml"
 
 jobs:
   unit:
