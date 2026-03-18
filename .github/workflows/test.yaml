@@ -139,8 +139,10 @@ jobs:
           - dry-run-all-profiles
           - user-backup-restore
           - user-rehome
+          - user-list-names
           - tunnel-setup-teardown
           - os-reinstall-recovery
+          - system-backup
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5

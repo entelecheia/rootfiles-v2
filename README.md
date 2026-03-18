@@ -23,15 +23,22 @@ Storage mounts & symlinks
 
 ## Install
 
+Latest stable release (recommended):
+
 ```bash
-# Latest stable release (recommended)
 curl -fsSL https://raw.githubusercontent.com/entelecheia/rootfiles-v2/main/scripts/install.sh | sudo bash
+```
 
-# Specific version
-curl -fsSL ... | sudo bash -s -- --version v0.1.0
+Specific version:
 
-# Dev channel (build from source, requires Go)
-curl -fsSL ... | sudo bash -s -- --channel dev
+```bash
+curl -fsSL https://raw.githubusercontent.com/entelecheia/rootfiles-v2/main/scripts/install.sh | sudo bash -s -- --version v0.1.0
+```
+
+Dev channel (build from source, requires Go):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/entelecheia/rootfiles-v2/main/scripts/install.sh | sudo bash -s -- --channel dev
 ```
 
 The installer downloads a prebuilt binary, verifies its SHA256 checksum, and places it at `/usr/local/bin/rootfiles`.
@@ -39,10 +46,10 @@ The installer downloads a prebuilt binary, verifies its SHA256 checksum, and pla
 ## Quick start
 
 ```bash
-# Interactive mode — walks you through every setting before applying
 sudo rootfiles apply
+```
 
-# Or specify everything upfront (skips all prompts)
+```bash
 sudo rootfiles apply --profile dgx --yes
 ```
 
@@ -80,31 +87,38 @@ All modules are idempotent and support `--dry-run`.
 
 ### Apply configuration
 
+Interactive — prompts for profile, then walks through each setting (SSH, Users, Docker, Cloudflared, Network, Storage):
+
 ```bash
-# Interactive — prompts for profile, then walks through each setting:
-#   SSH (root login, password auth, port)
-#   Users (home base, sudo nopasswd)
-#   Docker (storage dir)
-#   Cloudflared (tunnel token, VLAN address)
-#   Network (UFW, allowed ports)
-#   Storage (data dir)
 sudo rootfiles apply
+```
 
-# Full profile, interactive config review
+```bash
 sudo rootfiles apply --profile dgx
+```
 
-# Specific modules only
+Specific modules only:
+
+```bash
 sudo rootfiles apply --module cloudflared,docker
+```
 
-# Dry-run (preview settings and changes, no execution)
+Dry-run (preview changes, no execution):
+
+```bash
 sudo rootfiles apply --profile dgx --dry-run
+```
 
-# Unattended (CI/automation — skips all interactive prompts)
-sudo rootfiles apply --profile dgx --yes \
-  --home-base /raid/home \
-  --tunnel-token "$CF_TUNNEL_TOKEN" \
-  --vlan-address "172.16.229.32/32" \
-  --user yjlee --ssh-pubkey "ssh-ed25519 AAAA..."
+From a backup snapshot:
+
+```bash
+sudo rootfiles apply --config /raid/backup/rootfiles-backup-*/config-snapshot.yaml
+```
+
+Unattended (CI/automation — skips all interactive prompts):
+
+```bash
+sudo rootfiles apply --profile dgx --yes --home-base /raid/home --tunnel-token "$CF_TUNNEL_TOKEN" --vlan-address "172.16.229.32/32" --user yjlee --ssh-pubkey "ssh-ed25519 AAAA..."
 ```
 
 ### Check system state
@@ -113,37 +127,101 @@ sudo rootfiles apply --profile dgx --yes \
 sudo rootfiles check --profile dgx
 ```
 
+```bash
+sudo rootfiles check --config /raid/backup/rootfiles-backup-*/config-snapshot.yaml
+```
+
+### System backup (for OS upgrade)
+
+Captures system info, users, config files, Docker images, and a rootfiles-compatible config snapshot.
+
+```bash
+sudo rootfiles backup
+```
+
+```bash
+sudo rootfiles backup -o /raid/backup
+```
+
+```bash
+sudo rootfiles backup --skip-docker
+```
+
+```bash
+sudo rootfiles backup --skip-etc
+```
+
+Backup output directory structure:
+
+```
+rootfiles-backup-{hostname}-{YYYYMMDD}/
+├── system-info.json        # hostname, OS, GPU, arch, memory, mounts
+├── users.json              # user metadata (from rootfiles DB)
+├── etc-config.tar.gz       # /etc/ssh, docker, ufw, netplan, fstab
+├── crontab-root.txt        # root crontab
+├── root-ssh.tar.gz         # /root/.ssh/
+├── usr-local-bin.tar.gz    # /usr/local/bin/
+├── docker-images.txt       # docker image list
+└── config-snapshot.yaml    # current system → rootfiles YAML config
+```
+
+Restore from snapshot:
+
+```bash
+sudo rootfiles apply --config /raid/backup/rootfiles-backup-*/config-snapshot.yaml --dry-run
+```
+
+```bash
+sudo rootfiles apply --config /raid/backup/rootfiles-backup-*/config-snapshot.yaml --yes
+```
+
 ### User management
 
 Users are created at a custom home base (e.g., `/raid/home/`) that survives OS reinstalls.
 
 ```bash
-# Create user
 sudo rootfiles user add yjlee --pubkey "ssh-ed25519 AAAA..."
+```
 
-# List managed users
+```bash
 sudo rootfiles user list
+```
 
-# Backup before OS reinstall
+```bash
+sudo rootfiles user list --names
+```
+
+```bash
 sudo rootfiles user backup
+```
 
-# Restore after OS reinstall (/raid/home/ preserved)
+```bash
 sudo rootfiles user restore
+```
 
-# Move existing user from /home/ to custom home
+```bash
 sudo rootfiles user rehome yjlee
 ```
 
 ### Cloudflare tunnel + VLAN
 
 ```bash
-# Setup tunnel with private network
 sudo rootfiles tunnel setup "$TOKEN" --vlan-address "172.16.229.32/32"
+```
 
-# Manage
+```bash
 sudo rootfiles tunnel status
+```
+
+```bash
 sudo rootfiles tunnel update
+```
+
+```bash
 sudo rootfiles tunnel restart
+```
+
+```bash
 sudo rootfiles tunnel uninstall
 ```
 
@@ -166,8 +244,11 @@ All flags can be set via environment variables for unattended operation:
 ## Build from source
 
 ```bash
-make build    # → bin/rootfiles
-make test     # go test with race detection
+make build
+```
+
+```bash
+make test
 ```
 
 Requires Go 1.23+.
@@ -177,7 +258,7 @@ Requires Go 1.23+.
 ```
 cmd/rootfiles/        Entry point
 internal/
-  cli/                Cobra commands (apply, check, tunnel, user)
+  cli/                Cobra commands (apply, backup, check, tunnel, user)
   config/             YAML profiles with inheritance, system detector
     profiles/         Embedded profile YAMLs (go:embed)
   module/             9 modules implementing Module interface

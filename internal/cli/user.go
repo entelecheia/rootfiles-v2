@@ -60,14 +60,20 @@ func newUserCmd() *cobra.Command {
 	addCmd.Flags().Bool("no-docker", false, "Do not add to docker group")
 	userCmd.AddCommand(addCmd)
 
-	userCmd.AddCommand(&cobra.Command{
+	listCmd := &cobra.Command{
 		Use:   "list",
 		Short: "List managed users",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			rc := buildRunContext(cmd)
+			namesOnly, _ := cmd.Flags().GetBool("names")
+			if namesOnly {
+				return module.ListUserNames(rc)
+			}
 			return module.ListUsers(rc)
 		},
-	})
+	}
+	listCmd.Flags().Bool("names", false, "Print usernames only (one per line)")
+	userCmd.AddCommand(listCmd)
 
 	backupCmd := &cobra.Command{
 		Use:   "backup",

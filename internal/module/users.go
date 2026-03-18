@@ -371,6 +371,31 @@ func ListUsers(rc *RunContext) error {
 	return nil
 }
 
+// ListUserNames prints only usernames, one per line (for scripting).
+func ListUserNames(rc *RunContext) error {
+	cfg := rc.Config.Users
+	homeBase := cfg.HomeBase
+	if homeBase == "" {
+		homeBase = "/home"
+	}
+
+	dbPath := filepath.Join(homeBase, ".rootfiles", "users.json")
+	data, err := rc.Runner.ReadFile(dbPath)
+	if err != nil {
+		return nil // no users, no output
+	}
+
+	var db UsersDB
+	if err := json.Unmarshal(data, &db); err != nil {
+		return fmt.Errorf("parsing user database: %w", err)
+	}
+
+	for _, u := range db.Users {
+		fmt.Println(u.Name)
+	}
+	return nil
+}
+
 func saveUserMeta(rc *RunContext, username, home, shell string, groups []string, sudoNopasswd bool, pubkey string) {
 	cfg := rc.Config.Users
 	homeBase := cfg.HomeBase

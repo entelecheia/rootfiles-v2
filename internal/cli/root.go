@@ -25,6 +25,7 @@ func NewRootCmd(version, commit string) *cobra.Command {
 	root.PersistentFlags().String("vlan-address", "", "VLAN private network address (e.g., 172.16.229.32/32)")
 
 	root.AddCommand(newApplyCmd())
+	root.AddCommand(newBackupCmd())
 	root.AddCommand(newCheckCmd())
 	root.AddCommand(newTunnelCmd())
 	root.AddCommand(newUserCmd())
