@@ -28,6 +28,31 @@ func NewRunner(dryRun bool, logger *slog.Logger) *Runner {
 	return &Runner{DryRun: dryRun, Logger: logger}
 }
 
+// Query executes a read-only command that always runs, even in dry-run mode.
+// Use this for status checks (dpkg -s, ufw status, etc.) that don't modify the system.
+func (r *Runner) Query(ctx context.Context, name string, args ...string) (*Result, error) {
+	cmdStr := name + " " + strings.Join(args, " ")
+	r.Logger.Info("query", "cmd", cmdStr)
+	cmd := osexec.CommandContext(ctx, name, args...)
+	var stdout, stderr strings.Builder
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	err := cmd.Run()
+	result := &Result{
+		Command: cmdStr,
+		Stdout:  stdout.String(),
+		Stderr:  stderr.String(),
+	}
+	if cmd.ProcessState != nil {
+		result.ExitCode = cmd.ProcessState.ExitCode()
+	}
+	if err != nil {
+		return result, fmt.Errorf("command %q failed: %w\nstderr: %s", cmdStr, err, result.Stderr)
+	}
+	return result, nil
+}
+
 // Run executes a command. In dry-run mode, logs but does not execute.
 func (r *Runner) Run(ctx context.Context, name string, args ...string) (*Result, error) {
 	cmdStr := name + " " + strings.Join(args, " ")

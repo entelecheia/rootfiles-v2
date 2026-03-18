@@ -31,9 +31,9 @@ func (a *APT) Install(ctx context.Context, packages []string) error {
 	return err
 }
 
-// IsInstalled checks if a package is installed.
+// IsInstalled checks if a package is installed (always queries the real system).
 func (a *APT) IsInstalled(pkg string) bool {
-	res, err := a.Runner.Run(context.Background(), "dpkg", "-s", pkg)
+	res, err := a.Runner.Query(context.Background(), "dpkg", "-s", pkg)
 	if err != nil {
 		return false
 	}

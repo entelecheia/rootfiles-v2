@@ -24,7 +24,7 @@ func (m *NetworkModule) Check(_ context.Context, rc *RunContext) (*CheckResult, 
 			})
 		} else {
 			// Check if UFW is active
-			res, _ := rc.Runner.Run(context.Background(), "ufw", "status")
+			res, _ := rc.Runner.Query(context.Background(), "ufw", "status")
 			if res != nil && !strings.Contains(res.Stdout, "active") {
 				changes = append(changes, Change{
 					Description: "Enable UFW firewall",
@@ -35,7 +35,7 @@ func (m *NetworkModule) Check(_ context.Context, rc *RunContext) (*CheckResult, 
 
 		// Check allowed ports
 		for _, port := range cfg.AllowedPorts {
-			res, _ := rc.Runner.Run(context.Background(), "ufw", "status")
+			res, _ := rc.Runner.Query(context.Background(), "ufw", "status")
 			portStr := strconv.Itoa(port)
 			if res == nil || !strings.Contains(res.Stdout, portStr) {
 				changes = append(changes, Change{
