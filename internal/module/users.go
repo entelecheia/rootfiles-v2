@@ -65,6 +65,7 @@ func (m *UsersModule) Check(_ context.Context, rc *RunContext) (*CheckResult, er
 		if !strings.Contains(string(data), "HOME="+cfg.HomeBase) {
 			changes = append(changes, Change{
 				Description: fmt.Sprintf("Set default useradd HOME to %s", cfg.HomeBase),
+				Command:     fmt.Sprintf("update HOME=%s in /etc/default/useradd", cfg.HomeBase),
 			})
 		}
 	}

@@ -25,6 +25,7 @@ func (m *NvidiaModule) Check(_ context.Context, rc *RunContext) (*CheckResult, e
 	if len(data) > 0 && !containsBytes(data, "nvidia") {
 		changes = append(changes, Change{
 			Description: "Configure Docker nvidia runtime",
+			Command:     "nvidia-ctk runtime configure --runtime=docker",
 		})
 	}
 

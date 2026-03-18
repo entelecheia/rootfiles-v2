@@ -14,12 +14,14 @@ import (
 )
 
 func newCheckCmd() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "check",
 		Short: "Check current system state against profile",
 		Long:  "Check which modules are satisfied and which need changes.",
 		RunE:  runCheck,
 	}
+	cmd.Flags().BoolP("verbose", "v", false, "Show commands that will be executed")
+	return cmd
 }
 
 func runCheck(cmd *cobra.Command, _ []string) error {
@@ -75,6 +77,8 @@ func runCheck(cmd *cobra.Command, _ []string) error {
 	fmt.Printf("%-15s %-10s %s\n", "------", "------", "-------")
 
 	allSatisfied := true
+	verbose, _ := cmd.Flags().GetBool("verbose")
+
 	for _, m := range modules {
 		r := results[m.Name()]
 		status := "OK"
@@ -86,6 +90,9 @@ func runCheck(cmd *cobra.Command, _ []string) error {
 		fmt.Printf("%-15s %-10s %d change(s)\n", m.Name(), status, changeCount)
 		for _, c := range r.Changes {
 			fmt.Printf("  → %s\n", c.Description)
+			if verbose && c.Command != "" {
+				fmt.Printf("      $ %s\n", c.Command)
+			}
 		}
 	}
 

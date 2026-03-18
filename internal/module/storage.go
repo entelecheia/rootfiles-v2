@@ -39,6 +39,7 @@ func (m *StorageModule) Check(_ context.Context, rc *RunContext) (*CheckResult, 
 		if !rc.Runner.FileExists(metaDir) {
 			changes = append(changes, Change{
 				Description: "Create rootfiles metadata directory",
+				Command:     fmt.Sprintf("mkdir -p %s", metaDir),
 			})
 		}
 	}
@@ -58,6 +59,7 @@ func (m *StorageModule) Check(_ context.Context, rc *RunContext) (*CheckResult, 
 	if dockerDir != "" && !rc.Runner.FileExists(dockerDir) {
 		changes = append(changes, Change{
 			Description: fmt.Sprintf("Create Docker storage directory %s", dockerDir),
+			Command:     fmt.Sprintf("mkdir -p %s", dockerDir),
 		})
 	}
 

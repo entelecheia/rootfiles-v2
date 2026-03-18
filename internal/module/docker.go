@@ -28,6 +28,7 @@ func (m *DockerModule) Check(ctx context.Context, rc *RunContext) (*CheckResult,
 		if !strings.Contains(string(data), cfg.StorageDir) {
 			changes = append(changes, Change{
 				Description: fmt.Sprintf("Configure Docker storage at %s", cfg.StorageDir),
+				Command:     "write /etc/docker/daemon.json",
 			})
 		}
 	}
