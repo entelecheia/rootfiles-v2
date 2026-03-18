@@ -1,6 +1,7 @@
 package module
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -196,18 +197,51 @@ func AddUser(ctx context.Context, rc *RunContext, username, pubkey string, extra
 	return nil
 }
 
-// BackupUsers exports user metadata to JSON.
+// BackupUsers exports user metadata to JSON, including unmanaged system users.
 func BackupUsers(rc *RunContext, outputPath string) error {
+	ctx := context.Background()
 	cfg := rc.Config.Users
 	homeBase := cfg.HomeBase
 	if homeBase == "" {
 		homeBase = "/home"
 	}
 
+	// Load existing managed users DB (if any)
+	var db UsersDB
 	dbPath := filepath.Join(homeBase, ".rootfiles", "users.json")
-	data, err := rc.Runner.ReadFile(dbPath)
+	if data, err := rc.Runner.ReadFile(dbPath); err == nil {
+		json.Unmarshal(data, &db)
+	}
+
+	// Scan system users and merge
+	sysUsers, err := scanSystemUsers(ctx, rc)
 	if err != nil {
-		return fmt.Errorf("no user database found at %s", dbPath)
+		fmt.Printf("  Warning: system user scan failed: %v\n", err)
+	}
+
+	managed := make(map[string]bool)
+	for _, u := range db.Users {
+		managed[u.Name] = true
+	}
+	for _, su := range sysUsers {
+		if !managed[su.Name] {
+			db.Users = append(db.Users, su)
+		}
+	}
+
+	if db.Version == 0 {
+		db.Version = 1
+	}
+	if db.HomeBase == "" {
+		db.HomeBase = homeBase
+	}
+	if db.CreatedBy == "" {
+		db.CreatedBy = "rootfiles-v2"
+	}
+
+	data, err := json.MarshalIndent(db, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshaling users: %w", err)
 	}
 
 	if outputPath == "" {
@@ -219,8 +253,89 @@ func BackupUsers(rc *RunContext, outputPath string) error {
 		return fmt.Errorf("writing backup: %w", err)
 	}
 
-	fmt.Printf("User backup saved to %s\n", outputPath)
+	fmt.Printf("User backup saved to %s (%d users)\n", outputPath, len(db.Users))
 	return nil
+}
+
+// scanSystemUsers reads /etc/passwd and collects metadata for regular users (UID 1000-65533).
+func scanSystemUsers(ctx context.Context, rc *RunContext) ([]UserMeta, error) {
+	data, err := rc.Runner.ReadFile("/etc/passwd")
+	if err != nil {
+		return nil, fmt.Errorf("reading /etc/passwd: %w", err)
+	}
+
+	var users []UserMeta
+	scanner := bufio.NewScanner(strings.NewReader(string(data)))
+	for scanner.Scan() {
+		line := scanner.Text()
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		fields := strings.Split(line, ":")
+		if len(fields) < 7 {
+			continue
+		}
+		// fields: name:x:uid:gid:gecos:home:shell
+		uid, err := strconv.Atoi(fields[2])
+		if err != nil || uid < 1000 || uid > 65533 {
+			continue
+		}
+		gid, _ := strconv.Atoi(fields[3])
+		name := fields[0]
+		home := fields[5]
+		shell := fields[6]
+
+		// Skip nologin/false shells
+		if strings.HasSuffix(shell, "/nologin") || strings.HasSuffix(shell, "/false") {
+			continue
+		}
+
+		meta := UserMeta{
+			Name:  name,
+			UID:   uid,
+			GID:   gid,
+			Shell: shell,
+			Home:  home,
+		}
+
+		// Collect groups via `id -Gn`
+		if result, err := rc.Runner.Run(ctx, "id", "-Gn", name); err == nil {
+			groups := strings.Fields(strings.TrimSpace(result.Stdout))
+			// Filter out the user's primary group (same as username)
+			var supplementary []string
+			for _, g := range groups {
+				if g != name {
+					supplementary = append(supplementary, g)
+				}
+			}
+			meta.Groups = supplementary
+		}
+
+		// Check sudoers
+		sudoPath := fmt.Sprintf("/etc/sudoers.d/%s", name)
+		if rc.Runner.FileExists(sudoPath) {
+			meta.SudoNopasswd = true
+		}
+
+		// Read SSH pubkeys
+		authKeysPath := filepath.Join(home, ".ssh", "authorized_keys")
+		if keyData, err := rc.Runner.ReadFile(authKeysPath); err == nil {
+			var keys []string
+			for _, line := range strings.Split(strings.TrimSpace(string(keyData)), "\n") {
+				line = strings.TrimSpace(line)
+				if line != "" && !strings.HasPrefix(line, "#") {
+					keys = append(keys, line)
+				}
+			}
+			if len(keys) > 0 {
+				meta.SSHPubkeys = keys
+			}
+		}
+
+		users = append(users, meta)
+	}
+
+	return users, nil
 }
 
 // RestoreUsers restores users from a backup JSON file.
@@ -288,6 +403,19 @@ func RestoreUsers(ctx context.Context, rc *RunContext, backupPath string) error 
 		if homeExists {
 			rc.Runner.Run(ctx, "chown", "-R",
 				strconv.Itoa(u.UID)+":"+strconv.Itoa(u.GID), u.Home)
+		}
+
+		// Restore SSH pubkeys if home was freshly created (no existing authorized_keys)
+		if len(u.SSHPubkeys) > 0 {
+			authKeysPath := filepath.Join(u.Home, ".ssh", "authorized_keys")
+			if !rc.Runner.FileExists(authKeysPath) {
+				sshDir := filepath.Join(u.Home, ".ssh")
+				rc.Runner.MkdirAll(sshDir, 0700)
+				content := strings.Join(u.SSHPubkeys, "\n") + "\n"
+				rc.Runner.WriteFile(authKeysPath, []byte(content), 0600)
+				rc.Runner.Run(ctx, "chown", "-R",
+					strconv.Itoa(u.UID)+":"+strconv.Itoa(u.GID), sshDir)
+			}
 		}
 
 		status := "created"

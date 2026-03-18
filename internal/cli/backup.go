@@ -153,18 +153,10 @@ func backupSystemInfo(backupDir, hostname string) error {
 	return os.WriteFile(filepath.Join(backupDir, "system-info.json"), data, 0644)
 }
 
-// backupUsersJSON copies user metadata from the rootfiles database.
+// backupUsersJSON backs up user metadata (managed + system users).
 func backupUsersJSON(rc *module.RunContext, backupDir string) error {
-	homeBase := rc.Config.Users.HomeBase
-	if homeBase == "" {
-		homeBase = "/home"
-	}
-	dbPath := filepath.Join(homeBase, ".rootfiles", "users.json")
-	data, err := rc.Runner.ReadFile(dbPath)
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(filepath.Join(backupDir, "users.json"), data, 0600)
+	outputPath := filepath.Join(backupDir, "users.json")
+	return module.BackupUsers(rc, outputPath)
 }
 
 // backupEtcConfig creates a tar.gz of key /etc/ config files.
