@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -13,6 +14,8 @@ import (
 	"github.com/entelecheia/rootfiles-v2/internal/module"
 	"github.com/entelecheia/rootfiles-v2/internal/ui"
 )
+
+var errAborted = errors.New("aborted by user")
 
 func newApplyCmd() *cobra.Command {
 	return &cobra.Command{
@@ -104,15 +107,13 @@ func runApply(cmd *cobra.Command, _ []string) error {
 	}
 	fmt.Println()
 
-	if !yes && !dryRun {
-		confirmed, err := ui.Confirm("Apply this configuration?", false)
-		if err != nil {
-			return err
-		}
-		if !confirmed {
+	// Interactive configuration preview & edit
+	if err := configureInteractive(cfg, yes, dryRun); err != nil {
+		if errors.Is(err, errAborted) {
 			fmt.Println("Aborted.")
 			return nil
 		}
+		return err
 	}
 
 	// Execute modules
@@ -138,4 +139,158 @@ func applyFlagOverrides(cmd *cobra.Command, cfg *config.Config) {
 	if v, _ := cmd.Flags().GetString("vlan-address"); v != "" {
 		cfg.Modules.Cloudflared.PrivateNetwork.Address = v
 	}
+}
+
+// configureInteractive shows a preview of all key settings and lets the user
+// review/modify them before applying. Skipped when --yes is set.
+func configureInteractive(cfg *config.Config, yes, dryRun bool) error {
+	if yes {
+		return nil
+	}
+
+	fmt.Println("\n=== Configuration ===")
+
+	var err error
+
+	// --- General ---
+	cfg.Timezone, err = ui.Input("Timezone", cfg.Timezone, false)
+	if err != nil {
+		return err
+	}
+
+	// --- SSH ---
+	if cfg.IsModuleEnabled("ssh") {
+		fmt.Println("\n--- SSH ---")
+		cfg.SSH.DisableRootLogin, err = ui.Confirm("Disable root login?", false)
+		if err != nil {
+			return err
+		}
+		cfg.SSH.DisablePasswordAuth, err = ui.Confirm("Disable password authentication?", false)
+		if err != nil {
+			return err
+		}
+		port := cfg.SSH.Port
+		if port == 0 {
+			port = 22
+		}
+		cfg.SSH.Port, err = ui.InputInt("SSH port", port, false)
+		if err != nil {
+			return err
+		}
+	}
+
+	// --- Users ---
+	if cfg.IsModuleEnabled("users") {
+		fmt.Println("\n--- Users ---")
+		if cfg.Users.HomeBase != "" {
+			cfg.Users.HomeBase, err = ui.Input("Home base directory", cfg.Users.HomeBase, false)
+			if err != nil {
+				return err
+			}
+		}
+		cfg.Users.SudoNopasswd, err = ui.Confirm("Sudo without password?", false)
+		if err != nil {
+			return err
+		}
+	}
+
+	// --- Docker ---
+	if cfg.IsModuleEnabled("docker") {
+		fmt.Println("\n--- Docker ---")
+		if cfg.Modules.Docker.StorageDir != "" {
+			cfg.Modules.Docker.StorageDir, err = ui.Input("Docker storage directory", cfg.Modules.Docker.StorageDir, false)
+			if err != nil {
+				return err
+			}
+		}
+	}
+
+	// --- Cloudflared ---
+	if cfg.IsModuleEnabled("cloudflared") {
+		fmt.Println("\n--- Cloudflared ---")
+		cfg.Modules.Cloudflared.TunnelToken, err = ui.Input("Tunnel token (empty to skip)", cfg.Modules.Cloudflared.TunnelToken, false)
+		if err != nil {
+			return err
+		}
+		cfg.Modules.Cloudflared.PrivateNetwork.Enabled, err = ui.Confirm("Enable VLAN private network?", false)
+		if err != nil {
+			return err
+		}
+		if cfg.Modules.Cloudflared.PrivateNetwork.Enabled {
+			cfg.Modules.Cloudflared.PrivateNetwork.Address, err = ui.Input("VLAN address (e.g. 172.16.229.32/32)", cfg.Modules.Cloudflared.PrivateNetwork.Address, false)
+			if err != nil {
+				return err
+			}
+		}
+	}
+
+	// --- Network ---
+	if cfg.IsModuleEnabled("network") {
+		fmt.Println("\n--- Network ---")
+		cfg.Modules.Network.UFW, err = ui.Confirm("Enable UFW firewall?", false)
+		if err != nil {
+			return err
+		}
+		if cfg.Modules.Network.UFW {
+			cfg.Modules.Network.AllowedPorts, err = ui.InputIntSlice("Allowed ports (comma-separated)", cfg.Modules.Network.AllowedPorts, false)
+			if err != nil {
+				return err
+			}
+		}
+	}
+
+	// --- Storage ---
+	if cfg.IsModuleEnabled("storage") {
+		fmt.Println("\n--- Storage ---")
+		if cfg.Modules.Storage.DataDir != "" {
+			cfg.Modules.Storage.DataDir, err = ui.Input("Data directory", cfg.Modules.Storage.DataDir, false)
+			if err != nil {
+				return err
+			}
+		}
+	}
+
+	// --- Summary & confirm ---
+	fmt.Println("\n=== Summary ===")
+	fmt.Printf("  Timezone: %s\n", cfg.Timezone)
+	if cfg.IsModuleEnabled("ssh") {
+		fmt.Printf("  SSH: root_login=%v, password_auth=%v, port=%d\n",
+			!cfg.SSH.DisableRootLogin, !cfg.SSH.DisablePasswordAuth, cfg.SSH.Port)
+	}
+	if cfg.IsModuleEnabled("users") && cfg.Users.HomeBase != "" {
+		fmt.Printf("  Users: home_base=%s, sudo_nopasswd=%v\n", cfg.Users.HomeBase, cfg.Users.SudoNopasswd)
+	}
+	if cfg.IsModuleEnabled("docker") && cfg.Modules.Docker.StorageDir != "" {
+		fmt.Printf("  Docker: storage=%s\n", cfg.Modules.Docker.StorageDir)
+	}
+	if cfg.IsModuleEnabled("cloudflared") {
+		token := cfg.Modules.Cloudflared.TunnelToken
+		if token != "" && len(token) > 8 {
+			token = token[:8] + "..."
+		}
+		fmt.Printf("  Cloudflared: token=%s, vlan=%v", token, cfg.Modules.Cloudflared.PrivateNetwork.Enabled)
+		if cfg.Modules.Cloudflared.PrivateNetwork.Enabled {
+			fmt.Printf(" (%s)", cfg.Modules.Cloudflared.PrivateNetwork.Address)
+		}
+		fmt.Println()
+	}
+	if cfg.IsModuleEnabled("network") {
+		fmt.Printf("  Network: ufw=%v, ports=%v\n", cfg.Modules.Network.UFW, cfg.Modules.Network.AllowedPorts)
+	}
+	if cfg.IsModuleEnabled("storage") && cfg.Modules.Storage.DataDir != "" {
+		fmt.Printf("  Storage: data_dir=%s\n", cfg.Modules.Storage.DataDir)
+	}
+
+	if dryRun {
+		return nil
+	}
+
+	confirmed, err := ui.Confirm("\nApply this configuration?", false)
+	if err != nil {
+		return err
+	}
+	if !confirmed {
+		return errAborted
+	}
+	return nil
 }

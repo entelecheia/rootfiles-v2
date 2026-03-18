@@ -39,12 +39,14 @@ The installer downloads a prebuilt binary, verifies its SHA256 checksum, and pla
 ## Quick start
 
 ```bash
-# Interactive mode (prompts for profile, modules, etc.)
+# Interactive mode — walks you through every setting before applying
 sudo rootfiles apply
 
-# Or specify everything upfront
+# Or specify everything upfront (skips all prompts)
 sudo rootfiles apply --profile dgx --yes
 ```
+
+In interactive mode, `apply` presents each configurable setting (SSH, firewall, VLAN, storage, etc.) for review and lets you adjust values before execution. Use `--yes` to skip all prompts for CI/automation.
 
 ## Profiles
 
@@ -79,16 +81,25 @@ All modules are idempotent and support `--dry-run`.
 ### Apply configuration
 
 ```bash
-# Full profile
+# Interactive — prompts for profile, then walks through each setting:
+#   SSH (root login, password auth, port)
+#   Users (home base, sudo nopasswd)
+#   Docker (storage dir)
+#   Cloudflared (tunnel token, VLAN address)
+#   Network (UFW, allowed ports)
+#   Storage (data dir)
+sudo rootfiles apply
+
+# Full profile, interactive config review
 sudo rootfiles apply --profile dgx
 
 # Specific modules only
 sudo rootfiles apply --module cloudflared,docker
 
-# Dry-run (preview changes)
+# Dry-run (preview settings and changes, no execution)
 sudo rootfiles apply --profile dgx --dry-run
 
-# Unattended (CI/automation)
+# Unattended (CI/automation — skips all interactive prompts)
 sudo rootfiles apply --profile dgx --yes \
   --home-base /raid/home \
   --tunnel-token "$CF_TUNNEL_TOKEN" \

@@ -1,6 +1,10 @@
 package ui
 
 import (
+	"fmt"
+	"strconv"
+	"strings"
+
 	"github.com/charmbracelet/huh"
 )
 
@@ -56,4 +60,47 @@ func Input(message, defaultVal string, unattended bool) (string, error) {
 		return defaultVal, nil
 	}
 	return value, nil
+}
+
+// InputInt asks for an integer input. Returns defaultVal if unattended or empty.
+func InputInt(message string, defaultVal int, unattended bool) (int, error) {
+	s, err := Input(message, strconv.Itoa(defaultVal), unattended)
+	if err != nil {
+		return defaultVal, err
+	}
+	v, err := strconv.Atoi(strings.TrimSpace(s))
+	if err != nil {
+		return defaultVal, fmt.Errorf("invalid number %q: %w", s, err)
+	}
+	return v, nil
+}
+
+// InputIntSlice asks for a comma-separated list of integers.
+func InputIntSlice(message string, defaultVal []int, unattended bool) ([]int, error) {
+	parts := make([]string, len(defaultVal))
+	for i, v := range defaultVal {
+		parts[i] = strconv.Itoa(v)
+	}
+	s, err := Input(message, strings.Join(parts, ","), unattended)
+	if err != nil {
+		return defaultVal, err
+	}
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return defaultVal, nil
+	}
+	tokens := strings.Split(s, ",")
+	result := make([]int, 0, len(tokens))
+	for _, t := range tokens {
+		t = strings.TrimSpace(t)
+		if t == "" {
+			continue
+		}
+		v, err := strconv.Atoi(t)
+		if err != nil {
+			return defaultVal, fmt.Errorf("invalid number %q: %w", t, err)
+		}
+		result = append(result, v)
+	}
+	return result, nil
 }
