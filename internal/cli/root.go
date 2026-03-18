@@ -28,6 +28,7 @@ func NewRootCmd(version, commit string) *cobra.Command {
 	root.AddCommand(newBackupCmd())
 	root.AddCommand(newCheckCmd())
 	root.AddCommand(newTunnelCmd())
+	root.AddCommand(newUpgradeCmd(version))
 	root.AddCommand(newUserCmd())
 
 	return root
