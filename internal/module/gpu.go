@@ -73,6 +73,16 @@ func (m *GPUModule) Check(_ context.Context, rc *RunContext) (*CheckResult, erro
 		}
 	}
 
+	// Check Docker wrapper
+	expectedWrapper := buildDockerWrapper(gpuDBPath(rc))
+	wrapperData, _ := rc.Runner.ReadFile(dockerWrapperPath)
+	if string(wrapperData) != expectedWrapper {
+		changes = append(changes, Change{
+			Description: "Install Docker GPU enforcement wrapper",
+			Command:     fmt.Sprintf("write %s", dockerWrapperPath),
+		})
+	}
+
 	return &CheckResult{
 		Satisfied: len(changes) == 0,
 		Changes:   changes,
@@ -82,6 +92,12 @@ func (m *GPUModule) Check(_ context.Context, rc *RunContext) (*CheckResult, erro
 func (m *GPUModule) Apply(ctx context.Context, rc *RunContext) (*ApplyResult, error) {
 	db, err := loadGPUDB(rc)
 	if err != nil || len(db.Allocations) == 0 {
+		// Remove wrapper if it exists but no allocations remain
+		wrapperData, _ := rc.Runner.ReadFile(dockerWrapperPath)
+		if len(wrapperData) > 0 {
+			removeDockerWrapper(ctx, rc)
+			return &ApplyResult{Changed: true, Messages: []string{"Removed Docker GPU enforcement wrapper (no allocations)"}}, nil
+		}
 		return &ApplyResult{Changed: false}, nil
 	}
 
@@ -125,6 +141,17 @@ func (m *GPUModule) Apply(ctx context.Context, rc *RunContext) (*ApplyResult, er
 				changed = true
 			}
 		}
+	}
+
+	// Apply Docker wrapper
+	expectedWrapper := buildDockerWrapper(gpuDBPath(rc))
+	wrapperData, _ := rc.Runner.ReadFile(dockerWrapperPath)
+	if string(wrapperData) != expectedWrapper {
+		if err := rc.Runner.WriteFile(dockerWrapperPath, []byte(expectedWrapper), 0755); err != nil {
+			return nil, fmt.Errorf("writing docker wrapper: %w", err)
+		}
+		messages = append(messages, "Docker GPU enforcement wrapper installed")
+		changed = true
 	}
 
 	return &ApplyResult{Changed: changed, Messages: messages}, nil
@@ -227,6 +254,11 @@ func AssignGPUs(ctx context.Context, rc *RunContext, username string, gpus []int
 		}
 	}
 
+	// Install Docker wrapper to enforce GPU allocations in containers
+	if err := installDockerWrapper(rc); err != nil {
+		return fmt.Errorf("installing docker wrapper: %w", err)
+	}
+
 	fmt.Printf("Assigned GPUs %s to %s (method: %s)\n", gpuListStr(gpus), username, method)
 	return nil
 }
@@ -284,6 +316,16 @@ func RevokeGPUs(ctx context.Context, rc *RunContext, username string) error {
 				rc.Runner.Run(ctx, "rm", "-rf", sliceDir)
 				rc.Runner.Run(ctx, "systemctl", "daemon-reload")
 			}
+		}
+	}
+
+	// Remove Docker wrapper if no allocations remain
+	if len(db.Allocations) == 0 {
+		removeDockerWrapper(ctx, rc)
+	} else {
+		// Reinstall wrapper (DB path unchanged, but content may differ)
+		if err := installDockerWrapper(rc); err != nil {
+			return fmt.Errorf("updating docker wrapper: %w", err)
 		}
 	}
 
@@ -413,6 +455,156 @@ func ShowGPUStatus(ctx context.Context, rc *RunContext) error {
 	return nil
 }
 
+// Docker wrapper constants
+const (
+	dockerWrapperPath = "/usr/local/bin/docker"
+	dockerRealPath    = "/usr/bin/docker"
+)
+
+// buildDockerWrapper generates a bash wrapper script that enforces per-user GPU allocations for Docker commands.
+func buildDockerWrapper(gpuDBPath string) string {
+	return `#!/bin/bash
+# Managed by rootfiles-v2 — do not edit
+# Docker wrapper that enforces per-user GPU allocations.
+set -euo pipefail
+
+REAL_DOCKER="` + dockerRealPath + `"
+GPU_DB="` + gpuDBPath + `"
+
+# Root bypass — no GPU restrictions
+if [ "$(id -u)" = "0" ]; then
+    exec "$REAL_DOCKER" "$@"
+fi
+
+# Read user's GPU allocation from the JSON database via python3
+GPUS=""
+if [ -f "$GPU_DB" ]; then
+    GPUS=$(python3 -c "
+import json, os
+try:
+    with open('$GPU_DB') as f:
+        db = json.load(f)
+    user = os.environ.get('USER', '')
+    for a in db.get('allocations', []):
+        if a.get('username') == user:
+            print(','.join(str(g) for g in a.get('gpus', [])))
+            break
+except Exception:
+    pass
+" 2>/dev/null || true)
+fi
+
+# No allocation — pass through without restriction
+if [ -z "$GPUS" ]; then
+    exec "$REAL_DOCKER" "$@"
+fi
+
+# Find the subcommand by skipping global flags
+args=("$@")
+subcmd_idx=-1
+i=0
+while [ $i -lt ${#args[@]} ]; do
+    arg="${args[$i]}"
+    case "$arg" in
+        -H|--host|--config|--context|-c|-l|--log-level)
+            i=$((i + 2))
+            ;;
+        -H=*|--host=*|--config=*|--context=*|-l=*|--log-level=*)
+            i=$((i + 1))
+            ;;
+        -D|--debug|--tls|--tlsverify)
+            i=$((i + 1))
+            ;;
+        -*)
+            i=$((i + 1))
+            ;;
+        *)
+            subcmd_idx=$i
+            break
+            ;;
+    esac
+done
+
+if [ $subcmd_idx -lt 0 ]; then
+    exec "$REAL_DOCKER" "$@"
+fi
+
+subcmd="${args[$subcmd_idx]}"
+
+case "$subcmd" in
+    run|create)
+        # Rebuild args: strip --gpus flag (with or without = value), inject NVIDIA_VISIBLE_DEVICES
+        new_args=()
+        j=0
+        while [ $j -lt ${#args[@]} ]; do
+            if [ $j -eq $((subcmd_idx + 1)) ] || [ ${#new_args[@]} -eq $((subcmd_idx + 1)) ] && [ $j -eq $((subcmd_idx)) ]; then
+                : # handled below
+            fi
+            arg="${args[$j]}"
+            if [ $j -gt $subcmd_idx ]; then
+                case "$arg" in
+                    --gpus=*)
+                        j=$((j + 1))
+                        continue
+                        ;;
+                    --gpus)
+                        j=$((j + 2))
+                        continue
+                        ;;
+                esac
+            fi
+            new_args+=("$arg")
+            j=$((j + 1))
+        done
+        # Inject -e NVIDIA_VISIBLE_DEVICES right after the subcommand
+        final_args=()
+        k=0
+        while [ $k -lt ${#new_args[@]} ]; do
+            final_args+=("${new_args[$k]}")
+            if [ $k -eq $subcmd_idx ]; then
+                final_args+=("-e" "NVIDIA_VISIBLE_DEVICES=$GPUS")
+                final_args+=("-e" "CUDA_VISIBLE_DEVICES=$GPUS")
+            fi
+            k=$((k + 1))
+        done
+        exec "$REAL_DOCKER" "${final_args[@]}"
+        ;;
+    compose)
+        export NVIDIA_VISIBLE_DEVICES="$GPUS"
+        export CUDA_VISIBLE_DEVICES="$GPUS"
+        exec "$REAL_DOCKER" "$@"
+        ;;
+    *)
+        exec "$REAL_DOCKER" "$@"
+        ;;
+esac
+`
+}
+
+// installDockerWrapper writes the Docker wrapper script if it is missing or outdated.
+func installDockerWrapper(rc *RunContext) error {
+	dbPath := gpuDBPath(rc)
+	expected := buildDockerWrapper(dbPath)
+	data, _ := rc.Runner.ReadFile(dockerWrapperPath)
+	if string(data) == expected {
+		return nil
+	}
+	if rc.DryRun {
+		fmt.Printf("[dry-run] would write %s\n", dockerWrapperPath)
+		return nil
+	}
+	return rc.Runner.WriteFile(dockerWrapperPath, []byte(expected), 0755)
+}
+
+// removeDockerWrapper removes the Docker wrapper script if it exists.
+func removeDockerWrapper(ctx context.Context, rc *RunContext) {
+	if rc.DryRun {
+		fmt.Printf("[dry-run] would remove %s\n", dockerWrapperPath)
+		return
+	}
+	rc.Runner.Run(ctx, "rm", "-f", dockerWrapperPath)
+}
+
 // --- helpers ---
 
 func gpuDBPath(rc *RunContext) string {
@@ -448,7 +640,7 @@ func saveGPUDB(rc *RunContext, db *GPUAllocationsDB) error {
 	if err != nil {
 		return fmt.Errorf("marshaling GPU database: %w", err)
 	}
-	return rc.Runner.WriteFile(dbPath, data, 0600)
+	return rc.Runner.WriteFile(dbPath, data, 0644)
 }
 
 func effectiveMethod(rc *RunContext, method string) string {

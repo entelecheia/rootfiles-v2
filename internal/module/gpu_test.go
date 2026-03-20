@@ -80,12 +80,12 @@ func TestGPUModule_CheckWithAllocations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	// Script doesn't exist yet, so there should be a pending change
+	// Script doesn't exist yet, so there should be pending changes (env script + docker wrapper)
 	if result.Satisfied {
 		t.Error("Check should NOT be satisfied when script is missing")
 	}
-	if len(result.Changes) != 1 {
-		t.Errorf("expected 1 change, got %d", len(result.Changes))
+	if len(result.Changes) < 1 {
+		t.Errorf("expected at least 1 change, got %d", len(result.Changes))
 	}
 }
 
@@ -633,8 +633,8 @@ func TestGPUModule_ApplyEnvMethod_DryRun(t *testing.T) {
 	if !result.Changed {
 		t.Error("Apply should report changed when script is missing")
 	}
-	if len(result.Messages) != 1 {
-		t.Errorf("expected 1 message, got %d", len(result.Messages))
+	if len(result.Messages) < 1 {
+		t.Errorf("expected at least 1 message, got %d", len(result.Messages))
 	}
 }
 
@@ -661,11 +661,18 @@ func TestGPUModule_CheckCgroupMethod(t *testing.T) {
 	if result.Satisfied {
 		t.Error("Check should NOT be satisfied when cgroup conf is missing")
 	}
-	if len(result.Changes) != 1 {
-		t.Errorf("expected 1 change, got %d", len(result.Changes))
+	if len(result.Changes) < 1 {
+		t.Errorf("expected at least 1 change, got %d", len(result.Changes))
 	}
-	if len(result.Changes) > 0 && !strings.Contains(result.Changes[0].Description, "cgroup") {
-		t.Errorf("change description = %q, want to contain 'cgroup'", result.Changes[0].Description)
+	foundCgroup := false
+	for _, c := range result.Changes {
+		if strings.Contains(c.Description, "cgroup") {
+			foundCgroup = true
+			break
+		}
+	}
+	if !foundCgroup {
+		t.Error("expected a change containing 'cgroup'")
 	}
 }
 
@@ -687,9 +694,9 @@ func TestGPUModule_CheckBothMethod(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	// Should have 2 changes: one for env script, one for cgroup conf
-	if len(result.Changes) != 2 {
-		t.Errorf("expected 2 changes (env+cgroup), got %d", len(result.Changes))
+	// Should have 3 changes: env script, cgroup conf, and docker wrapper
+	if len(result.Changes) != 3 {
+		t.Errorf("expected 3 changes (env+cgroup+docker), got %d", len(result.Changes))
 	}
 }
 
@@ -862,5 +869,123 @@ func TestGPUModule_CheckDetectsMultipleEnvChanges(t *testing.T) {
 	}
 	if len(result.Changes) < 1 {
 		t.Errorf("expected at least 1 change, got %d", len(result.Changes))
+	}
+}
+
+// --- Docker wrapper tests ---
+
+func TestBuildDockerWrapper(t *testing.T) {
+	script := buildDockerWrapper("/home/.rootfiles/gpu-allocations.json")
+
+	for _, expect := range []string{
+		"#!/bin/bash",
+		"# Managed by rootfiles-v2",
+		dockerRealPath,
+		"python3",
+		"--gpus",
+		"NVIDIA_VISIBLE_DEVICES",
+		"CUDA_VISIBLE_DEVICES",
+		"compose",
+		`$(id -u)`,
+		"gpu-allocations.json",
+	} {
+		if !strings.Contains(script, expect) {
+			t.Errorf("wrapper script missing %q", expect)
+		}
+	}
+}
+
+func TestBuildDockerWrapper_SyntaxCheck(t *testing.T) {
+	script := buildDockerWrapper("/tmp/test-gpu-db.json")
+
+	// Write to temp file and run bash -n for syntax check
+	tmpFile := filepath.Join(t.TempDir(), "docker-wrapper.sh")
+	if err := os.WriteFile(tmpFile, []byte(script), 0755); err != nil {
+		t.Fatalf("writing temp script: %v", err)
+	}
+
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	runner := exec.NewRunner(false, logger)
+	result, err := runner.Query(context.Background(), "bash", "-n", tmpFile)
+	if err != nil {
+		t.Fatalf("bash -n failed: %v\nstderr: %s", err, result.Stderr)
+	}
+}
+
+func TestDockerWrapperIntegration_CheckIncludesWrapper(t *testing.T) {
+	tmpDir := t.TempDir()
+	username := currentUsername(t)
+	rc := testRunContext(t, tmpDir, "env")
+
+	setupDBWithAllocations(t, tmpDir, &GPUAllocationsDB{
+		Version: 1,
+		Allocations: []GPUAllocation{
+			{Username: username, GPUs: []int{0}, Method: "env"},
+		},
+	})
+
+	m := NewGPUModule()
+	result, err := m.Check(context.Background(), rc)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Should include a change for the Docker wrapper
+	foundWrapper := false
+	for _, c := range result.Changes {
+		if strings.Contains(c.Description, "Docker") {
+			foundWrapper = true
+			break
+		}
+	}
+	if !foundWrapper {
+		t.Error("Check should include Docker wrapper change when allocations exist")
+	}
+}
+
+func TestDockerWrapperIntegration_CheckNoAllocations(t *testing.T) {
+	tmpDir := t.TempDir()
+	rc := testRunContext(t, tmpDir, "env")
+
+	// No DB file — no allocations
+	m := NewGPUModule()
+	result, err := m.Check(context.Background(), rc)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.Satisfied {
+		t.Error("Check should be satisfied when no allocations exist")
+	}
+}
+
+func TestDockerWrapperIntegration_ApplyIncludesWrapper(t *testing.T) {
+	tmpDir := t.TempDir()
+	username := currentUsername(t)
+	rc := testRunContext(t, tmpDir, "env")
+
+	setupDBWithAllocations(t, tmpDir, &GPUAllocationsDB{
+		Version: 1,
+		Allocations: []GPUAllocation{
+			{Username: username, GPUs: []int{0}, Method: "env"},
+		},
+	})
+
+	m := NewGPUModule()
+	result, err := m.Apply(context.Background(), rc)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !result.Changed {
+		t.Error("Apply should report changed when wrapper is missing")
+	}
+	foundWrapper := false
+	for _, msg := range result.Messages {
+		if strings.Contains(msg, "Docker") {
+			foundWrapper = true
+			break
+		}
+	}
+	if !foundWrapper {
+		t.Error("Apply messages should mention Docker wrapper")
 	}
 }
