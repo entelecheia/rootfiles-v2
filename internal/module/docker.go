@@ -21,6 +21,14 @@ func (m *DockerModule) Check(ctx context.Context, rc *RunContext) (*CheckResult,
 		})
 	}
 
+	// Check docker-compose compatibility symlink
+	if _, err := rc.Runner.ReadFile("/usr/local/bin/docker-compose"); err != nil {
+		changes = append(changes, Change{
+			Description: "Create docker-compose compatibility symlink",
+			Command:     "ln -sf /usr/libexec/docker/cli-plugins/docker-compose /usr/local/bin/docker-compose",
+		})
+	}
+
 	// Check daemon.json
 	cfg := rc.Config.Modules.Docker
 	if cfg.StorageDir != "" {
@@ -91,6 +99,23 @@ func (m *DockerModule) Apply(ctx context.Context, rc *RunContext) (*ApplyResult,
 			rc.Runner.Run(ctx, "systemctl", "restart", "docker")
 			messages = append(messages, fmt.Sprintf("Docker data-root set to %s", cfg.StorageDir))
 			changed = true
+		}
+	}
+
+	// Ensure docker-compose v1 compatibility symlink exists
+	if _, err := rc.Runner.ReadFile("/usr/local/bin/docker-compose"); err != nil {
+		// docker compose v2 plugin is at /usr/libexec/docker/cli-plugins/docker-compose
+		// or /usr/lib/docker/cli-plugins/docker-compose
+		for _, src := range []string{
+			"/usr/libexec/docker/cli-plugins/docker-compose",
+			"/usr/lib/docker/cli-plugins/docker-compose",
+		} {
+			if _, serr := rc.Runner.ReadFile(src); serr == nil {
+				rc.Runner.Run(ctx, "ln", "-sf", src, "/usr/local/bin/docker-compose")
+				messages = append(messages, "docker-compose compatibility symlink created")
+				changed = true
+				break
+			}
 		}
 	}
 
