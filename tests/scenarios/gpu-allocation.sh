@@ -53,10 +53,11 @@ fi
 echo ""
 echo "--- Testing conflict detection ---"
 
-if rootfiles gpu assign gpuuser2 --gpus 0 --method env --yes 2>&1; then
-    fail "assigning already-taken GPU should fail"
-else
+conflict_output=$(rootfiles gpu assign gpuuser2 --gpus 0 --method env --yes 2>&1 || true)
+if echo "$conflict_output" | grep -q "already assigned"; then
     pass "conflict detected: GPU 0 already assigned"
+else
+    fail "assigning already-taken GPU should fail, got: $conflict_output"
 fi
 
 # --- GPU status ---
