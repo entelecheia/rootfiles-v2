@@ -12,9 +12,9 @@ make test         # go test ./... -race
 ## Architecture
 
 - `cmd/rootfiles/` — entry point
-- `internal/cli/` — cobra commands (apply, check, tunnel, user)
+- `internal/cli/` — cobra commands (apply, backup, check, gpu, tunnel, upgrade, user)
 - `internal/config/` — config structs, YAML profile loader, system detector
-- `internal/module/` — Module interface + 9 implementations (locale, packages, ssh, users, docker, nvidia, cloudflared, storage, network)
+- `internal/module/` — Module interface + 10 implementations (locale, packages, ssh, users, docker, nvidia, gpu, cloudflared, storage, network)
 - `internal/exec/` — shell runner (dry-run aware), APT wrapper
 - `internal/ui/` — interactive prompts (Charm huh), unattended bypass
 
