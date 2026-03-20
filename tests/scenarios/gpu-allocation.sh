@@ -5,6 +5,9 @@ source /tests/assert.sh
 
 echo "=== Scenario: gpu-allocation ==="
 
+# Create fake GPU device nodes (Docker mounts /dev at runtime)
+setup-fake-gpus
+
 # Create test users
 useradd -m -d /raid/home/gpuuser1 -s /bin/bash gpuuser1
 useradd -m -d /raid/home/gpuuser2 -s /bin/bash gpuuser2

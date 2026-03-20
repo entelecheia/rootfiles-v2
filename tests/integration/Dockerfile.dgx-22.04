@@ -9,13 +9,10 @@ RUN apt-get update && apt-get install -y \
 # DGX OS simulation
 RUN echo "DGX_OS_VERSION=6.0" > /etc/dgx-release
 
-# Fake nvidia-smi (simulates 8x H100)
+# Fake nvidia-smi and GPU device setup (simulates 8x H100)
 COPY tests/integration/mock/nvidia-smi /usr/local/bin/nvidia-smi
-RUN chmod +x /usr/local/bin/nvidia-smi
-
-# Fake GPU device nodes (countGPUDevices reads /dev/nvidia*)
-RUN for i in $(seq 0 7); do touch /dev/nvidia$i; done && \
-    touch /dev/nvidiactl /dev/nvidia-uvm /dev/nvidia-uvm-tools
+COPY tests/integration/mock/setup-fake-gpus.sh /usr/local/bin/setup-fake-gpus
+RUN chmod +x /usr/local/bin/nvidia-smi /usr/local/bin/setup-fake-gpus
 
 # Simulate RAID storage
 RUN mkdir -p /raid/home /raid/data /raid/docker

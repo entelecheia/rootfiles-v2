@@ -50,7 +50,8 @@ case "$MODULE" in
         assert_command_exists "ufw"
         ;;
     gpu)
-        # GPU module needs dgx profile and a test user
+        # GPU module needs dgx profile, fake devices, and a test user
+        setup-fake-gpus
         useradd -m -d /raid/home/gputest -s /bin/bash gputest 2>/dev/null || true
         rootfiles gpu assign gputest --gpus 0,1 --method env --yes 2>&1 || true
         assert_file_exists "/etc/profile.d/rootfiles-gpu-gputest.sh"
