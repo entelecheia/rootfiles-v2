@@ -258,6 +258,11 @@ func BackupUsers(rc *RunContext, outputPath string) error {
 	return nil
 }
 
+// ScanSystemUsersExported is the exported wrapper for scanSystemUsers.
+func ScanSystemUsersExported(ctx context.Context, rc *RunContext) ([]UserMeta, error) {
+	return scanSystemUsers(ctx, rc)
+}
+
 // scanSystemUsers reads /etc/passwd and collects metadata for regular users (UID 1000-65533).
 func scanSystemUsers(ctx context.Context, rc *RunContext) ([]UserMeta, error) {
 	data, err := rc.Runner.ReadFile("/etc/passwd")
@@ -300,7 +305,7 @@ func scanSystemUsers(ctx context.Context, rc *RunContext) ([]UserMeta, error) {
 		}
 
 		// Collect groups via `id -Gn`
-		if result, err := rc.Runner.Run(ctx, "id", "-Gn", name); err == nil {
+		if result, err := rc.Runner.Query(ctx, "id", "-Gn", name); err == nil {
 			groups := strings.Fields(strings.TrimSpace(result.Stdout))
 			// Filter out the user's primary group (same as username)
 			var supplementary []string
@@ -523,6 +528,177 @@ func ListUserNames(rc *RunContext) error {
 		fmt.Println(u.Name)
 	}
 	return nil
+}
+
+// ListSystemUsers outputs all system users (UID 1000-65533) in a table.
+func ListSystemUsers(ctx context.Context, rc *RunContext) error {
+	users, err := scanSystemUsers(ctx, rc)
+	if err != nil {
+		return fmt.Errorf("scanning system users: %w", err)
+	}
+	if len(users) == 0 {
+		fmt.Println("No system users found.")
+		return nil
+	}
+	fmt.Printf("%-15s %-6s %-6s %-20s %-15s %s\n", "USER", "UID", "GID", "HOME", "SHELL", "GROUPS")
+	fmt.Printf("%-15s %-6s %-6s %-20s %-15s %s\n", "----", "---", "---", "----", "-----", "------")
+	for _, u := range users {
+		fmt.Printf("%-15s %-6d %-6d %-20s %-15s %s\n",
+			u.Name, u.UID, u.GID, u.Home, u.Shell, strings.Join(u.Groups, ","))
+	}
+	return nil
+}
+
+// ListSystemUserNames outputs system usernames only, one per line.
+func ListSystemUserNames(ctx context.Context, rc *RunContext) error {
+	users, err := scanSystemUsers(ctx, rc)
+	if err != nil {
+		return fmt.Errorf("scanning system users: %w", err)
+	}
+	for _, u := range users {
+		fmt.Println(u.Name)
+	}
+	return nil
+}
+
+// ShowUserID displays UID/GID/groups for a user via the `id` command.
+func ShowUserID(ctx context.Context, rc *RunContext, username string) error {
+	if _, err := user.Lookup(username); err != nil {
+		return fmt.Errorf("user %s not found", username)
+	}
+	result, err := rc.Runner.Query(ctx, "id", username)
+	if err != nil {
+		return fmt.Errorf("querying id for %s: %w", username, err)
+	}
+	fmt.Print(result.Stdout)
+	return nil
+}
+
+// ListGroups displays all groups from /etc/group in a table.
+func ListGroups(ctx context.Context, rc *RunContext) error {
+	data, err := rc.Runner.ReadFile("/etc/group")
+	if err != nil {
+		return fmt.Errorf("reading /etc/group: %w", err)
+	}
+	fmt.Printf("%-20s %-6s %s\n", "GROUP", "GID", "MEMBERS")
+	fmt.Printf("%-20s %-6s %s\n", "-----", "---", "-------")
+	scanner := bufio.NewScanner(strings.NewReader(string(data)))
+	for scanner.Scan() {
+		line := scanner.Text()
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		fields := strings.Split(line, ":")
+		if len(fields) < 4 {
+			continue
+		}
+		name := fields[0]
+		gid := fields[2]
+		members := fields[3]
+		fmt.Printf("%-20s %-6s %s\n", name, gid, members)
+	}
+	return nil
+}
+
+// ListUserGroups displays groups for a specific user.
+func ListUserGroups(ctx context.Context, rc *RunContext, username string) error {
+	if _, err := user.Lookup(username); err != nil {
+		return fmt.Errorf("user %s not found", username)
+	}
+	result, err := rc.Runner.Query(ctx, "id", username)
+	if err != nil {
+		return fmt.Errorf("querying id for %s: %w", username, err)
+	}
+	fmt.Print(result.Stdout)
+	return nil
+}
+
+// AddUserToGroups adds a user to the specified groups.
+func AddUserToGroups(ctx context.Context, rc *RunContext, username string, groups []string) error {
+	if _, err := user.Lookup(username); err != nil {
+		return fmt.Errorf("user %s not found", username)
+	}
+	if len(groups) == 0 {
+		return fmt.Errorf("no groups specified")
+	}
+	if _, err := rc.Runner.Run(ctx, "usermod", "-aG", strings.Join(groups, ","), username); err != nil {
+		return fmt.Errorf("adding %s to groups: %w", username, err)
+	}
+	fmt.Printf("User %s added to groups: %s\n", username, strings.Join(groups, ", "))
+	return nil
+}
+
+// RemoveUserFromGroups removes a user from the specified groups.
+func RemoveUserFromGroups(ctx context.Context, rc *RunContext, username string, groups []string) error {
+	if _, err := user.Lookup(username); err != nil {
+		return fmt.Errorf("user %s not found", username)
+	}
+	if len(groups) == 0 {
+		return fmt.Errorf("no groups specified")
+	}
+	for _, group := range groups {
+		if _, err := rc.Runner.Run(ctx, "gpasswd", "-d", username, group); err != nil {
+			fmt.Printf("  Failed to remove %s from %s: %v\n", username, group, err)
+		} else {
+			fmt.Printf("  Removed %s from %s\n", username, group)
+		}
+	}
+	return nil
+}
+
+// PasswordEntry represents a username-password pair for batch password setting.
+type PasswordEntry struct {
+	Username string
+	Password string // empty means auto-generate (username + suffix)
+}
+
+// SetPasswords sets passwords for the given entries.
+func SetPasswords(ctx context.Context, rc *RunContext, entries []PasswordEntry, suffix string) error {
+	for _, e := range entries {
+		pass := e.Password
+		if pass == "" {
+			pass = e.Username + suffix
+		}
+		script := fmt.Sprintf("echo '%s:%s' | chpasswd", e.Username, pass)
+		if rc.DryRun {
+			fmt.Printf("  [dry-run] set password for %s (password: ****)\n", e.Username)
+			continue
+		}
+		if _, err := rc.Runner.RunShell(ctx, script); err != nil {
+			fmt.Printf("  Failed to set password for %s: %v\n", e.Username, err)
+		} else {
+			fmt.Printf("  Password set for %s\n", e.Username)
+		}
+	}
+	return nil
+}
+
+// LoadPasswordFile reads a password file and returns PasswordEntry list.
+// Lines with commas are treated as "username,password"; otherwise username-only (auto-generate).
+func LoadPasswordFile(path, suffix string) ([]PasswordEntry, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("reading password file: %w", err)
+	}
+	var entries []PasswordEntry
+	scanner := bufio.NewScanner(strings.NewReader(string(data)))
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if idx := strings.Index(line, ","); idx > 0 {
+			entries = append(entries, PasswordEntry{
+				Username: strings.TrimSpace(line[:idx]),
+				Password: strings.TrimSpace(line[idx+1:]),
+			})
+		} else {
+			entries = append(entries, PasswordEntry{
+				Username: line,
+			})
+		}
+	}
+	return entries, nil
 }
 
 func saveUserMeta(rc *RunContext, username, home, shell string, groups []string, sudoNopasswd bool, pubkey string) {
