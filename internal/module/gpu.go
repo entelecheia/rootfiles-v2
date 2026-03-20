@@ -437,8 +437,13 @@ func loadGPUDB(rc *RunContext) (*GPUAllocationsDB, error) {
 
 func saveGPUDB(rc *RunContext, db *GPUAllocationsDB) error {
 	dbPath := gpuDBPath(rc)
-	metaDir := filepath.Dir(dbPath)
-	rc.Runner.MkdirAll(metaDir, 0755)
+	homeBase := rc.Config.Users.HomeBase
+	if homeBase == "" {
+		homeBase = "/home"
+	}
+	if err := ensureMetaDir(rc.Runner, homeBase); err != nil {
+		return fmt.Errorf("ensuring metadata dir: %w", err)
+	}
 	data, err := json.MarshalIndent(db, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshaling GPU database: %w", err)
@@ -479,12 +484,25 @@ func buildCgroupConf(gpus []int) string {
 	var lines []string
 	lines = append(lines, "# Managed by rootfiles-v2 — do not edit")
 	lines = append(lines, "[Slice]")
+	lines = append(lines, "DevicePolicy=strict")
+	// Standard character devices needed for basic user operation
+	lines = append(lines, "DeviceAllow=/dev/null rwm")
+	lines = append(lines, "DeviceAllow=/dev/zero rwm")
+	lines = append(lines, "DeviceAllow=/dev/full rwm")
+	lines = append(lines, "DeviceAllow=/dev/random rwm")
+	lines = append(lines, "DeviceAllow=/dev/urandom rwm")
+	lines = append(lines, "DeviceAllow=/dev/tty rwm")
+	lines = append(lines, "DeviceAllow=/dev/ptmx rwm")
+	lines = append(lines, "DeviceAllow=char-pts rwm")
+	lines = append(lines, "DeviceAllow=/dev/fuse rwm")
+	// Assigned NVIDIA GPUs only
 	for _, g := range gpus {
 		lines = append(lines, fmt.Sprintf("DeviceAllow=/dev/nvidia%d rwm", g))
 	}
 	lines = append(lines, "DeviceAllow=/dev/nvidiactl rwm")
 	lines = append(lines, "DeviceAllow=/dev/nvidia-uvm rwm")
 	lines = append(lines, "DeviceAllow=/dev/nvidia-uvm-tools rwm")
+	lines = append(lines, "DeviceAllow=/dev/nvidia-caps/* rwm")
 	lines = append(lines, "")
 	return strings.Join(lines, "\n")
 }

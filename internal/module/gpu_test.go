@@ -109,11 +109,14 @@ func TestBuildCgroupConf(t *testing.T) {
 	}
 	// Should contain DeviceAllow lines for the specific GPUs
 	for _, expect := range []string{
+		"DevicePolicy=strict",
+		"DeviceAllow=/dev/null rwm",
 		"DeviceAllow=/dev/nvidia2 rwm",
 		"DeviceAllow=/dev/nvidia3 rwm",
 		"DeviceAllow=/dev/nvidiactl rwm",
 		"DeviceAllow=/dev/nvidia-uvm rwm",
 		"DeviceAllow=/dev/nvidia-uvm-tools rwm",
+		"DeviceAllow=/dev/nvidia-caps/* rwm",
 		"[Slice]",
 	} {
 		if !bytes.Contains([]byte(conf), []byte(expect)) {

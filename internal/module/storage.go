@@ -87,7 +87,7 @@ func (m *StorageModule) Apply(ctx context.Context, rc *RunContext) (*ApplyResult
 	homeBase := rc.Config.Users.HomeBase
 	if homeBase != "" && homeBase != "/home" {
 		rc.Runner.MkdirAll(homeBase, 0755)
-		rc.Runner.MkdirAll(filepath.Join(homeBase, ".rootfiles"), 0755)
+		ensureMetaDir(rc.Runner, homeBase)
 		messages = append(messages, fmt.Sprintf("home base %s ready", homeBase))
 		changed = true
 	}

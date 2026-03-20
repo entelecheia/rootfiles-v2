@@ -86,8 +86,7 @@ func (m *UsersModule) Apply(ctx context.Context, rc *RunContext) (*ApplyResult, 
 		if err := rc.Runner.MkdirAll(cfg.HomeBase, 0755); err != nil {
 			return nil, fmt.Errorf("creating home base: %w", err)
 		}
-		metaDir := filepath.Join(cfg.HomeBase, ".rootfiles")
-		if err := rc.Runner.MkdirAll(metaDir, 0755); err != nil {
+		if err := ensureMetaDir(rc.Runner, cfg.HomeBase); err != nil {
 			return nil, fmt.Errorf("creating metadata dir: %w", err)
 		}
 		messages = append(messages, fmt.Sprintf("home base %s ready", cfg.HomeBase))
@@ -708,9 +707,8 @@ func saveUserMeta(rc *RunContext, username, home, shell string, groups []string,
 		homeBase = "/home"
 	}
 
-	metaDir := filepath.Join(homeBase, ".rootfiles")
-	rc.Runner.MkdirAll(metaDir, 0755)
-	dbPath := filepath.Join(metaDir, "users.json")
+	ensureMetaDir(rc.Runner, homeBase)
+	dbPath := filepath.Join(homeBase, ".rootfiles", "users.json")
 	var db UsersDB
 
 	if data, err := rc.Runner.ReadFile(dbPath); err == nil {

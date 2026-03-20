@@ -3,6 +3,9 @@ package module
 import (
 	"context"
 	"fmt"
+	"log/slog"
+	"os"
+	"path/filepath"
 
 	"github.com/entelecheia/rootfiles-v2/internal/config"
 	"github.com/entelecheia/rootfiles-v2/internal/exec"
@@ -145,6 +148,32 @@ func RunAll(ctx context.Context, modules []Module, rc *RunContext) error {
 		return fmt.Errorf("%d module(s) failed: %v", len(errors), errors)
 	}
 	return nil
+}
+
+// ensureMetaDir ensures the .rootfiles metadata directory exists under homeBase.
+// If a legacy flat file exists at that path (from older rootfiles versions),
+// it is migrated into the directory as users.json.
+func ensureMetaDir(runner *exec.Runner, homeBase string) error {
+	metaDir := filepath.Join(homeBase, ".rootfiles")
+	info, err := os.Stat(metaDir)
+	if err == nil && !info.IsDir() {
+		// Legacy flat file exists — migrate it into the directory.
+		tmp := metaDir + ".migrating"
+		if err := os.Rename(metaDir, tmp); err != nil {
+			return fmt.Errorf("migrating legacy .rootfiles file: %w", err)
+		}
+		if err := os.MkdirAll(metaDir, 0755); err != nil {
+			// Attempt to restore on failure.
+			os.Rename(tmp, metaDir)
+			return fmt.Errorf("creating .rootfiles dir after migration: %w", err)
+		}
+		dest := filepath.Join(metaDir, "users.json")
+		if err := os.Rename(tmp, dest); err != nil {
+			return fmt.Errorf("moving legacy file into .rootfiles dir: %w", err)
+		}
+		slog.Info("migrated legacy .rootfiles file to directory", "path", dest)
+	}
+	return runner.MkdirAll(metaDir, 0755)
 }
 
 // CheckAll runs Check on each module and returns results.
