@@ -191,6 +191,64 @@ sudo rootfiles user list
 sudo rootfiles user list --names
 ```
 
+List system users (UID 1000-65533):
+
+```bash
+sudo rootfiles user list --system
+```
+
+```bash
+sudo rootfiles user list --system --names
+```
+
+Show UID/GID/groups for a user:
+
+```bash
+sudo rootfiles user id yjlee
+```
+
+List all groups or groups for a specific user:
+
+```bash
+sudo rootfiles user groups
+```
+
+```bash
+sudo rootfiles user groups yjlee
+```
+
+Add/remove a user from groups:
+
+```bash
+sudo rootfiles user group-add yjlee --docker --sudo
+```
+
+```bash
+sudo rootfiles user group-add yjlee --groups dev,ops
+```
+
+```bash
+sudo rootfiles user group-del yjlee --docker
+```
+
+Set passwords in batch (auto-generated as `username + suffix`):
+
+```bash
+sudo rootfiles user passwd alice bob --suffix '!@'
+```
+
+```bash
+sudo rootfiles user passwd --all --dry-run
+```
+
+```bash
+sudo rootfiles user passwd --file users.txt
+```
+
+```bash
+sudo rootfiles user passwd alice bob --password 'shared-pass'
+```
+
 ```bash
 sudo rootfiles user backup
 ```
