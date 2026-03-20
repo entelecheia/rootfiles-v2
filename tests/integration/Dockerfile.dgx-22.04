@@ -13,6 +13,10 @@ RUN echo "DGX_OS_VERSION=6.0" > /etc/dgx-release
 COPY tests/integration/mock/nvidia-smi /usr/local/bin/nvidia-smi
 RUN chmod +x /usr/local/bin/nvidia-smi
 
+# Fake GPU device nodes (countGPUDevices reads /dev/nvidia*)
+RUN for i in $(seq 0 7); do touch /dev/nvidia$i; done && \
+    touch /dev/nvidiactl /dev/nvidia-uvm /dev/nvidia-uvm-tools
+
 # Simulate RAID storage
 RUN mkdir -p /raid/home /raid/data /raid/docker
 

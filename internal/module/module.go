@@ -51,6 +51,7 @@ var defaultOrder = []string{
 	"users",
 	"docker",
 	"nvidia",
+	"gpu",
 	"cloudflared",
 	"storage",
 	"network",
@@ -70,6 +71,7 @@ func NewRegistry() *Registry {
 	r.Register(NewUsersModule())
 	r.Register(NewDockerModule())
 	r.Register(NewNvidiaModule())
+	r.Register(NewGPUModule())
 	r.Register(NewCloudflaredModule())
 	r.Register(NewStorageModule())
 	r.Register(NewNetworkModule())

@@ -11,6 +11,9 @@ modules:
     enabled: true
   nvidia:
     enabled: true
+    gpu_allocation:
+      enabled: true
+      method: env
   cloudflared:
     enabled: true
     private_network:

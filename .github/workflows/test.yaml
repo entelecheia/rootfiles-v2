@@ -109,8 +109,17 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        module: [locale, packages, ssh, users, cloudflared, storage, network]
+        module: [locale, packages, ssh, users, cloudflared, storage, network, gpu]
         os: [ubuntu-22.04, ubuntu-24.04]
+        exclude:
+          # GPU module needs nvidia-smi mock + fake /dev/nvidia*, only available in dgx image
+          - module: gpu
+            os: ubuntu-22.04
+          - module: gpu
+            os: ubuntu-24.04
+        include:
+          - module: gpu
+            os: dgx-22.04
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -143,6 +152,7 @@ jobs:
           - tunnel-setup-teardown
           - os-reinstall-recovery
           - system-backup
+          - gpu-allocation
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5

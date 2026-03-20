@@ -49,6 +49,29 @@ case "$MODULE" in
         rootfiles apply --profile dgx --module network --yes 2>&1 || true
         assert_command_exists "ufw"
         ;;
+    gpu)
+        # GPU module needs dgx profile and a test user
+        useradd -m -d /raid/home/gputest -s /bin/bash gputest 2>/dev/null || true
+        rootfiles gpu assign gputest --gpus 0,1 --method env --yes 2>&1 || true
+        assert_file_exists "/etc/profile.d/rootfiles-gpu-gputest.sh"
+        assert_file_contains "/etc/profile.d/rootfiles-gpu-gputest.sh" "CUDA_VISIBLE_DEVICES=0,1"
+
+        # Verify list shows the allocation
+        list_out=$(rootfiles gpu list --yes 2>&1)
+        if echo "$list_out" | grep -q "gputest"; then
+            pass "gpu list shows gputest"
+        else
+            fail "gpu list missing gputest"
+        fi
+
+        # Verify revoke cleans up
+        rootfiles gpu revoke gputest --yes 2>&1 || true
+        if [ ! -f "/etc/profile.d/rootfiles-gpu-gputest.sh" ]; then
+            pass "gpu revoke removed env script"
+        else
+            fail "gpu revoke did not remove env script"
+        fi
+        ;;
 esac
 
 echo ""

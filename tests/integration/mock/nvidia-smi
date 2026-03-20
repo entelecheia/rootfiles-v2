@@ -1,8 +1,16 @@
 #!/bin/bash
 # Fake nvidia-smi for DGX OS CI testing (simulates 8x H100)
-if [[ "$*" == *"--query-gpu"* ]]; then
-    for i in $(seq 1 8); do
-        echo "1, NVIDIA H100 80GB HBM3"
+if [[ "$*" == *"--query-gpu=index,name,memory.used,memory.total,utilization.gpu"* ]]; then
+    for i in $(seq 0 7); do
+        echo "$i, NVIDIA H100 80GB HBM3, 0, 81920, 0"
+    done
+elif [[ "$*" == *"--query-gpu=name"* ]]; then
+    for i in $(seq 0 7); do
+        echo "NVIDIA H100 80GB HBM3"
+    done
+elif [[ "$*" == *"--query-gpu"* ]]; then
+    for i in $(seq 0 7); do
+        echo "NVIDIA H100 80GB HBM3"
     done
 else
     echo "Driver Version: 535.129.03    CUDA Version: 12.2"

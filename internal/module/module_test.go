@@ -15,18 +15,21 @@ func TestRegistry_ResolveAll(t *testing.T) {
 			SSH:         config.ModuleToggle{Enabled: true},
 			Users:       config.ModuleToggle{Enabled: true},
 			Docker:      config.DockerConfig{Enabled: true},
-			Nvidia:      config.ModuleToggle{Enabled: true},
+			Nvidia: config.NvidiaConfig{
+				Enabled:       true,
+				GPUAllocation: config.GPUAllocationConfig{Enabled: true},
+			},
 			Cloudflared: config.CloudflaredConfig{Enabled: true},
 			Storage:     config.StorageConfig{Enabled: true},
 			Network:     config.NetworkConfig{Enabled: true},
 		},
 	}
 	modules := reg.Resolve(cfg, nil)
-	if len(modules) != 9 {
-		t.Errorf("expected 9 modules, got %d", len(modules))
+	if len(modules) != 10 {
+		t.Errorf("expected 10 modules, got %d", len(modules))
 	}
 	// Verify order
-	expected := []string{"locale", "packages", "ssh", "users", "docker", "nvidia", "cloudflared", "storage", "network"}
+	expected := []string{"locale", "packages", "ssh", "users", "docker", "nvidia", "gpu", "cloudflared", "storage", "network"}
 	for i, m := range modules {
 		if m.Name() != expected[i] {
 			t.Errorf("module[%d] = %q, want %q", i, m.Name(), expected[i])

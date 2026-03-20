@@ -12,6 +12,9 @@ modules:
     storage_dir: /raid/docker
   nvidia:
     enabled: true
+    gpu_allocation:
+      enabled: true
+      method: both
   cloudflared:
     enabled: true
     private_network:

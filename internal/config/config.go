@@ -20,7 +20,7 @@ type ModulesConfig struct {
 	SSH         ModuleToggle       `yaml:"ssh"`
 	Users       ModuleToggle       `yaml:"users"`
 	Docker      DockerConfig       `yaml:"docker"`
-	Nvidia      ModuleToggle       `yaml:"nvidia"`
+	Nvidia      NvidiaConfig       `yaml:"nvidia"`
 	Cloudflared CloudflaredConfig  `yaml:"cloudflared"`
 	Storage     StorageConfig      `yaml:"storage"`
 	Network     NetworkConfig      `yaml:"network"`
@@ -28,6 +28,16 @@ type ModulesConfig struct {
 
 type ModuleToggle struct {
 	Enabled bool `yaml:"enabled"`
+}
+
+type NvidiaConfig struct {
+	Enabled       bool              `yaml:"enabled"`
+	GPUAllocation GPUAllocationConfig `yaml:"gpu_allocation,omitempty"`
+}
+
+type GPUAllocationConfig struct {
+	Enabled bool   `yaml:"enabled"`
+	Method  string `yaml:"method,omitempty"` // "env" (default), "cgroup", "both"
 }
 
 type DockerConfig struct {
@@ -87,6 +97,8 @@ func (c *Config) IsModuleEnabled(name string) bool {
 		return c.Modules.Docker.Enabled
 	case "nvidia":
 		return c.Modules.Nvidia.Enabled
+	case "gpu":
+		return c.Modules.Nvidia.GPUAllocation.Enabled
 	case "cloudflared":
 		return c.Modules.Cloudflared.Enabled
 	case "storage":

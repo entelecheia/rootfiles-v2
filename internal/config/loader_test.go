@@ -100,6 +100,12 @@ func TestResolveProfile_DGX(t *testing.T) {
 	if !cfg.SSH.DisablePasswordAuth {
 		t.Error("ssh password auth should be disabled in dgx")
 	}
+	if !cfg.Modules.Nvidia.GPUAllocation.Enabled {
+		t.Error("gpu_allocation should be enabled in dgx")
+	}
+	if cfg.Modules.Nvidia.GPUAllocation.Method != "both" {
+		t.Errorf("gpu_allocation method = %q, want both", cfg.Modules.Nvidia.GPUAllocation.Method)
+	}
 }
 
 func TestResolveProfile_GPUServer(t *testing.T) {
@@ -115,6 +121,12 @@ func TestResolveProfile_GPUServer(t *testing.T) {
 	}
 	if !cfg.Modules.Nvidia.Enabled {
 		t.Error("nvidia should be enabled")
+	}
+	if !cfg.Modules.Nvidia.GPUAllocation.Enabled {
+		t.Error("gpu_allocation should be enabled in gpu-server")
+	}
+	if cfg.Modules.Nvidia.GPUAllocation.Method != "env" {
+		t.Errorf("gpu_allocation method = %q, want env", cfg.Modules.Nvidia.GPUAllocation.Method)
 	}
 }
 
@@ -201,8 +213,12 @@ func TestAllPackages(t *testing.T) {
 func TestIsModuleEnabled(t *testing.T) {
 	cfg := &Config{
 		Modules: ModulesConfig{
-			Locale:   ModuleToggle{Enabled: true},
-			Docker:   DockerConfig{Enabled: false},
+			Locale: ModuleToggle{Enabled: true},
+			Docker: DockerConfig{Enabled: false},
+			Nvidia: NvidiaConfig{
+				Enabled: true,
+				GPUAllocation: GPUAllocationConfig{Enabled: true},
+			},
 		},
 	}
 	if !cfg.IsModuleEnabled("locale") {
@@ -213,5 +229,21 @@ func TestIsModuleEnabled(t *testing.T) {
 	}
 	if cfg.IsModuleEnabled("unknown") {
 		t.Error("unknown module should not be enabled")
+	}
+	if !cfg.IsModuleEnabled("nvidia") {
+		t.Error("nvidia should be enabled")
+	}
+	if !cfg.IsModuleEnabled("gpu") {
+		t.Error("gpu should be enabled when gpu_allocation is enabled")
+	}
+
+	// GPU disabled when allocation not enabled
+	cfg2 := &Config{
+		Modules: ModulesConfig{
+			Nvidia: NvidiaConfig{Enabled: true},
+		},
+	}
+	if cfg2.IsModuleEnabled("gpu") {
+		t.Error("gpu should not be enabled when gpu_allocation is not enabled")
 	}
 }
