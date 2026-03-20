@@ -79,6 +79,7 @@ All modules are idempotent and support `--dry-run`.
 | `users` | User creation with custom home dirs, backup/restore |
 | `docker` | Docker CE + daemon.json + storage relocation |
 | `nvidia` | NVIDIA Container Toolkit |
+| `gpu` | Per-user GPU allocation (env vars, cgroups) |
 | `cloudflared` | Cloudflare Tunnel + VLAN private network |
 | `storage` | RAID/NVMe directory setup, symlinks |
 | `network` | UFW firewall, port rules |
@@ -261,6 +262,40 @@ sudo rootfiles user restore
 sudo rootfiles user rehome yjlee
 ```
 
+### GPU allocation
+
+Assign GPUs to individual users to prevent resource contention on shared GPU servers.
+
+```bash
+sudo rootfiles gpu assign alice --gpus 0,1,2,3 --method env
+```
+
+```bash
+sudo rootfiles gpu assign bob --gpus 4,5,6,7 --method cgroup
+```
+
+```bash
+sudo rootfiles gpu list
+```
+
+```bash
+sudo rootfiles gpu status
+```
+
+```bash
+sudo rootfiles gpu revoke alice
+```
+
+Methods:
+
+| Method | Mechanism | Scope |
+|--------|-----------|-------|
+| `env` | Sets `CUDA_VISIBLE_DEVICES` / `NVIDIA_VISIBLE_DEVICES` via `/etc/profile.d/` script | Login shells |
+| `cgroup` | systemd slice with `DeviceAllow` rules | All processes in user session |
+| `both` | env + cgroup combined | Full isolation |
+
+The default method is configured per profile (`env` for gpu-server, `both` for dgx).
+
 ### Cloudflare tunnel + VLAN
 
 ```bash
@@ -316,21 +351,21 @@ Requires Go 1.23+.
 ```
 cmd/rootfiles/        Entry point
 internal/
-  cli/                Cobra commands (apply, backup, check, tunnel, user)
+  cli/                Cobra commands (apply, backup, check, gpu, tunnel, user)
   config/             YAML profiles with inheritance, system detector
     profiles/         Embedded profile YAMLs (go:embed)
-  module/             9 modules implementing Module interface
+  module/             10 modules implementing Module interface
   exec/               Shell runner (dry-run aware), APT wrapper
   ui/                 Interactive prompts (Charm huh)
 ```
 
 ## CI
 
-31 jobs across 3 test layers:
+35 jobs across 3 test layers:
 - **Unit**: Go tests with race detection
 - **Integration**: 3 OS images (Ubuntu 22.04, 24.04, DGX mock) × 4 profiles
-- **Module**: 2 OS × 7 modules (individual isolation)
-- **Scenario**: E2E tests (user backup/restore, OS reinstall recovery, tunnel setup/teardown)
+- **Module**: 2 OS × 7 modules + GPU on DGX mock (individual isolation)
+- **Scenario**: E2E tests (user backup/restore, OS reinstall recovery, tunnel setup/teardown, GPU allocation)
 
 ## License
 
