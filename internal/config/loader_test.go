@@ -155,8 +155,8 @@ func TestResolveProfile_NotFound(t *testing.T) {
 
 func TestMergeConfigs_OverlayWins(t *testing.T) {
 	base := &Config{
-		Locale:   "en_US.UTF-8",
-		Users:    UsersConfig{HomeBase: "/home"},
+		Locale: "en_US.UTF-8",
+		Users:  UsersConfig{HomeBase: "/home"},
 	}
 	overlay := &Config{
 		Users: UsersConfig{HomeBase: "/raid/home"},
@@ -216,7 +216,7 @@ func TestIsModuleEnabled(t *testing.T) {
 			Locale: ModuleToggle{Enabled: true},
 			Docker: DockerConfig{Enabled: false},
 			Nvidia: NvidiaConfig{
-				Enabled: true,
+				Enabled:       true,
 				GPUAllocation: GPUAllocationConfig{Enabled: true},
 			},
 		},

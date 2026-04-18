@@ -140,7 +140,7 @@ func backupSystemInfo(backupDir, hostname string) error {
 		return err
 	}
 	info := struct {
-		Hostname string            `json:"hostname"`
+		Hostname string `json:"hostname"`
 		*config.SystemInfo
 	}{
 		Hostname:   hostname,

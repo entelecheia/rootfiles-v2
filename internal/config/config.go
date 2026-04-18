@@ -15,15 +15,15 @@ type Config struct {
 }
 
 type ModulesConfig struct {
-	Locale      ModuleToggle       `yaml:"locale"`
-	Packages    ModuleToggle       `yaml:"packages"`
-	SSH         ModuleToggle       `yaml:"ssh"`
-	Users       ModuleToggle       `yaml:"users"`
-	Docker      DockerConfig       `yaml:"docker"`
-	Nvidia      NvidiaConfig       `yaml:"nvidia"`
-	Cloudflared CloudflaredConfig  `yaml:"cloudflared"`
-	Storage     StorageConfig      `yaml:"storage"`
-	Network     NetworkConfig      `yaml:"network"`
+	Locale      ModuleToggle      `yaml:"locale"`
+	Packages    ModuleToggle      `yaml:"packages"`
+	SSH         ModuleToggle      `yaml:"ssh"`
+	Users       ModuleToggle      `yaml:"users"`
+	Docker      DockerConfig      `yaml:"docker"`
+	Nvidia      NvidiaConfig      `yaml:"nvidia"`
+	Cloudflared CloudflaredConfig `yaml:"cloudflared"`
+	Storage     StorageConfig     `yaml:"storage"`
+	Network     NetworkConfig     `yaml:"network"`
 }
 
 type ModuleToggle struct {
@@ -31,7 +31,7 @@ type ModuleToggle struct {
 }
 
 type NvidiaConfig struct {
-	Enabled       bool              `yaml:"enabled"`
+	Enabled       bool                `yaml:"enabled"`
 	GPUAllocation GPUAllocationConfig `yaml:"gpu_allocation,omitempty"`
 }
 

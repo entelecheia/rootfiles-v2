@@ -15,7 +15,7 @@ import (
 
 type UsersModule struct{}
 
-func NewUsersModule() *UsersModule { return &UsersModule{} }
+func NewUsersModule() *UsersModule  { return &UsersModule{} }
 func (m *UsersModule) Name() string { return "users" }
 
 // UserMeta stores metadata for a managed user.

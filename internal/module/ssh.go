@@ -10,7 +10,7 @@ import (
 
 type SSHModule struct{}
 
-func NewSSHModule() *SSHModule { return &SSHModule{} }
+func NewSSHModule() *SSHModule    { return &SSHModule{} }
 func (m *SSHModule) Name() string { return "ssh" }
 
 func (m *SSHModule) Check(_ context.Context, rc *RunContext) (*CheckResult, error) {
