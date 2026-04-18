@@ -17,7 +17,24 @@ func newUserCmd() *cobra.Command {
 		Short: "Manage system users (custom home, backup, restore)",
 	}
 
-	addCmd := &cobra.Command{
+	userCmd.AddCommand(
+		newUserAddCmd(),
+		newUserListCmd(),
+		newUserBackupCmd(),
+		newUserRestoreCmd(),
+		newUserRehomeCmd(),
+		newUserIDCmd(),
+		newUserGroupsCmd(),
+		newUserGroupAddCmd(),
+		newUserGroupDelCmd(),
+		newUserPasswdCmd(),
+	)
+
+	return userCmd
+}
+
+func newUserAddCmd() *cobra.Command {
+	cmd := &cobra.Command{
 		Use:   "add [USERNAME]",
 		Short: "Create a user with custom home directory",
 		Args:  cobra.MaximumNArgs(1),
@@ -55,12 +72,14 @@ func newUserCmd() *cobra.Command {
 			return module.AddUser(context.Background(), rc, username, pubkey, groups, noDocker)
 		},
 	}
-	addCmd.Flags().String("pubkey", "", "SSH public key")
-	addCmd.Flags().StringSlice("groups", nil, "Additional groups")
-	addCmd.Flags().Bool("no-docker", false, "Do not add to docker group")
-	userCmd.AddCommand(addCmd)
+	cmd.Flags().String("pubkey", "", "SSH public key")
+	cmd.Flags().StringSlice("groups", nil, "Additional groups")
+	cmd.Flags().Bool("no-docker", false, "Do not add to docker group")
+	return cmd
+}
 
-	listCmd := &cobra.Command{
+func newUserListCmd() *cobra.Command {
+	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "List managed users (or system users with --system)",
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -79,11 +98,13 @@ func newUserCmd() *cobra.Command {
 			return module.ListUsers(rc)
 		},
 	}
-	listCmd.Flags().BoolP("system", "s", false, "List system users (UID 1000-65533)")
-	listCmd.Flags().Bool("names", false, "Print usernames only (one per line)")
-	userCmd.AddCommand(listCmd)
+	cmd.Flags().BoolP("system", "s", false, "List system users (UID 1000-65533)")
+	cmd.Flags().Bool("names", false, "Print usernames only (one per line)")
+	return cmd
+}
 
-	backupCmd := &cobra.Command{
+func newUserBackupCmd() *cobra.Command {
+	cmd := &cobra.Command{
 		Use:   "backup",
 		Short: "Backup user list and metadata to JSON",
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -92,10 +113,12 @@ func newUserCmd() *cobra.Command {
 			return module.BackupUsers(rc, output)
 		},
 	}
-	backupCmd.Flags().StringP("output", "o", "", "Output path for backup file")
-	userCmd.AddCommand(backupCmd)
+	cmd.Flags().StringP("output", "o", "", "Output path for backup file")
+	return cmd
+}
 
-	userCmd.AddCommand(&cobra.Command{
+func newUserRestoreCmd() *cobra.Command {
+	return &cobra.Command{
 		Use:   "restore [BACKUP_FILE]",
 		Short: "Restore users from backup (reconnect existing home dirs)",
 		Args:  cobra.MaximumNArgs(1),
@@ -107,9 +130,11 @@ func newUserCmd() *cobra.Command {
 			}
 			return module.RestoreUsers(context.Background(), rc, backupPath)
 		},
-	})
+	}
+}
 
-	userCmd.AddCommand(&cobra.Command{
+func newUserRehomeCmd() *cobra.Command {
+	return &cobra.Command{
 		Use:   "rehome [USERNAME]",
 		Short: "Move user home to custom home base directory",
 		Args:  cobra.ExactArgs(1),
@@ -117,10 +142,11 @@ func newUserCmd() *cobra.Command {
 			rc := buildRunContext(cmd)
 			return module.RehomeUser(context.Background(), rc, args[0])
 		},
-	})
+	}
+}
 
-	// rootfiles user id USERNAME
-	userCmd.AddCommand(&cobra.Command{
+func newUserIDCmd() *cobra.Command {
+	return &cobra.Command{
 		Use:   "id USERNAME",
 		Short: "Show UID, GID, and groups for a user",
 		Args:  cobra.ExactArgs(1),
@@ -128,10 +154,11 @@ func newUserCmd() *cobra.Command {
 			rc := buildRunContext(cmd)
 			return module.ShowUserID(context.Background(), rc, args[0])
 		},
-	})
+	}
+}
 
-	// rootfiles user groups [USERNAME]
-	groupsCmd := &cobra.Command{
+func newUserGroupsCmd() *cobra.Command {
+	return &cobra.Command{
 		Use:   "groups [USERNAME]",
 		Short: "List groups (all groups or for a specific user)",
 		Args:  cobra.MaximumNArgs(1),
@@ -143,60 +170,66 @@ func newUserCmd() *cobra.Command {
 			return module.ListGroups(context.Background(), rc)
 		},
 	}
-	userCmd.AddCommand(groupsCmd)
+}
 
-	// rootfiles user group-add USERNAME --groups ...
-	groupAddCmd := &cobra.Command{
+func newUserGroupAddCmd() *cobra.Command {
+	cmd := &cobra.Command{
 		Use:   "group-add USERNAME",
 		Short: "Add a user to groups",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			rc := buildRunContext(cmd)
-			groups, _ := cmd.Flags().GetStringSlice("groups")
-			if docker, _ := cmd.Flags().GetBool("docker"); docker {
-				groups = append(groups, "docker")
-			}
-			if sudo, _ := cmd.Flags().GetBool("sudo"); sudo {
-				groups = append(groups, "sudo")
-			}
+			groups := collectGroupFlags(cmd)
 			if len(groups) == 0 {
 				return fmt.Errorf("specify groups with --groups, --docker, or --sudo")
 			}
 			return module.AddUserToGroups(context.Background(), rc, args[0], groups)
 		},
 	}
-	groupAddCmd.Flags().StringSlice("groups", nil, "Groups to add the user to")
-	groupAddCmd.Flags().Bool("docker", false, "Add to docker group")
-	groupAddCmd.Flags().Bool("sudo", false, "Add to sudo group")
-	userCmd.AddCommand(groupAddCmd)
+	addGroupSelectionFlags(cmd)
+	return cmd
+}
 
-	// rootfiles user group-del USERNAME --groups ...
-	groupDelCmd := &cobra.Command{
+func newUserGroupDelCmd() *cobra.Command {
+	cmd := &cobra.Command{
 		Use:   "group-del USERNAME",
 		Short: "Remove a user from groups",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			rc := buildRunContext(cmd)
-			groups, _ := cmd.Flags().GetStringSlice("groups")
-			if docker, _ := cmd.Flags().GetBool("docker"); docker {
-				groups = append(groups, "docker")
-			}
-			if sudo, _ := cmd.Flags().GetBool("sudo"); sudo {
-				groups = append(groups, "sudo")
-			}
+			groups := collectGroupFlags(cmd)
 			if len(groups) == 0 {
 				return fmt.Errorf("specify groups with --groups, --docker, or --sudo")
 			}
 			return module.RemoveUserFromGroups(context.Background(), rc, args[0], groups)
 		},
 	}
-	groupDelCmd.Flags().StringSlice("groups", nil, "Groups to remove the user from")
-	groupDelCmd.Flags().Bool("docker", false, "Remove from docker group")
-	groupDelCmd.Flags().Bool("sudo", false, "Remove from sudo group")
-	userCmd.AddCommand(groupDelCmd)
+	addGroupSelectionFlags(cmd)
+	return cmd
+}
 
-	// rootfiles user passwd [USERNAME...] --all --file --password --suffix
-	passwdCmd := &cobra.Command{
+// addGroupSelectionFlags registers the --groups / --docker / --sudo flag trio
+// shared by group-add and group-del.
+func addGroupSelectionFlags(cmd *cobra.Command) {
+	cmd.Flags().StringSlice("groups", nil, "Groups to target")
+	cmd.Flags().Bool("docker", false, "Include the docker group")
+	cmd.Flags().Bool("sudo", false, "Include the sudo group")
+}
+
+// collectGroupFlags expands the --groups / --docker / --sudo flags into a single slice.
+func collectGroupFlags(cmd *cobra.Command) []string {
+	groups, _ := cmd.Flags().GetStringSlice("groups")
+	if docker, _ := cmd.Flags().GetBool("docker"); docker {
+		groups = append(groups, "docker")
+	}
+	if sudo, _ := cmd.Flags().GetBool("sudo"); sudo {
+		groups = append(groups, "sudo")
+	}
+	return groups
+}
+
+func newUserPasswdCmd() *cobra.Command {
+	cmd := &cobra.Command{
 		Use:   "passwd [USERNAME...]",
 		Short: "Set passwords for users (batch)",
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -206,32 +239,11 @@ func newUserCmd() *cobra.Command {
 			filePath, _ := cmd.Flags().GetString("file")
 			all, _ := cmd.Flags().GetBool("all")
 
-			var entries []module.PasswordEntry
-
-			switch {
-			case filePath != "":
-				var err error
-				entries, err = module.LoadPasswordFile(filePath, suffix)
-				if err != nil {
-					return err
-				}
-			case all:
-				users, err := module.ScanSystemUsersExported(context.Background(), rc)
-				if err != nil {
-					return fmt.Errorf("scanning system users: %w", err)
-				}
-				for _, u := range users {
-					entries = append(entries, module.PasswordEntry{Username: u.Name})
-				}
-			case len(args) > 0:
-				for _, name := range args {
-					entries = append(entries, module.PasswordEntry{Username: name})
-				}
-			default:
-				return fmt.Errorf("specify usernames, --all, or --file")
+			entries, err := resolvePasswordTargets(context.Background(), rc, args, filePath, suffix, all)
+			if err != nil {
+				return err
 			}
 
-			// If --password is set, override all entries
 			if password != "" {
 				for i := range entries {
 					entries[i].Password = password
@@ -242,7 +254,6 @@ func newUserCmd() *cobra.Command {
 				return fmt.Errorf("no users to process")
 			}
 
-			// Show target users and confirm
 			fmt.Printf("Target users (%d):\n", len(entries))
 			for _, e := range entries {
 				fmt.Printf("  - %s\n", e.Username)
@@ -259,11 +270,36 @@ func newUserCmd() *cobra.Command {
 			return module.SetPasswords(context.Background(), rc, entries, suffix)
 		},
 	}
-	passwdCmd.Flags().String("password", "", "Set the same password for all users")
-	passwdCmd.Flags().String("suffix", "!@", "Suffix for auto-generated passwords (username+suffix)")
-	passwdCmd.Flags().StringP("file", "f", "", "File with usernames (or username,password per line)")
-	passwdCmd.Flags().Bool("all", false, "Set passwords for all system users")
-	userCmd.AddCommand(passwdCmd)
+	cmd.Flags().String("password", "", "Set the same password for all users")
+	cmd.Flags().String("suffix", "!@", "Suffix for auto-generated passwords (username+suffix)")
+	cmd.Flags().StringP("file", "f", "", "File with usernames (or username,password per line)")
+	cmd.Flags().Bool("all", false, "Set passwords for all system users")
+	return cmd
+}
 
-	return userCmd
+// resolvePasswordTargets decides which users the passwd subcommand should
+// operate on. Sources (in priority): --file, --all, positional args.
+func resolvePasswordTargets(ctx context.Context, rc *module.RunContext, args []string, filePath, suffix string, all bool) ([]module.PasswordEntry, error) {
+	switch {
+	case filePath != "":
+		return module.LoadPasswordFile(filePath, suffix)
+	case all:
+		users, err := module.ScanSystemUsersExported(ctx, rc)
+		if err != nil {
+			return nil, fmt.Errorf("scanning system users: %w", err)
+		}
+		entries := make([]module.PasswordEntry, 0, len(users))
+		for _, u := range users {
+			entries = append(entries, module.PasswordEntry{Username: u.Name})
+		}
+		return entries, nil
+	case len(args) > 0:
+		entries := make([]module.PasswordEntry, 0, len(args))
+		for _, name := range args {
+			entries = append(entries, module.PasswordEntry{Username: name})
+		}
+		return entries, nil
+	default:
+		return nil, fmt.Errorf("specify usernames, --all, or --file")
+	}
 }

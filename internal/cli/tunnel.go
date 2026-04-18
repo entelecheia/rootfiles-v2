@@ -118,8 +118,18 @@ func buildRunContext(cmd *cobra.Command) *module.RunContext {
 	}))
 	runner := exec.NewRunner(dryRun, logger)
 
-	sysInfo, _ := config.DetectSystem()
-	cfg, _ := config.Load(profileName, "", sysInfo)
+	sysInfo, sysErr := config.DetectSystem()
+	if sysErr != nil {
+		logger.Warn("system detection failed, using defaults", "err", sysErr)
+	}
+	cfg, cfgErr := config.Load(profileName, "", sysInfo)
+	if cfgErr != nil {
+		// Falling back to zero-value config would surprise users by silently
+		// masking corrupt YAML or a missing profile. Surface it so the subcommand
+		// can still proceed (some paths like `tunnel status` tolerate a bare cfg),
+		// but the user sees why their profile customizations are not being applied.
+		logger.Warn("loading profile config failed, continuing with fallback", "profile", profileName, "err", cfgErr)
+	}
 
 	// Apply flag overrides
 	applyFlagOverrides(cmd, cfg)

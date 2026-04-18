@@ -50,22 +50,9 @@ func runApply(cmd *cobra.Command, _ []string) error {
 		return fmt.Errorf("detecting system: %w", err)
 	}
 
-	// Select profile
-	if profileName == "" && configPath == "" {
-		suggested := sysInfo.SuggestProfile()
-		if yes {
-			profileName = suggested
-		} else {
-			profileName, err = ui.Select(
-				"Select profile",
-				config.AvailableProfiles(),
-				suggested,
-				false,
-			)
-			if err != nil {
-				return err
-			}
-		}
+	profileName, err = selectProfile(profileName, configPath, sysInfo, yes)
+	if err != nil {
+		return err
 	}
 
 	// Load config
@@ -127,6 +114,21 @@ func runApply(cmd *cobra.Command, _ []string) error {
 
 	fmt.Println()
 	return module.RunAll(ctx, modules, rc)
+}
+
+// selectProfile resolves the profile name. Priority: explicit --profile flag
+// or --config path (no prompt), then system suggestion. In non-interactive
+// (--yes) mode the suggestion is used silently; otherwise the user picks from
+// the list of available profiles with the suggestion pre-selected.
+func selectProfile(profileName, configPath string, sysInfo *config.SystemInfo, yes bool) (string, error) {
+	if profileName != "" || configPath != "" {
+		return profileName, nil
+	}
+	suggested := sysInfo.SuggestProfile()
+	if yes {
+		return suggested, nil
+	}
+	return ui.Select("Select profile", config.AvailableProfiles(), suggested, false)
 }
 
 func applyFlagOverrides(cmd *cobra.Command, cfg *config.Config) {
