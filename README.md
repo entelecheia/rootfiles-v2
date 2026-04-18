@@ -132,6 +132,50 @@ sudo rootfiles check --profile dgx
 sudo rootfiles check --config /raid/backup/rootfiles-backup-*/config-snapshot.yaml
 ```
 
+### Status dashboard
+
+Unified at-a-glance view — system info, active profile, module satisfaction, GPU allocations, tunnel service, and managed users in one pass:
+
+```bash
+rootfiles status
+```
+
+Evaluate against a specific profile without applying anything:
+
+```bash
+rootfiles status --profile dgx
+```
+
+Output uses terminal colour via lipgloss. Colour is stripped automatically for non-TTY output (`rootfiles status | less`, CI logs) and when `NO_COLOR=1` is set.
+
+### Self-update
+
+Update to the latest GitHub release:
+
+```bash
+sudo rootfiles update
+```
+
+Check for updates without installing:
+
+```bash
+rootfiles update --check
+```
+
+Pin a specific version:
+
+```bash
+sudo rootfiles update --version v0.9.0
+```
+
+Preview the upgrade plan without replacing the binary:
+
+```bash
+sudo rootfiles update --dry-run
+```
+
+`update` is the canonical spelling; `rootfiles upgrade` works as an alias for muscle-memory compatibility.
+
 ### System backup (for OS upgrade)
 
 Captures system info, users, config files, Docker images, and a rootfiles-compatible config snapshot.
@@ -351,21 +395,31 @@ Requires Go 1.23+.
 ```
 cmd/rootfiles/        Entry point
 internal/
-  cli/                Cobra commands (apply, backup, check, gpu, tunnel, user)
+  cli/                Cobra commands (apply, backup, check, gpu, status, tunnel, update, user)
   config/             YAML profiles with inheritance, system detector
     profiles/         Embedded profile YAMLs (go:embed)
-  module/             10 modules implementing Module interface
+  module/             10 modules implementing the Module interface
   exec/               Shell runner (dry-run aware), APT wrapper
-  ui/                 Interactive prompts (Charm huh)
+  ui/                 Interactive prompts (Charm huh) + shared output styling
+                      (lipgloss palette, ✓ ✗ → ⚠ markers, WriteHeader/
+                      Section/KV/Hint/Bullet helpers)
 ```
+
+`NewRegistry()` and `defaultOrder` in `internal/module/module.go` are a two-part module contract enforced by `TestRegistryDefaultOrderSync`. The GPU allocation database (`<home-base>/.rootfiles/gpu-allocations.json`) is read-modify-written under `syscall.Flock` with atomic tmp-and-rename writes, so concurrent `gpu assign` / `revoke` calls cannot lose an allocation.
 
 ## CI
 
-35 jobs across 3 test layers:
-- **Unit**: Go tests with race detection
-- **Integration**: 3 OS images (Ubuntu 22.04, 24.04, DGX mock) × 4 profiles
-- **Module**: 2 OS × 7 modules + GPU on DGX mock (individual isolation)
-- **Scenario**: E2E tests (user backup/restore, OS reinstall recovery, tunnel setup/teardown, GPU allocation)
+Every push and pull request runs:
+
+| Job | Purpose |
+|-----|---------|
+| `lint` | `gofmt`, `go vet`, `go mod tidy` drift |
+| `vuln` | `govulncheck ./...` (stdlib + deps) |
+| `unit` | `go test ./... -race -count=1` + per-function coverage summary, coverage artifact |
+| `integration` | 3 OS images × 4 profiles (11 combinations) |
+| `module` | 2 OS × 7 modules + GPU on DGX mock (isolated module execution) |
+| `scenario` | 9 E2E flows: dry-run-all-profiles, user backup/restore, user rehome, user list names, tunnel setup/teardown, OS reinstall recovery, system backup, GPU allocation, status |
+| `release` | GoReleaser on every `v*` tag (triggered automatically when a version tag is pushed) |
 
 ## License
 
