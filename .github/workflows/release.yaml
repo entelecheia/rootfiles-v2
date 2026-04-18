@@ -1,9 +1,21 @@
 name: Release
 
+# Triggered directly on version-tag push rather than via workflow_run of the
+# Test workflow. Background: GitHub's workflow_run event populates
+# head_branch from the source branch of the commit, which for a tag push
+# (where the tagged commit already lives on main) resolves to "main" — so
+# the previous `startsWith(head_branch, 'v')` guard silently skipped every
+# release after v0.7.0. Direct tag trigger is unambiguous: the workflow
+# fires exactly when a v* tag is pushed, and goreleaser's own build + lint
+# acts as a last-line sanity check.
+#
+# The Test workflow still runs in parallel on the same tag push (test.yaml
+# has `tags: ["v*"]` in its push trigger) so CI visibility is retained;
+# failing tests will show up as a separate red check alongside the release.
+
 on:
-  workflow_run:
-    workflows: ["Test"]
-    types: [completed]
+  push:
+    tags: ["v*"]
 
 permissions:
   contents: write
@@ -11,18 +23,10 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
-    # Only run if Test succeeded AND was triggered by a version tag
-    if: >
-      github.event.workflow_run.conclusion == 'success' &&
-      startsWith(github.event.workflow_run.head_branch, 'v')
+    timeout-minutes: 15
     steps:
-      - name: Get tag name
-        id: tag
-        run: echo "tag=${{ github.event.workflow_run.head_branch }}" >> "$GITHUB_OUTPUT"
-
       - uses: actions/checkout@v4
         with:
-          ref: ${{ steps.tag.outputs.tag }}
           fetch-depth: 0
 
       - uses: actions/setup-go@v5
