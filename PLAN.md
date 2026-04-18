@@ -165,9 +165,12 @@ type ApplyResult struct {
 | **users** | 사용자 계정 생성/관리 | - | O | O | O | O |
 | **docker** | Docker CE + compose | - | - | O | O | O |
 | **nvidia** | NVIDIA Container Toolkit | - | - | O | O | - |
+| **gpu** | 유저별 GPU 할당 (env/cgroup/Docker wrapper) | - | - | O | O | - |
 | **cloudflared** | Cloudflare Tunnel + VLAN | - | O | O | O | O |
 | **storage** | RAID/NVMe 마운트, 심링크 | - | - | O | O | O |
 | **network** | 방화벽, VLAN private net | - | - | O | O | O |
+
+> 모듈 실행 순서는 `internal/module/module.go` 의 `defaultOrder` 로 고정되어 있으며, `NewRegistry()` 와의 동기화는 `TestRegistryDefaultOrderSync` 로 강제된다.
 
 ### 4.3 패키지 목록 (APT)
 
@@ -281,10 +284,15 @@ GPU 서버는 OS 재설치가 잦다. 사용자 데이터는 `/raid/home/`(NVMe/
 ```
 rootfiles user add <name>             # 사용자 생성 (커스텀 홈)
 rootfiles user add <name> --pubkey "ssh-ed25519 ..."
-rootfiles user list                   # 관리 중인 사용자 목록
+rootfiles user list                   # 관리 중인 사용자 목록 (--system, --names)
 rootfiles user backup [--output path] # 사용자 목록 + 메타 → JSON 백업
 rootfiles user restore <backup.json>  # 백업에서 사용자 복원 (기존 홈 연결)
 rootfiles user rehome <name>          # 기존 /home/user → 커스텀 홈으로 이동
+rootfiles user id <name>              # UID/GID/그룹 조회
+rootfiles user groups [<name>]        # 전체 그룹 또는 특정 사용자 소속 그룹
+rootfiles user group-add <name> --groups g1,g2 [--docker] [--sudo]
+rootfiles user group-del <name> --groups g1,g2 [--docker] [--sudo]
+rootfiles user passwd [<name>...] [--all] [--file path] [--password X] [--suffix '!@']
 ```
 
 **사용자 생성 흐름** (`rootfiles user add`):
@@ -425,7 +433,37 @@ sudo rootfiles user backup --output /tmp/users-backup.json
 # 사용자 복원 (OS 재설치 후 — /raid/home/ 보존 상태)
 sudo rootfiles user restore                          # /raid/home/.rootfiles/users.json 자동 감지
 sudo rootfiles user restore /tmp/users-backup.json   # 명시적 백업 파일
+
+# 그룹 조회 및 관리
+sudo rootfiles user id yjlee                         # UID/GID + 소속 그룹
+sudo rootfiles user groups                           # 전체 그룹 나열
+sudo rootfiles user groups yjlee                     # 특정 사용자 소속 그룹
+sudo rootfiles user group-add yjlee --docker --sudo  # 그룹 추가 (별칭 플래그)
+sudo rootfiles user group-del yjlee --groups tmpgrp  # 그룹 제거
+
+# 일괄 비밀번호 설정
+sudo rootfiles user passwd yjlee                     # 단일 유저 (username!@ 기본 규칙)
+sudo rootfiles user passwd --all --suffix '2026!'    # 시스템 유저 전체
+sudo rootfiles user passwd --file users.txt          # 파일에서 username 또는 username,password
 ```
+
+### GPU 할당
+
+```bash
+# 사용자에게 특정 GPU 인덱스 할당 (환경변수 방식 기본)
+sudo rootfiles gpu assign yjlee 0,1
+sudo rootfiles gpu assign alice 2,3 --method cgroup    # cgroup 제한
+sudo rootfiles gpu assign bob   4   --method both      # env + cgroup + Docker 래퍼
+
+# 현재 할당 현황 / nvidia-smi 교차 참조
+sudo rootfiles gpu list
+sudo rootfiles gpu status
+
+# 할당 해제
+sudo rootfiles gpu revoke yjlee
+```
+
+할당 DB (`<home-base>/.rootfiles/gpu-allocations.json`) 의 읽기-수정-쓰기는 `syscall.Flock` + atomic rename 으로 보호되어, 동시 `assign`/`revoke` 호출에도 할당이 유실되지 않는다.
 
 ### cloudflared 터널 + VLAN
 
