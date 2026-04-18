@@ -251,40 +251,51 @@ func extractBinary(archivePath, destDir string) (string, error) {
 	return "", fmt.Errorf("rootfiles binary not found in archive")
 }
 
-// replaceBinary backs up the current binary and replaces it with the new one.
+// replaceBinary atomically swaps the current binary with the new one.
+//
+// Strategy: stage the new bytes to a sibling temp file in the same directory
+// as currentPath, fsync, chmod 0755, then os.Rename over currentPath. rename(2)
+// is atomic on the same filesystem and only swaps the directory entry — the
+// running process remains mapped to the old inode via its text segment, so
+// the current execution finishes cleanly while future invocations see the
+// new binary.
+//
+// This also avoids ETXTBSY (Linux write-to-executing-binary) which would be
+// triggered if we tried to O_TRUNC+write over the running executable
+// directly. See dotfiles-v2 commit 5eb2a01 for the original write-style bug.
 func replaceBinary(newPath, currentPath string) error {
-	backupPath := currentPath + ".bak"
-
-	// Remove old backup if exists
-	os.Remove(backupPath)
-
-	// Backup current
-	if err := os.Rename(currentPath, backupPath); err != nil {
-		return fmt.Errorf("backing up current binary: %w", err)
-	}
-
-	// Copy new binary (cross-device rename safe)
 	src, err := os.Open(newPath)
 	if err != nil {
-		// Restore backup on failure
-		os.Rename(backupPath, currentPath)
-		return err
+		return fmt.Errorf("opening new binary: %w", err)
 	}
 	defer src.Close()
 
-	dst, err := os.OpenFile(currentPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0755)
+	dir := filepath.Dir(currentPath)
+	tmp, err := os.CreateTemp(dir, ".rootfiles.*.new")
 	if err != nil {
-		os.Rename(backupPath, currentPath)
-		return err
+		return fmt.Errorf("creating staging file in %s: %w", dir, err)
 	}
-	defer dst.Close()
+	tmpPath := tmp.Name()
+	cleanup := func() { _ = os.Remove(tmpPath) }
 
-	if _, err := io.Copy(dst, src); err != nil {
-		dst.Close()
-		os.Rename(backupPath, currentPath)
-		return err
+	if _, err := io.Copy(tmp, src); err != nil {
+		_ = tmp.Close()
+		cleanup()
+		return fmt.Errorf("writing staging file: %w", err)
 	}
-
+	if err := tmp.Chmod(0755); err != nil {
+		_ = tmp.Close()
+		cleanup()
+		return fmt.Errorf("chmod staging file: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		cleanup()
+		return fmt.Errorf("closing staging file: %w", err)
+	}
+	if err := os.Rename(tmpPath, currentPath); err != nil {
+		cleanup()
+		return fmt.Errorf("replacing binary %s: %w", currentPath, err)
+	}
 	return nil
 }
 

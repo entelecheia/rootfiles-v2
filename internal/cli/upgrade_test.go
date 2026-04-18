@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -60,27 +61,81 @@ func TestVerifyChecksum_Valid(t *testing.T) {
 func TestReplaceBinary(t *testing.T) {
 	tmpDir := t.TempDir()
 
-	// Create "current" binary
 	currentPath := filepath.Join(tmpDir, "rootfiles")
-	os.WriteFile(currentPath, []byte("old binary"), 0755)
+	if err := os.WriteFile(currentPath, []byte("old binary"), 0755); err != nil {
+		t.Fatal(err)
+	}
 
-	// Create "new" binary
 	newPath := filepath.Join(tmpDir, "rootfiles-new")
-	os.WriteFile(newPath, []byte("new binary"), 0755)
+	if err := os.WriteFile(newPath, []byte("new binary"), 0755); err != nil {
+		t.Fatal(err)
+	}
 
 	if err := replaceBinary(newPath, currentPath); err != nil {
 		t.Fatalf("replaceBinary failed: %v", err)
 	}
 
-	// Verify current now has new content
-	data, _ := os.ReadFile(currentPath)
+	// Current path must hold the new bytes.
+	data, err := os.ReadFile(currentPath)
+	if err != nil {
+		t.Fatalf("reading replaced binary: %v", err)
+	}
 	if string(data) != "new binary" {
 		t.Errorf("expected 'new binary', got %q", string(data))
 	}
 
-	// Verify backup exists
-	backupData, _ := os.ReadFile(currentPath + ".bak")
-	if string(backupData) != "old binary" {
-		t.Errorf("expected backup 'old binary', got %q", string(backupData))
+	// Permissions must be executable (0755).
+	info, err := os.Stat(currentPath)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	if info.Mode().Perm() != 0755 {
+		t.Errorf("expected mode 0755, got %v", info.Mode().Perm())
+	}
+
+	// No staging/backup leftovers. The previous implementation left a
+	// rootfiles.bak file on every successful upgrade; stage-then-rename
+	// cleans up after itself.
+	entries, err := os.ReadDir(tmpDir)
+	if err != nil {
+		t.Fatalf("readdir: %v", err)
+	}
+	for _, e := range entries {
+		name := e.Name()
+		if strings.HasSuffix(name, ".bak") || strings.HasPrefix(name, ".rootfiles.") {
+			t.Errorf("upgrade left stray file %q — stage file or backup not cleaned up", name)
+		}
+	}
+}
+
+// TestReplaceBinary_CleansStagingOnCopyFailure covers the path where the
+// source file goes missing mid-copy (simulated by pointing at a directory,
+// which io.Copy treats as a read error): the staging temp file must be
+// removed and no file should be written at currentPath.
+func TestReplaceBinary_CleansStagingOnCopyFailure(t *testing.T) {
+	tmpDir := t.TempDir()
+	currentPath := filepath.Join(tmpDir, "rootfiles")
+	if err := os.WriteFile(currentPath, []byte("original"), 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Pass a non-existent new path so os.Open fails before any staging happens.
+	err := replaceBinary(filepath.Join(tmpDir, "does-not-exist"), currentPath)
+	if err == nil {
+		t.Fatal("expected error when new binary is missing")
+	}
+
+	// Original binary must be untouched on failure.
+	data, _ := os.ReadFile(currentPath)
+	if string(data) != "original" {
+		t.Errorf("expected original binary intact on failure, got %q", string(data))
+	}
+
+	// No staging leftovers.
+	entries, _ := os.ReadDir(tmpDir)
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), ".rootfiles.") {
+			t.Errorf("staging file %q not cleaned up after failure", e.Name())
+		}
 	}
 }
