@@ -12,11 +12,11 @@ make test         # go test ./... -race
 ## Architecture
 
 - `cmd/rootfiles/` — entry point
-- `internal/cli/` — cobra commands (apply, backup, check, gpu, tunnel, upgrade, user)
+- `internal/cli/` — cobra commands (apply, backup, check, gpu, status, tunnel, upgrade, user)
 - `internal/config/` — config structs, YAML profile loader, system detector
 - `internal/module/` — Module interface + 10 implementations (locale, packages, ssh, users, docker, nvidia, gpu, cloudflared, storage, network)
 - `internal/exec/` — shell runner (dry-run aware), APT wrapper
-- `internal/ui/` — interactive prompts (Charm huh), unattended bypass
+- `internal/ui/` — interactive prompts (Charm huh) + shared output styling: `styles.go` (lipgloss palette), `markers.go` (✓ ✗ → ⚠), `format.go` (WriteHeader/Section/KV/Hint/Bullet). lipgloss auto-detects TTY and honours `NO_COLOR`; all status-style reports must go through these helpers.
 
 ## Module Interface
 

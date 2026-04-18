@@ -411,6 +411,11 @@ sudo rootfiles apply --profile dgx --yes \
 # 상태 점검
 sudo rootfiles check
 sudo rootfiles check --module docker
+
+# 통합 대시보드 — 시스템·프로필·모듈·GPU·터널·사용자를 한 번에 조회
+rootfiles status
+rootfiles status --profile dgx          # 특정 프로필 기준으로 모듈 상태 평가
+NO_COLOR=1 rootfiles status             # 색상 제거 (파이프/CI 는 자동 제거됨)
 ```
 
 ### 사용자 관리
