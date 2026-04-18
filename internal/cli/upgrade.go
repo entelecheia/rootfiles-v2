@@ -31,8 +31,9 @@ type releaseInfo struct {
 
 func newUpgradeCmd(currentVersion string) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "upgrade",
-		Short: "Self-upgrade rootfiles to the latest (or specified) version",
+		Use:     "update",
+		Aliases: []string{"upgrade"},
+		Short:   "Self-update rootfiles to the latest (or specified) version",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			checkOnly, _ := cmd.Flags().GetBool("check")
 			targetVersion, _ := cmd.Flags().GetString("version")
@@ -62,14 +63,14 @@ func newUpgradeCmd(currentVersion string) *cobra.Command {
 			fmt.Printf("Current: %s → Target: %s\n", currentVersion, targetVersion)
 
 			if checkOnly {
-				fmt.Println("Upgrade available. Run `rootfiles upgrade` to install.")
+				fmt.Println("Update available. Run `rootfiles update` to install.")
 				return nil
 			}
 
 			osName := runtime.GOOS
 			arch := runtime.GOARCH
 			if osName != "linux" {
-				return fmt.Errorf("self-upgrade only supported on linux (current: %s)", osName)
+				return fmt.Errorf("self-update only supported on linux (current: %s)", osName)
 			}
 
 			// Download
@@ -122,12 +123,12 @@ func newUpgradeCmd(currentVersion string) *cobra.Command {
 			}
 			fmt.Println("OK")
 
-			fmt.Printf("Upgraded to %s\n", targetVersion)
+			fmt.Printf("Updated to %s\n", targetVersion)
 			return nil
 		},
 	}
-	cmd.Flags().Bool("check", false, "Only check if an upgrade is available")
-	cmd.Flags().String("version", "", "Upgrade to a specific version (e.g., v0.3.0)")
+	cmd.Flags().Bool("check", false, "Only check if an update is available")
+	cmd.Flags().String("version", "", "Update to a specific version (e.g., v0.9.0)")
 	return cmd
 }
 
