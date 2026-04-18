@@ -12,6 +12,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	"github.com/entelecheia/rootfiles-v2/internal/ui"
 )
 
 // GPUAllocation represents a per-user GPU assignment.
@@ -270,27 +272,29 @@ func RevokeGPUs(ctx context.Context, rc *RunContext, username string) error {
 // ListGPUAllocations prints the current GPU allocation table.
 func ListGPUAllocations(rc *RunContext) error {
 	db, err := loadGPUDB(rc)
-	if err != nil {
-		fmt.Println("No GPU allocations configured.")
-		return nil
-	}
-	if len(db.Allocations) == 0 {
-		fmt.Println("No GPU allocations configured.")
+	if err != nil || len(db.Allocations) == 0 {
+		ui.WriteSection(os.Stdout, "GPU Allocations")
+		ui.WriteHint(os.Stdout, "No GPU allocations configured.")
 		return nil
 	}
 
+	ui.WriteSection(os.Stdout, "GPU Allocations")
 	if db.TotalGPUs > 0 {
-		fmt.Printf("Total GPUs: %d", db.TotalGPUs)
+		totalLabel := fmt.Sprintf("%d", db.TotalGPUs)
 		if db.GPUModel != "" {
-			fmt.Printf(" (%s)", db.GPUModel)
+			totalLabel = fmt.Sprintf("%d (%s)", db.TotalGPUs, db.GPUModel)
 		}
-		fmt.Println()
+		ui.WriteKV(os.Stdout, "Total GPUs", totalLabel)
 	}
 
-	fmt.Printf("\n%-15s %-15s %-10s %s\n", "USER", "GPUs", "METHOD", "UPDATED")
-	fmt.Printf("%-15s %-15s %-10s %s\n", "----", "----", "------", "-------")
+	// Preserve the fixed-width table so integration scenarios can still grep
+	// for usernames and GPU indices. Header is coloured; value rows are plain
+	// to keep column alignment predictable.
+	fmt.Fprintln(os.Stdout)
+	fmt.Fprintln(os.Stdout, "  "+ui.StyleSection.Render(fmt.Sprintf("%-15s %-15s %-10s %s", "USER", "GPUs", "METHOD", "UPDATED")))
+	fmt.Fprintln(os.Stdout, "  "+ui.StyleHint.Render(fmt.Sprintf("%-15s %-15s %-10s %s", "----", "----", "------", "-------")))
 	for _, a := range db.Allocations {
-		fmt.Printf("%-15s %-15s %-10s %s\n",
+		fmt.Fprintf(os.Stdout, "  %-15s %-15s %-10s %s\n",
 			a.Username, gpuListStr(a.GPUs), a.Method, a.UpdatedAt)
 	}
 	return nil
@@ -356,13 +360,14 @@ func ShowGPUStatus(ctx context.Context, rc *RunContext) error {
 		}
 	}
 
-	fmt.Printf("%-5s %-25s %-15s %-6s %s\n", "GPU", "MODEL", "MEMORY", "UTIL", "ASSIGNED TO")
-	fmt.Printf("%-5s %-25s %-15s %-6s %s\n", "---", "-----", "------", "----", "-----------")
+	ui.WriteSection(os.Stdout, "GPU Status")
+	fmt.Fprintln(os.Stdout, "  "+ui.StyleSection.Render(fmt.Sprintf("%-5s %-25s %-15s %-6s %s", "GPU", "MODEL", "MEMORY", "UTIL", "ASSIGNED TO")))
+	fmt.Fprintln(os.Stdout, "  "+ui.StyleHint.Render(fmt.Sprintf("%-5s %-25s %-15s %-6s %s", "---", "-----", "------", "----", "-----------")))
 
 	for i := 0; i < totalGPUs; i++ {
-		assigned := "(unassigned)"
+		assignedLabel := ui.StyleHint.Render("(unassigned)")
 		if u, ok := assignMap[i]; ok {
-			assigned = u
+			assignedLabel = ui.StyleValue.Render(u)
 		}
 
 		if info, ok := smiData[i]; ok {
@@ -370,8 +375,8 @@ func ShowGPUStatus(ctx context.Context, rc *RunContext) error {
 			if len(name) > 24 {
 				name = name[:24]
 			}
-			fmt.Printf("%-5d %-25s %5s/%-5s MB %4s%%  %s\n",
-				i, name, info.MemUsed, info.MemTotal, info.Util, assigned)
+			fmt.Fprintf(os.Stdout, "  %-5d %-25s %5s/%-5s MB %4s%%  %s\n",
+				i, name, info.MemUsed, info.MemTotal, info.Util, assignedLabel)
 		} else {
 			// GPU exists but not visible to nvidia-smi (cgroup restricted)
 			name := defaultModel
@@ -381,8 +386,8 @@ func ShowGPUStatus(ctx context.Context, rc *RunContext) error {
 			if len(name) > 24 {
 				name = name[:24]
 			}
-			fmt.Printf("%-5d %-25s   (restricted)     ---   %s\n",
-				i, name, assigned)
+			fmt.Fprintf(os.Stdout, "  %-5d %-25s %s     ---   %s\n",
+				i, name, ui.StyleWarning.Render("(restricted)"), assignedLabel)
 		}
 	}
 
@@ -621,6 +626,14 @@ func gpuDBPath(rc *RunContext) string {
 		homeBase = "/home"
 	}
 	return filepath.Join(homeBase, ".rootfiles", "gpu-allocations.json")
+}
+
+// LoadGPUDB is the exported wrapper over loadGPUDB used by the `status`
+// command in internal/cli. The internal package uses loadGPUDB directly
+// inside the flock critical section; external read-only callers go through
+// this wrapper so the API surface stays explicit.
+func LoadGPUDB(rc *RunContext) (*GPUAllocationsDB, error) {
+	return loadGPUDB(rc)
 }
 
 func loadGPUDB(rc *RunContext) (*GPUAllocationsDB, error) {

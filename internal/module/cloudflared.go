@@ -3,8 +3,11 @@ package module
 import (
 	"context"
 	"fmt"
+	"os"
 	"runtime"
 	"strings"
+
+	"github.com/entelecheia/rootfiles-v2/internal/ui"
 )
 
 type CloudflaredModule struct{}
@@ -188,20 +191,27 @@ func TunnelSetup(ctx context.Context, rc *RunContext, token, vlanAddr string) er
 
 // TunnelStatus shows cloudflared and VLAN status.
 func TunnelStatus(ctx context.Context, rc *RunContext) error {
+	ui.WriteSection(os.Stdout, "Tunnel")
+
 	// Binary version
 	if rc.Runner.FileExists(cloudflaredBinary) {
 		res, _ := rc.Runner.Run(ctx, cloudflaredBinary, "--version")
-		fmt.Printf("Binary: %s\n", strings.TrimSpace(res.Stdout))
+		ui.WriteKV(os.Stdout, "Binary", strings.TrimSpace(res.Stdout))
 	} else {
-		fmt.Println("Binary: not installed")
+		ui.WriteKV(os.Stdout, "Binary", ui.StyleHint.Render("not installed"))
 	}
 
 	// Service status
 	res, err := rc.Runner.Run(ctx, "systemctl", "is-active", cloudflaredService)
 	if err != nil {
-		fmt.Println("Service: inactive")
+		ui.WriteKV(os.Stdout, "Service", ui.StyleHint.Render("inactive"))
 	} else {
-		fmt.Printf("Service: %s\n", strings.TrimSpace(res.Stdout))
+		state := strings.TrimSpace(res.Stdout)
+		if state == "active" {
+			ui.WriteKV(os.Stdout, "Service", ui.StyleSuccess.Render("active"))
+		} else {
+			ui.WriteKV(os.Stdout, "Service", ui.StyleHint.Render(state))
+		}
 	}
 
 	// VLAN interface
@@ -212,13 +222,19 @@ func TunnelStatus(ctx context.Context, rc *RunContext) error {
 	}
 	res, err = rc.Runner.Run(ctx, "ip", "addr", "show", iface)
 	if err != nil {
-		fmt.Printf("VLAN (%s): not configured\n", iface)
+		ui.WriteKV(os.Stdout, fmt.Sprintf("VLAN (%s)", iface), ui.StyleHint.Render("not configured"))
 	} else {
 		// Extract address line
+		found := false
 		for _, line := range strings.Split(res.Stdout, "\n") {
 			if strings.Contains(line, "inet ") {
-				fmt.Printf("VLAN (%s): %s\n", iface, strings.TrimSpace(line))
+				ui.WriteKV(os.Stdout, fmt.Sprintf("VLAN (%s)", iface), strings.TrimSpace(line))
+				found = true
+				break
 			}
+		}
+		if !found {
+			ui.WriteKV(os.Stdout, fmt.Sprintf("VLAN (%s)", iface), ui.StyleHint.Render("up (no inet)"))
 		}
 	}
 

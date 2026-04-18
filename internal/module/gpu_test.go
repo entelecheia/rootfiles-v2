@@ -268,8 +268,11 @@ func TestListGPUAllocations_Empty(t *testing.T) {
 	buf.ReadFrom(r)
 	output := buf.String()
 
-	if output != "No GPU allocations configured.\n" {
-		t.Errorf("unexpected output: %q", output)
+	if !strings.Contains(output, "No GPU allocations configured.") {
+		t.Errorf("empty allocations output missing hint, got %q", output)
+	}
+	if !strings.Contains(output, "GPU Allocations") {
+		t.Errorf("empty allocations output missing section header, got %q", output)
 	}
 }
 

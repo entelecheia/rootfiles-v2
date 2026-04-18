@@ -11,6 +11,7 @@ import (
 	"github.com/entelecheia/rootfiles-v2/internal/config"
 	"github.com/entelecheia/rootfiles-v2/internal/exec"
 	"github.com/entelecheia/rootfiles-v2/internal/module"
+	"github.com/entelecheia/rootfiles-v2/internal/ui"
 )
 
 func newCheckCmd() *cobra.Command {
@@ -71,36 +72,49 @@ func runCheck(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	// Print report
-	fmt.Printf("Profile: %s\n\n", profileName)
-	fmt.Printf("%-15s %-10s %s\n", "MODULE", "STATUS", "CHANGES")
-	fmt.Printf("%-15s %-10s %s\n", "------", "------", "-------")
-
-	allSatisfied := true
+	out := cmd.OutOrStdout()
 	verbose, _ := cmd.Flags().GetBool("verbose")
+
+	satisfied := 0
+	for _, m := range modules {
+		if r := results[m.Name()]; r != nil && r.Satisfied {
+			satisfied++
+		}
+	}
+
+	ui.WriteHeader(out, "rootfiles check")
+	ui.WriteKV(out, "Profile", profileName)
+	ui.WriteSection(out, fmt.Sprintf("Modules (%d/%d satisfied)", satisfied, len(modules)))
 
 	for _, m := range modules {
 		r := results[m.Name()]
-		status := "OK"
-		if !r.Satisfied {
-			status = "PENDING"
-			allSatisfied = false
+		marker := ui.OKMark()
+		statusLabel := ui.StyleSuccess.Render("OK")
+		changeCount := 0
+		if r != nil {
+			changeCount = len(r.Changes)
 		}
-		changeCount := len(r.Changes)
-		fmt.Printf("%-15s %-10s %d change(s)\n", m.Name(), status, changeCount)
+		if r == nil || !r.Satisfied {
+			marker = ui.PendingMark()
+			statusLabel = ui.StyleWarning.Render("PENDING")
+		}
+		ui.WriteBullet(out, marker, fmt.Sprintf("%-15s %s  %d change(s)", m.Name(), statusLabel, changeCount))
+		if r == nil {
+			continue
+		}
 		for _, c := range r.Changes {
-			fmt.Printf("  → %s\n", c.Description)
+			fmt.Fprintf(out, "        %s %s\n", ui.PendingMark(), c.Description)
 			if verbose && c.Command != "" {
-				fmt.Printf("      $ %s\n", c.Command)
+				fmt.Fprintf(out, "          %s\n", ui.StyleHint.Render("$ "+c.Command))
 			}
 		}
 	}
 
-	fmt.Println()
-	if allSatisfied {
-		fmt.Println("All modules satisfied.")
+	fmt.Fprintln(out)
+	if satisfied == len(modules) {
+		fmt.Fprintln(out, "  "+ui.StyleSuccess.Render(ui.MarkOK+" all modules satisfied."))
 	} else {
-		fmt.Println("Run 'rootfiles apply' to apply pending changes.")
+		ui.WriteHint(out, "run 'rootfiles apply' to apply pending changes.")
 	}
 
 	return nil

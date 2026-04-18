@@ -39,6 +39,25 @@ type UsersDB struct {
 	Users     []UserMeta `json:"users"`
 }
 
+// LoadUsersDB reads the users metadata file under <home-base>/.rootfiles/users.json.
+// Returns an empty DB (not an error) when the file is absent so callers can
+// treat "no managed users" as a valid state. Parse errors are surfaced.
+func LoadUsersDB(rc *RunContext) (*UsersDB, error) {
+	homeBase := rc.Config.Users.HomeBase
+	if homeBase == "" {
+		homeBase = "/home"
+	}
+	var db UsersDB
+	data, err := rc.Runner.ReadFile(filepath.Join(homeBase, ".rootfiles", "users.json"))
+	if err != nil {
+		return &db, nil
+	}
+	if err := json.Unmarshal(data, &db); err != nil {
+		return &db, fmt.Errorf("parsing users DB: %w", err)
+	}
+	return &db, nil
+}
+
 func (m *UsersModule) Check(_ context.Context, rc *RunContext) (*CheckResult, error) {
 	var changes []Change
 	cfg := rc.Config.Users
