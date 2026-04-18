@@ -14,6 +14,37 @@ import (
 	"github.com/entelecheia/rootfiles-v2/internal/exec"
 )
 
+func TestUsersModule_Name(t *testing.T) {
+	if n := NewUsersModule().Name(); n != "users" {
+		t.Errorf("Name() = %q, want users", n)
+	}
+}
+
+func TestUsersModule_CheckDefaultHomeBaseIsSatisfied(t *testing.T) {
+	rc := newDryRunRC(t)
+	// HomeBase "" or "/home" means no custom setup required.
+	result, err := NewUsersModule().Check(context.Background(), rc)
+	if err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+	if !result.Satisfied {
+		t.Errorf("Check with default HomeBase should be satisfied, got %+v", result.Changes)
+	}
+}
+
+func TestUsersModule_ApplyCustomHomeBaseDryRun(t *testing.T) {
+	tmp := t.TempDir()
+	rc := newDryRunRC(t)
+	rc.Config.Users = config.UsersConfig{HomeBase: filepath.Join(tmp, "home2")}
+	result, err := NewUsersModule().Apply(context.Background(), rc)
+	if err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if !result.Changed {
+		t.Error("Apply with custom HomeBase should report Changed=true")
+	}
+}
+
 func TestListUserNames(t *testing.T) {
 	// Create temp dir with a users.json
 	tmpDir := t.TempDir()
