@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -31,7 +32,7 @@ type GPUAllocationsDB struct {
 
 type GPUModule struct{}
 
-func NewGPUModule() *GPUModule { return &GPUModule{} }
+func NewGPUModule() *GPUModule    { return &GPUModule{} }
 func (m *GPUModule) Name() string { return "gpu" }
 
 func (m *GPUModule) Check(_ context.Context, rc *RunContext) (*CheckResult, error) {
@@ -167,96 +168,31 @@ func AssignGPUs(ctx context.Context, rc *RunContext, username string, gpus []int
 		method = effectiveMethod(rc, "")
 	}
 
-	db, _ := loadGPUDB(rc)
-	if db.Version == 0 {
-		db.Version = 1
-	}
-
-	// Detect total GPUs and model
-	totalGPUs, gpuModel := detectGPUInfo(ctx, rc)
-	if totalGPUs > 0 {
-		db.TotalGPUs = totalGPUs
-		db.GPUModel = gpuModel
-	}
-
-	// Validate GPU indices
-	if db.TotalGPUs > 0 {
-		for _, g := range gpus {
-			if g < 0 || g >= db.TotalGPUs {
-				return fmt.Errorf("GPU index %d out of range (0-%d)", g, db.TotalGPUs-1)
-			}
+	// Read-modify-write the DB under an exclusive lock. Without this, two
+	// concurrent `rootfiles gpu assign` calls can load the same state and each
+	// overwrite the other's allocation, losing one.
+	if err := withGPUDBLock(rc, func(db *GPUAllocationsDB) error {
+		totalGPUs, gpuModel := detectGPUInfo(ctx, rc)
+		if totalGPUs > 0 {
+			db.TotalGPUs = totalGPUs
+			db.GPUModel = gpuModel
 		}
-	}
-
-	// Check for conflicts
-	for _, alloc := range db.Allocations {
-		if alloc.Username == username {
-			continue
+		if err := validateGPURequest(db, username, gpus); err != nil {
+			return err
 		}
-		for _, existing := range alloc.GPUs {
-			for _, requested := range gpus {
-				if existing == requested {
-					return fmt.Errorf("GPU %d is already assigned to %s", requested, alloc.Username)
-				}
-			}
-		}
-	}
-
-	// Update or add allocation
-	alloc := GPUAllocation{
-		Username:  username,
-		GPUs:      gpus,
-		Method:    method,
-		UpdatedAt: time.Now().UTC().Format(time.RFC3339),
-	}
-	found := false
-	for i, a := range db.Allocations {
-		if a.Username == username {
-			db.Allocations[i] = alloc
-			found = true
-			break
-		}
-	}
-	if !found {
-		db.Allocations = append(db.Allocations, alloc)
-	}
-
-	if err := saveGPUDB(rc, db); err != nil {
+		upsertAllocation(db, GPUAllocation{
+			Username:  username,
+			GPUs:      gpus,
+			Method:    method,
+			UpdatedAt: time.Now().UTC().Format(time.RFC3339),
+		})
+		return nil
+	}); err != nil {
 		return err
 	}
 
-	// Apply immediately
-	if method == "env" || method == "both" {
-		scriptPath := profileDScriptPath(username)
-		content := buildProfileDScript(username, gpus)
-		if rc.DryRun {
-			fmt.Printf("[dry-run] would write %s\n", scriptPath)
-		} else {
-			if err := rc.Runner.WriteFile(scriptPath, []byte(content), 0644); err != nil {
-				return fmt.Errorf("writing profile.d script: %w", err)
-			}
-		}
-	}
-
-	if method == "cgroup" || method == "both" {
-		u, _ := user.Lookup(username)
-		slicePath := cgroupSlicePath(u.Uid)
-		content := buildCgroupConf(gpus)
-		if rc.DryRun {
-			fmt.Printf("[dry-run] would write %s\n", slicePath)
-		} else {
-			sliceDir := filepath.Dir(slicePath)
-			rc.Runner.MkdirAll(sliceDir, 0755)
-			if err := rc.Runner.WriteFile(slicePath, []byte(content), 0644); err != nil {
-				return fmt.Errorf("writing cgroup conf: %w", err)
-			}
-			rc.Runner.Run(ctx, "systemctl", "daemon-reload")
-		}
-	}
-
-	// Install Docker wrapper to enforce GPU allocations in containers
-	if err := installDockerWrapper(rc); err != nil {
-		return fmt.Errorf("installing docker wrapper: %w", err)
+	if err := applyAllocationMethods(ctx, rc, username, gpus, method); err != nil {
+		return err
 	}
 
 	fmt.Printf("Assigned GPUs %s to %s (method: %s)\n", gpuListStr(gpus), username, method)
@@ -265,28 +201,26 @@ func AssignGPUs(ctx context.Context, rc *RunContext, username string, gpus []int
 
 // RevokeGPUs removes GPU assignment for a user.
 func RevokeGPUs(ctx context.Context, rc *RunContext, username string) error {
-	db, err := loadGPUDB(rc)
-	if err != nil {
-		return fmt.Errorf("loading GPU database: %w", err)
-	}
-
-	found := false
 	var method string
-	var remaining []GPUAllocation
-	for _, a := range db.Allocations {
-		if a.Username == username {
-			found = true
-			method = a.Method
-		} else {
-			remaining = append(remaining, a)
+	var allocationsRemaining int
+	if err := withGPUDBLock(rc, func(db *GPUAllocationsDB) error {
+		found := false
+		var remaining []GPUAllocation
+		for _, a := range db.Allocations {
+			if a.Username == username {
+				found = true
+				method = a.Method
+			} else {
+				remaining = append(remaining, a)
+			}
 		}
-	}
-	if !found {
-		return fmt.Errorf("no GPU allocation found for %s", username)
-	}
-
-	db.Allocations = remaining
-	if err := saveGPUDB(rc, db); err != nil {
+		if !found {
+			return fmt.Errorf("no GPU allocation found for %s", username)
+		}
+		db.Allocations = remaining
+		allocationsRemaining = len(remaining)
+		return nil
+	}); err != nil {
 		return err
 	}
 
@@ -320,7 +254,7 @@ func RevokeGPUs(ctx context.Context, rc *RunContext, username string) error {
 	}
 
 	// Remove Docker wrapper if no allocations remain
-	if len(db.Allocations) == 0 {
+	if allocationsRemaining == 0 {
 		removeDockerWrapper(ctx, rc)
 	} else {
 		// Reinstall wrapper (DB path unchanged, but content may differ)
@@ -607,6 +541,80 @@ func removeDockerWrapper(ctx context.Context, rc *RunContext) {
 
 // --- helpers ---
 
+// validateGPURequest checks that every requested GPU index is in range and not
+// already assigned to another user. Self-reassignment is allowed.
+func validateGPURequest(db *GPUAllocationsDB, username string, gpus []int) error {
+	if db.TotalGPUs > 0 {
+		for _, g := range gpus {
+			if g < 0 || g >= db.TotalGPUs {
+				return fmt.Errorf("GPU index %d out of range (0-%d)", g, db.TotalGPUs-1)
+			}
+		}
+	}
+	for _, alloc := range db.Allocations {
+		if alloc.Username == username {
+			continue
+		}
+		for _, existing := range alloc.GPUs {
+			for _, requested := range gpus {
+				if existing == requested {
+					return fmt.Errorf("GPU %d is already assigned to %s", requested, alloc.Username)
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// upsertAllocation replaces an existing allocation for the user or appends a new one.
+func upsertAllocation(db *GPUAllocationsDB, alloc GPUAllocation) {
+	for i, a := range db.Allocations {
+		if a.Username == alloc.Username {
+			db.Allocations[i] = alloc
+			return
+		}
+	}
+	db.Allocations = append(db.Allocations, alloc)
+}
+
+// applyAllocationMethods writes the env script, cgroup slice, and Docker
+// wrapper side effects for a single user's GPU allocation. Each block is
+// gated on the method ("env", "cgroup", or "both") and on rc.DryRun.
+func applyAllocationMethods(ctx context.Context, rc *RunContext, username string, gpus []int, method string) error {
+	if method == "env" || method == "both" {
+		scriptPath := profileDScriptPath(username)
+		content := buildProfileDScript(username, gpus)
+		if rc.DryRun {
+			fmt.Printf("[dry-run] would write %s\n", scriptPath)
+		} else {
+			if err := rc.Runner.WriteFile(scriptPath, []byte(content), 0644); err != nil {
+				return fmt.Errorf("writing profile.d script: %w", err)
+			}
+		}
+	}
+
+	if method == "cgroup" || method == "both" {
+		u, _ := user.Lookup(username)
+		slicePath := cgroupSlicePath(u.Uid)
+		content := buildCgroupConf(gpus)
+		if rc.DryRun {
+			fmt.Printf("[dry-run] would write %s\n", slicePath)
+		} else {
+			sliceDir := filepath.Dir(slicePath)
+			rc.Runner.MkdirAll(sliceDir, 0755)
+			if err := rc.Runner.WriteFile(slicePath, []byte(content), 0644); err != nil {
+				return fmt.Errorf("writing cgroup conf: %w", err)
+			}
+			rc.Runner.Run(ctx, "systemctl", "daemon-reload")
+		}
+	}
+
+	if err := installDockerWrapper(rc); err != nil {
+		return fmt.Errorf("installing docker wrapper: %w", err)
+	}
+	return nil
+}
+
 func gpuDBPath(rc *RunContext) string {
 	homeBase := rc.Config.Users.HomeBase
 	if homeBase == "" {
@@ -640,7 +648,73 @@ func saveGPUDB(rc *RunContext, db *GPUAllocationsDB) error {
 	if err != nil {
 		return fmt.Errorf("marshaling GPU database: %w", err)
 	}
-	return rc.Runner.WriteFile(dbPath, data, 0644)
+
+	if rc.Runner.DryRun {
+		return rc.Runner.WriteFile(dbPath, data, 0644)
+	}
+
+	// Atomic write: create sibling temp file then rename. This guarantees readers
+	// never observe a partial JSON document, which could crash the Docker wrapper
+	// (buildDockerWrapper's embedded python3 json.load).
+	tmp := dbPath + ".tmp"
+	if err := os.WriteFile(tmp, data, 0644); err != nil {
+		return fmt.Errorf("writing temp gpu db: %w", err)
+	}
+	if err := os.Rename(tmp, dbPath); err != nil {
+		os.Remove(tmp)
+		return fmt.Errorf("renaming gpu db: %w", err)
+	}
+	return nil
+}
+
+// withGPUDBLock runs fn with exclusive access to the GPU allocation DB.
+// It acquires an advisory flock on a sibling lock file, loads the current DB
+// under the lock, runs fn (which may mutate db), and atomically writes the
+// result. This prevents concurrent `rootfiles gpu assign`/`revoke` calls from
+// racing on read-modify-write and losing allocations.
+//
+// When the Runner is in dry-run mode the lock file is not created (it would
+// be a real side effect); fn still runs so validation errors surface and
+// saveGPUDB routes through Runner.WriteFile which no-ops.
+func withGPUDBLock(rc *RunContext, fn func(*GPUAllocationsDB) error) error {
+	if rc.Runner.DryRun {
+		db, _ := loadGPUDB(rc)
+		if db.Version == 0 {
+			db.Version = 1
+		}
+		if err := fn(db); err != nil {
+			return err
+		}
+		return saveGPUDB(rc, db)
+	}
+
+	homeBase := rc.Config.Users.HomeBase
+	if homeBase == "" {
+		homeBase = "/home"
+	}
+	if err := ensureMetaDir(rc.Runner, homeBase); err != nil {
+		return fmt.Errorf("ensuring metadata dir: %w", err)
+	}
+
+	lockPath := gpuDBPath(rc) + ".lock"
+	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0644)
+	if err != nil {
+		return fmt.Errorf("opening gpu db lock: %w", err)
+	}
+	defer lockFile.Close()
+
+	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX); err != nil {
+		return fmt.Errorf("acquiring gpu db lock: %w", err)
+	}
+
+	db, _ := loadGPUDB(rc)
+	if db.Version == 0 {
+		db.Version = 1
+	}
+	if err := fn(db); err != nil {
+		return err
+	}
+	return saveGPUDB(rc, db)
 }
 
 func effectiveMethod(rc *RunContext, method string) string {

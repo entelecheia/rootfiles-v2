@@ -10,11 +10,11 @@ func TestRegistry_ResolveAll(t *testing.T) {
 	reg := NewRegistry()
 	cfg := &config.Config{
 		Modules: config.ModulesConfig{
-			Locale:      config.ModuleToggle{Enabled: true},
-			Packages:    config.ModuleToggle{Enabled: true},
-			SSH:         config.ModuleToggle{Enabled: true},
-			Users:       config.ModuleToggle{Enabled: true},
-			Docker:      config.DockerConfig{Enabled: true},
+			Locale:   config.ModuleToggle{Enabled: true},
+			Packages: config.ModuleToggle{Enabled: true},
+			SSH:      config.ModuleToggle{Enabled: true},
+			Users:    config.ModuleToggle{Enabled: true},
+			Docker:   config.DockerConfig{Enabled: true},
 			Nvidia: config.NvidiaConfig{
 				Enabled:       true,
 				GPUAllocation: config.GPUAllocationConfig{Enabled: true},
@@ -84,5 +84,47 @@ func TestRegistry_ResolveEmpty(t *testing.T) {
 	modules := reg.Resolve(cfg, nil)
 	if len(modules) != 0 {
 		t.Errorf("expected 0 modules, got %d", len(modules))
+	}
+}
+
+// TestRegistryDefaultOrderSync guards against silent drift between the two
+// static module contracts in module.go: NewRegistry() (what modules exist) and
+// defaultOrder (what modules run, in what order). A module in only one of them
+// is either dropped at runtime or never constructed — this test forces both
+// lists to be updated together.
+func TestRegistryDefaultOrderSync(t *testing.T) {
+	reg := NewRegistry()
+
+	registered := make(map[string]bool, len(reg.modules))
+	for name := range reg.modules {
+		registered[name] = true
+	}
+
+	ordered := make(map[string]bool, len(defaultOrder))
+	for _, name := range defaultOrder {
+		ordered[name] = true
+	}
+
+	var missingFromOrder []string
+	for name := range registered {
+		if !ordered[name] {
+			missingFromOrder = append(missingFromOrder, name)
+		}
+	}
+	var missingFromRegistry []string
+	for name := range ordered {
+		if !registered[name] {
+			missingFromRegistry = append(missingFromRegistry, name)
+		}
+	}
+
+	if len(missingFromOrder) > 0 {
+		t.Errorf("modules registered but absent from defaultOrder (will never run): %v", missingFromOrder)
+	}
+	if len(missingFromRegistry) > 0 {
+		t.Errorf("modules in defaultOrder but not registered (silently skipped): %v", missingFromRegistry)
+	}
+	if len(reg.modules) != len(defaultOrder) {
+		t.Errorf("len(NewRegistry().modules)=%d, len(defaultOrder)=%d — counts differ", len(reg.modules), len(defaultOrder))
 	}
 }

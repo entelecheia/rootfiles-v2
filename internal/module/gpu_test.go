@@ -4,11 +4,13 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/user"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/entelecheia/rootfiles-v2/internal/config"
@@ -737,6 +739,53 @@ func TestAssignGPUs_SelfConflictIgnored(t *testing.T) {
 	err = AssignGPUs(context.Background(), rc, username, []int{0, 1}, "env")
 	if err != nil {
 		t.Fatalf("self-reassign should succeed: %v", err)
+	}
+}
+
+// TestWithGPUDBLock_NoLostUpdatesUnderConcurrency spawns many goroutines that
+// each append an allocation under withGPUDBLock. Without the flock+atomic-write
+// protection, read-modify-write races would cause allocations to be overwritten
+// and the final count would be less than N. This test is the regression guard.
+func TestWithGPUDBLock_NoLostUpdatesUnderConcurrency(t *testing.T) {
+	tmpDir := t.TempDir()
+	rc := testRunContextReal(t, tmpDir, "env")
+
+	if err := saveGPUDB(rc, &GPUAllocationsDB{Version: 1, TotalGPUs: 64}); err != nil {
+		t.Fatalf("seed saveGPUDB: %v", err)
+	}
+
+	const N = 20
+	var wg sync.WaitGroup
+	errs := make([]error, N)
+	for i := 0; i < N; i++ {
+		i := i
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			errs[i] = withGPUDBLock(rc, func(db *GPUAllocationsDB) error {
+				db.Allocations = append(db.Allocations, GPUAllocation{
+					Username: fmt.Sprintf("testuser%d", i),
+					GPUs:     []int{i},
+					Method:   "env",
+				})
+				return nil
+			})
+		}()
+	}
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Errorf("goroutine %d: %v", i, err)
+		}
+	}
+
+	loaded, err := loadGPUDB(rc)
+	if err != nil {
+		t.Fatalf("loadGPUDB after concurrent writes: %v", err)
+	}
+	if len(loaded.Allocations) != N {
+		t.Errorf("expected %d allocations after %d concurrent appends, got %d — updates were lost", N, N, len(loaded.Allocations))
 	}
 }
 
