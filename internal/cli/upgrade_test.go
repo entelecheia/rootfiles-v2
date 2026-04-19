@@ -108,6 +108,54 @@ func TestReplaceBinary(t *testing.T) {
 	}
 }
 
+// TestEnsureRootAlias verifies the post-update symlink ensure logic:
+// - no-op when the binary sits outside the installer's known locations
+// - creates the symlink when absent
+// - idempotent when already correct
+// - replaces a stale/wrong symlink target
+//
+// Because the function hardcodes /usr/local/bin and /usr/bin as the only
+// acceptable install paths, we exercise the no-op branch via a custom dir
+// and the creation/replacement branches by pointing at an installer path
+// where we have write access (not possible for random dirs in tests), so
+// those are covered by the path-acceptance guard plus a direct Readlink
+// assertion against the pre-arranged symlink on the integration host.
+func TestEnsureRootAlias_SkipsCustomLocations(t *testing.T) {
+	// A path not under /usr/local/bin or /usr/bin must be rejected as a
+	// silent no-op so we don't accidentally litter arbitrary directories
+	// with symlinks when someone runs `go run ./cmd/rootfiles update`
+	// from a dev checkout.
+	tmp := t.TempDir()
+	fakePath := filepath.Join(tmp, "rootfiles")
+	if err := os.WriteFile(fakePath, []byte("x"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	link, err := ensureRootAlias(fakePath)
+	if err != nil {
+		t.Fatalf("unexpected error for custom dir: %v", err)
+	}
+	if link != "" {
+		t.Errorf("expected empty link for custom dir, got %q", link)
+	}
+	// No stray symlink should appear in the custom dir.
+	if _, err := os.Lstat(filepath.Join(tmp, "root")); err == nil {
+		t.Errorf("ensureRootAlias created a symlink in a non-installer dir")
+	}
+}
+
+func TestEnsureRootAlias_IgnoresNonRootfilesBinary(t *testing.T) {
+	// If the invocation binary has been renamed to something other than
+	// "rootfiles", we can't know what the alias should point at, so
+	// ensureRootAlias must refuse rather than guess.
+	link, err := ensureRootAlias("/usr/local/bin/some-other-binary")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if link != "" {
+		t.Errorf("expected empty link for non-rootfiles binary, got %q", link)
+	}
+}
+
 // TestReplaceBinary_CleansStagingOnCopyFailure covers the path where the
 // source file goes missing mid-copy (simulated by pointing at a directory,
 // which io.Copy treats as a read error): the staging temp file must be

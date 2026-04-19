@@ -123,6 +123,18 @@ func newUpgradeCmd(currentVersion string) *cobra.Command {
 			}
 			fmt.Println("OK")
 
+			// Ensure the `root` alias symlink exists next to the binary. The
+			// installer creates this on fresh installs; users upgrading from
+			// pre-v0.10.0 through `rootfiles update` never hit install.sh
+			// again, so without this they see `root: command not found` after
+			// the upgrade. Idempotent — a no-op if the symlink is already
+			// correct, and we swallow the error so a read-only /usr/local/bin
+			// (rare, but possible) doesn't turn a successful upgrade into a
+			// failed one.
+			if link, err := ensureRootAlias(currentBinary); err == nil && link != "" {
+				fmt.Printf("Symlink:  %s -> %s\n", link, filepath.Base(currentBinary))
+			}
+
 			fmt.Printf("Updated to %s\n", targetVersion)
 			return nil
 		},
@@ -250,6 +262,42 @@ func extractBinary(archivePath, destDir string) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("rootfiles binary not found in archive")
+}
+
+// ensureRootAlias creates (or repairs) the `root` symlink next to the
+// installed rootfiles binary. Returns the resulting link path (for logging)
+// when a change was made, the empty string when the symlink was already
+// correct or the directory is not writable.
+//
+// Only acts when the rootfiles binary lives under /usr/local/bin or
+// /usr/bin — the two paths the installer writes to. Any other location is
+// assumed to be a custom install where managing the alias is the operator's
+// responsibility.
+func ensureRootAlias(rootfilesPath string) (string, error) {
+	dir := filepath.Dir(rootfilesPath)
+	base := filepath.Base(rootfilesPath)
+	if base != "rootfiles" {
+		return "", nil
+	}
+	switch dir {
+	case "/usr/local/bin", "/usr/bin":
+		// accepted installer locations
+	default:
+		return "", nil
+	}
+
+	linkPath := filepath.Join(dir, "root")
+	if target, err := os.Readlink(linkPath); err == nil && target == rootfilesPath {
+		return "", nil // already correct
+	}
+
+	// Remove any stale entry (symlink with a different target, or a
+	// non-symlink file of the same name) before recreating.
+	_ = os.Remove(linkPath)
+	if err := os.Symlink(rootfilesPath, linkPath); err != nil {
+		return "", err
+	}
+	return linkPath, nil
 }
 
 // replaceBinary atomically swaps the current binary with the new one.
