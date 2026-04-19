@@ -85,8 +85,12 @@ if [ "$CHANNEL" = "dev" ]; then
     go build -ldflags "-s -w -X main.version=dev-${COMMIT} -X main.commit=${COMMIT}" \
         -o "$INSTALL_DIR/$BINARY" ./cmd/rootfiles/
 
+    # Create 'root' convenience symlink (matches dotfiles-v2's 'dot' pattern).
+    ln -sf "$INSTALL_DIR/$BINARY" "$INSTALL_DIR/root"
+
     echo ""
     echo "Installed: $INSTALL_DIR/$BINARY (dev-${COMMIT})"
+    echo "Symlinked: $INSTALL_DIR/root -> $BINARY"
     "$INSTALL_DIR/$BINARY" --version
     exit 0
 fi
@@ -143,11 +147,16 @@ echo "Installing to $INSTALL_DIR/$BINARY..."
 tar xzf "$ARCHIVE"
 install -m 755 "$BINARY" "$INSTALL_DIR/$BINARY"
 
+# Create 'root' convenience symlink (matches dotfiles-v2's 'dot' pattern —
+# saves users from typing "rootfiles" on every invocation).
+ln -sf "$INSTALL_DIR/$BINARY" "$INSTALL_DIR/root"
+
 echo ""
 echo "Installed: $INSTALL_DIR/$BINARY"
+echo "Symlinked: $INSTALL_DIR/root -> $BINARY"
 "$INSTALL_DIR/$BINARY" --version
 
 echo ""
 echo "Next steps:"
-echo "  sudo rootfiles apply              # interactive setup"
-echo "  sudo rootfiles apply --profile dgx --yes  # unattended DGX setup"
+echo "  sudo rootfiles apply              # or: sudo root apply"
+echo "  sudo rootfiles apply --profile dgx --yes"

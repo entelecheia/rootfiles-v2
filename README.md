@@ -41,7 +41,12 @@ Dev channel (build from source, requires Go):
 curl -fsSL https://raw.githubusercontent.com/entelecheia/rootfiles-v2/main/scripts/install.sh | sudo bash -s -- --channel dev
 ```
 
-The installer downloads a prebuilt binary, verifies its SHA256 checksum, and places it at `/usr/local/bin/rootfiles`.
+The installer downloads a prebuilt binary, verifies its SHA256 checksum, and places it at `/usr/local/bin/rootfiles`. A `root` symlink is also created in the same directory — every example below works with either name:
+
+```bash
+sudo rootfiles apply    # long form
+sudo root apply         # same thing, shorter
+```
 
 ## Quick start
 
