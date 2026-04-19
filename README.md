@@ -355,8 +355,12 @@ sudo rootfiles tunnel setup "$TOKEN" --vlan-address "172.16.229.32/32"
 sudo rootfiles tunnel status
 ```
 
+Upgrade just the `cloudflared` binary to the latest upstream release (no other modules touched). The service is restarted when present; binary-only refreshes on hosts without the tunnel skip the restart:
+
 ```bash
-sudo rootfiles tunnel update
+sudo rootfiles tunnel update                     # fetch latest
+sudo rootfiles tunnel update --check             # compare installed vs. latest, no download
+sudo rootfiles tunnel update --version 2024.9.1  # pin to a specific cloudflared release
 ```
 
 ```bash

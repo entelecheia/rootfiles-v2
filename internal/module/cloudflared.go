@@ -2,10 +2,13 @@ package module
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/entelecheia/rootfiles-v2/internal/ui"
 )
@@ -82,23 +85,36 @@ func (m *CloudflaredModule) Apply(ctx context.Context, rc *RunContext) (*ApplyRe
 }
 
 func (m *CloudflaredModule) installBinary(ctx context.Context, rc *RunContext) error {
+	return m.installBinaryVersion(ctx, rc, "")
+}
+
+// installBinaryVersion downloads cloudflared at the given version (e.g.
+// "2024.9.1"). Empty version falls back to the "latest" alias URL, which
+// GitHub resolves server-side to whatever release cloudflared has tagged
+// as latest. Non-empty versions use the explicit release download path
+// so operators can pin.
+func (m *CloudflaredModule) installBinaryVersion(ctx context.Context, rc *RunContext, version string) error {
 	arch := runtime.GOARCH
-	if arch == "amd64" {
-		arch = "amd64"
-	} else if arch == "arm64" {
-		arch = "arm64"
+	if arch != "amd64" && arch != "arm64" {
+		return fmt.Errorf("cloudflared has no prebuilt binary for arch %q", arch)
 	}
 
-	url := fmt.Sprintf(
-		"https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-%s",
-		arch,
-	)
+	var url string
+	if version == "" {
+		url = fmt.Sprintf(
+			"https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-%s",
+			arch,
+		)
+	} else {
+		url = fmt.Sprintf(
+			"https://github.com/cloudflare/cloudflared/releases/download/%s/cloudflared-linux-%s",
+			version, arch,
+		)
+	}
 
-	// Download
 	if _, err := rc.Runner.Run(ctx, "curl", "-fsSL", "-o", cloudflaredBinary, url); err != nil {
 		return fmt.Errorf("downloading cloudflared: %w", err)
 	}
-	// Make executable
 	if _, err := rc.Runner.Run(ctx, "chmod", "+x", cloudflaredBinary); err != nil {
 		return fmt.Errorf("chmod cloudflared: %w", err)
 	}
@@ -241,17 +257,113 @@ func TunnelStatus(ctx context.Context, rc *RunContext) error {
 	return nil
 }
 
-// TunnelUpdate updates cloudflared binary.
-func TunnelUpdate(ctx context.Context, rc *RunContext) error {
+// TunnelUpdate updates the cloudflared binary and restarts the service.
+// An empty version selects the upstream "latest" release; a pinned version
+// (e.g. "2024.9.1") downloads that specific release.
+func TunnelUpdate(ctx context.Context, rc *RunContext, version string) error {
 	m := NewCloudflaredModule()
-	fmt.Println("Updating cloudflared...")
-	if err := m.installBinary(ctx, rc); err != nil {
+
+	current := currentCloudflaredVersion(ctx, rc)
+	target := version
+	if target == "" {
+		latest, err := FetchLatestCloudflaredVersion(ctx)
+		if err != nil {
+			fmt.Printf("Warning: could not resolve latest cloudflared release (%v); using /latest/download/ alias.\n", err)
+		} else {
+			target = latest
+		}
+	}
+
+	ui.WriteSection(os.Stdout, "Cloudflared update")
+	ui.WriteKV(os.Stdout, "Current", firstNonEmptyCloudflared(current, "(not installed)"))
+	ui.WriteKV(os.Stdout, "Target", firstNonEmptyCloudflared(target, "latest"))
+
+	if target != "" && current == target {
+		ui.WriteHint(os.Stdout, "already on target version — nothing to do.")
+		return nil
+	}
+
+	fmt.Println()
+	fmt.Printf("Downloading cloudflared %s ...\n", firstNonEmptyCloudflared(target, "latest"))
+	if err := m.installBinaryVersion(ctx, rc, target); err != nil {
 		return err
 	}
-	// Restart service if running
-	rc.Runner.Run(ctx, "systemctl", "restart", cloudflaredService)
-	fmt.Println("cloudflared updated and service restarted.")
+
+	// Restart the service only if it's actually installed, so a pure binary
+	// refresh on a host that's not running the tunnel doesn't surface a
+	// confusing "Unit cloudflared.service not loaded" message.
+	if res, err := rc.Runner.Query(ctx, "systemctl", "is-enabled", cloudflaredService); err == nil && strings.TrimSpace(res.Stdout) != "" {
+		if _, err := rc.Runner.Run(ctx, "systemctl", "restart", cloudflaredService); err != nil {
+			return fmt.Errorf("restarting cloudflared: %w", err)
+		}
+		fmt.Println(ui.StyleSuccess.Render(ui.MarkOK + " cloudflared updated and service restarted."))
+	} else {
+		fmt.Println(ui.StyleSuccess.Render(ui.MarkOK + " cloudflared binary updated (service not installed, skip restart)."))
+	}
 	return nil
+}
+
+// FetchLatestCloudflaredVersion queries GitHub's release API for the current
+// upstream tag of cloudflared/cloudflare. Surfaced publicly so the cli can
+// call it for `--check` without duplicating the HTTP plumbing.
+func FetchLatestCloudflaredVersion(ctx context.Context) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		"https://api.github.com/repos/cloudflare/cloudflared/releases/latest", nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("github API returned %d", resp.StatusCode)
+	}
+
+	var info struct {
+		TagName string `json:"tag_name"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
+		return "", err
+	}
+	if info.TagName == "" {
+		return "", fmt.Errorf("no tag_name in response")
+	}
+	return info.TagName, nil
+}
+
+// currentCloudflaredVersion parses `cloudflared --version` output. Returns
+// the empty string when the binary is missing or the output cannot be parsed.
+// Example output: "cloudflared version 2024.9.1 (built 2024-09-13-10:42 UTC)".
+func currentCloudflaredVersion(ctx context.Context, rc *RunContext) string {
+	if !rc.Runner.FileExists(cloudflaredBinary) {
+		return ""
+	}
+	res, err := rc.Runner.Query(ctx, cloudflaredBinary, "--version")
+	if err != nil {
+		return ""
+	}
+	for _, token := range strings.Fields(res.Stdout) {
+		// Versions look like "YYYY.M.P" — leading digit followed by a dot.
+		if len(token) > 3 && token[0] >= '0' && token[0] <= '9' && strings.Contains(token, ".") {
+			return token
+		}
+	}
+	return ""
+}
+
+func firstNonEmptyCloudflared(vals ...string) string {
+	for _, v := range vals {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 // TunnelUninstall removes tunnel service, VLAN, and binary.

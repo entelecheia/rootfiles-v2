@@ -5,12 +5,14 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 
 	"github.com/entelecheia/rootfiles-v2/internal/config"
 	"github.com/entelecheia/rootfiles-v2/internal/exec"
 	"github.com/entelecheia/rootfiles-v2/internal/module"
+	"github.com/entelecheia/rootfiles-v2/internal/ui"
 )
 
 func newTunnelCmd() *cobra.Command {
@@ -77,14 +79,33 @@ func newTunnelCmd() *cobra.Command {
 		},
 	})
 
-	tunnel.AddCommand(&cobra.Command{
+	updateCmd := &cobra.Command{
 		Use:   "update",
-		Short: "Update cloudflared binary to latest version",
+		Short: "Upgrade cloudflared binary to latest (or a pinned version)",
+		Long: `Download the cloudflared binary from the upstream cloudflare/cloudflared GitHub
+releases and replace /usr/local/bin/cloudflared. Uses the tagged release URL when
+--version is provided, or the /latest/download/ alias otherwise. The cloudflared
+systemd service is restarted when present; pure-binary refreshes on hosts that
+don't run the tunnel just update the binary.
+
+Use --check to see the current installed version vs. the latest upstream tag
+without downloading or restarting anything.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			rc := buildRunContext(cmd)
-			return module.TunnelUpdate(context.Background(), rc)
+			ctx := context.Background()
+
+			checkOnly, _ := cmd.Flags().GetBool("check")
+			version, _ := cmd.Flags().GetString("version")
+
+			if checkOnly {
+				return tunnelUpdateCheck(ctx, rc)
+			}
+			return module.TunnelUpdate(ctx, rc, version)
 		},
-	})
+	}
+	updateCmd.Flags().Bool("check", false, "Report current and latest cloudflared version without downloading")
+	updateCmd.Flags().String("version", "", "Pin to a specific cloudflared release (e.g. 2024.9.1)")
+	tunnel.AddCommand(updateCmd)
 
 	tunnel.AddCommand(&cobra.Command{
 		Use:   "uninstall",
@@ -97,6 +118,55 @@ func newTunnelCmd() *cobra.Command {
 
 	return tunnel
 }
+
+// tunnelUpdateCheck prints the installed and upstream cloudflared versions
+// via the same ui helpers used by `rootfiles status`, without touching the
+// binary. Returns a non-nil error only when the upstream lookup fails and
+// we have no useful output to produce.
+func tunnelUpdateCheck(ctx context.Context, rc *module.RunContext) error {
+	latest, err := module.FetchLatestCloudflaredVersion(ctx)
+	if err != nil {
+		return fmt.Errorf("fetching latest cloudflared release: %w", err)
+	}
+
+	ui.WriteSection(os.Stdout, "Cloudflared update check")
+
+	// currentCloudflaredVersion is package-private in module; derive from
+	// `cloudflared --version` here using the same logic.
+	current := ""
+	if rc.Runner.FileExists(cloudflaredPath) {
+		if res, err := rc.Runner.Query(ctx, cloudflaredPath, "--version"); err == nil {
+			for _, tok := range strings.Fields(res.Stdout) {
+				if len(tok) > 3 && tok[0] >= '0' && tok[0] <= '9' && strings.Contains(tok, ".") {
+					current = tok
+					break
+				}
+			}
+		}
+	}
+	if current == "" {
+		ui.WriteKV(os.Stdout, "Current", ui.StyleHint.Render("(not installed)"))
+	} else {
+		ui.WriteKV(os.Stdout, "Current", current)
+	}
+	ui.WriteKV(os.Stdout, "Latest", latest)
+
+	switch {
+	case current == "":
+		ui.WriteHint(os.Stdout, "run `rootfiles tunnel install` to install.")
+	case current == latest:
+		fmt.Println("  " + ui.StyleSuccess.Render(ui.MarkOK+" up to date."))
+	default:
+		ui.WriteHint(os.Stdout, "run `rootfiles tunnel update` to upgrade.")
+	}
+	return nil
+}
+
+// cloudflaredPath mirrors internal/module/cloudflared.go's cloudflaredBinary
+// constant. Duplicated here rather than exported to keep the module surface
+// minimal; if it ever drifts, the `tunnel status` / `tunnel update --check`
+// pair will report inconsistent paths, which scenario tests will catch.
+const cloudflaredPath = "/usr/local/bin/cloudflared"
 
 func buildRunContext(cmd *cobra.Command) *module.RunContext {
 	dryRun, _ := cmd.Flags().GetBool("dry-run")
