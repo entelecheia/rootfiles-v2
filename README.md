@@ -401,6 +401,8 @@ Requires Go 1.23+.
 
 ## Architecture
 
+Interactive blueprint: [docs/architecture/rootfiles-v2-rendered.html](docs/architecture/rootfiles-v2-rendered.html) (spec: [rootfiles-v2.architecture.json](docs/architecture/rootfiles-v2.architecture.json)).
+
 ```
 cmd/rootfiles/        Entry point
 internal/

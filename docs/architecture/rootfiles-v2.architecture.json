@@ -1,0 +1,315 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "rootfiles-v2 Go Workspace",
+    "locale": "en",
+    "quality_profile": "showcase",
+    "output": "rootfiles-v2-rendered.html",
+    "viewBox": [1376, 648],
+    "repository": {
+      "url": "https://github.com/entelecheia/rootfiles-v2",
+      "provider": "github",
+      "revision": "96cf67fdba998ca42e27cab769e09eec753a108c"
+    },
+    "views": [
+      {
+        "id": "check-path",
+        "label": "Check and apply path",
+        "focus": ["user", "cli", "config", "module", "exec", "fs"],
+        "note": "RunAll walks Check then Apply across the 10 modules."
+      },
+      {
+        "id": "gpu-path",
+        "label": "GPU allocation path",
+        "focus": ["cli", "module", "gpu", "fs"],
+        "note": "gpu assign/revoke write the Flock-serialized db; Apply enforces it."
+      },
+      {
+        "id": "tunnel-path",
+        "label": "Tunnel path",
+        "focus": ["cli", "tunnel", "fs"],
+        "note": "cloudflared daemon and systemd vlan network units."
+      }
+    ],
+    "legend": {
+      "mode": "all"
+    }
+  },
+  "components": [
+    {
+      "id": "user",
+      "type": "external",
+      "label": "Root Operators",
+      "sublabel": "provisioning CLI",
+      "pos": [40, 330],
+      "size": [130, 60],
+      "sources": [
+        { "path": "internal/cli/root.go", "line": 5, "label": "rootfiles root command" }
+      ]
+    },
+    {
+      "id": "cli",
+      "type": "backend",
+      "label": "rootfiles CLI",
+      "sublabel": "internal/cli, cobra",
+      "tag": "8 subcommands",
+      "pos": [250, 330],
+      "size": [160, 64],
+      "sources": [
+        { "path": "internal/cli/root.go", "line": 27, "end_line": 34, "label": "8 AddCommand calls" },
+        { "path": "cmd/rootfiles/main.go", "line": 15, "label": "rootfiles binary entrypoint" }
+      ]
+    },
+    {
+      "id": "config",
+      "type": "backend",
+      "label": "Config Loader",
+      "sublabel": "internal/config",
+      "tag": "5 profiles",
+      "pos": [250, 110],
+      "size": [160, 60],
+      "sources": [
+        { "path": "internal/config/loader.go", "line": 18, "label": "profile Load entry" },
+        { "path": "internal/config/profiles/dgx.yaml", "line": 1, "label": "dgx profile" }
+      ]
+    },
+    {
+      "id": "module",
+      "type": "backend",
+      "label": "Module Registry",
+      "sublabel": "internal/module",
+      "tag": "10 modules",
+      "pos": [480, 330],
+      "size": [150, 60],
+      "sources": [
+        { "path": "internal/module/module.go", "line": 50, "end_line": 61, "label": "defaultOrder, 10 names" },
+        { "path": "internal/module/module.go", "line": 113, "label": "RunAll: Check then Apply" }
+      ]
+    },
+    {
+      "id": "exec",
+      "type": "backend",
+      "label": "Exec Runner",
+      "sublabel": "internal/exec, dry-run",
+      "tag": "apt + shell",
+      "pos": [695, 330],
+      "size": [170, 64],
+      "sources": [
+        { "path": "internal/exec/runner.go", "line": 27, "label": "NewRunner, dry-run aware" },
+        { "path": "internal/exec/apt.go", "line": 14, "label": "NewAPT, apt-get wrapper" }
+      ]
+    },
+    {
+      "id": "gpu",
+      "type": "backend",
+      "label": "GPU Allocator",
+      "sublabel": "gpu module, Flock db",
+      "tag": "exclusive lock",
+      "pos": [695, 110],
+      "size": [170, 60],
+      "sources": [
+        { "path": "internal/module/gpu.go", "line": 719, "label": "syscall.Flock LOCK_EX" },
+        { "path": "internal/module/gpu.go", "line": 628, "label": "gpu-allocations.json path" }
+      ]
+    },
+    {
+      "id": "fs",
+      "type": "database",
+      "label": "System State",
+      "sublabel": "apt db, systemd, files",
+      "tag": "root-owned hosts",
+      "pos": [930, 330],
+      "size": [150, 60],
+      "sources": [
+        { "path": "internal/exec/runner.go", "line": 109, "label": "Runner.WriteFile" }
+      ]
+    },
+    {
+      "id": "tunnel",
+      "type": "cloud",
+      "label": "Cloudflared",
+      "sublabel": "tunnel module + cli",
+      "tag": "systemd network",
+      "pos": [250, 500],
+      "size": [160, 60],
+      "sources": [
+        { "path": "internal/module/cloudflared.go", "line": 22, "label": "cloudflared paths, vlan units" },
+        { "path": "internal/cli/tunnel.go", "line": 126, "label": "tunnelUpdateCheck" }
+      ]
+    },
+    {
+      "id": "ui",
+      "type": "frontend",
+      "label": "Status UI",
+      "sublabel": "internal/ui",
+      "tag": "styled output",
+      "pos": [40, 500],
+      "size": [130, 60],
+      "sources": [
+        { "path": "internal/ui/markers.go", "line": 26, "label": "OK / Fail / Pending marks" },
+        { "path": "internal/ui/format.go", "line": 11, "label": "WriteHeader / WriteSection" }
+      ]
+    }
+  ],
+  "boundaries": [
+    {
+      "kind": "region",
+      "label": "Single Go binary - apt, systemd, and file state",
+      "wraps": ["cli", "config", "module", "exec", "gpu", "tunnel"],
+      "pad": 14
+    },
+    {
+      "kind": "security-group",
+      "label": "Flock-serialized gpu allocation db",
+      "wraps": ["gpu"],
+      "pad": 14
+    }
+  ],
+  "connections": [
+    {
+      "id": "user-to-cli",
+      "from": "user",
+      "to": "cli",
+      "label": "sudo",
+      "variant": "emphasis",
+      "fromSide": "right",
+      "toSide": "left"
+    },
+    {
+      "id": "cli-to-config",
+      "from": "cli",
+      "to": "config",
+      "label": "load",
+      "fromSide": "top",
+      "toSide": "bottom",
+      "labelDx": -70
+    },
+    {
+      "id": "config-to-module",
+      "from": "config",
+      "to": "module",
+      "label": "enabled set",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelAt": [440, 240]
+    },
+    {
+      "id": "cli-to-module",
+      "from": "cli",
+      "to": "module",
+      "label": "run",
+      "fromSide": "right",
+      "toSide": "left"
+    },
+    {
+      "id": "cli-to-exec",
+      "from": "cli",
+      "to": "exec",
+      "label": "build ctx",
+      "fromSide": "bottom",
+      "toSide": "bottom",
+      "via": [[330, 445], [780, 445]]
+    },
+    {
+      "id": "cli-to-tunnel",
+      "from": "cli",
+      "to": "tunnel",
+      "label": "tunnel cmds",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelAt": [260, 408]
+    },
+    {
+      "id": "tunnel-to-fs",
+      "from": "tunnel",
+      "to": "fs",
+      "label": "units + daemon",
+      "fromSide": "right",
+      "toSide": "bottom",
+      "labelAt": [700, 570]
+    },
+    {
+      "id": "module-to-exec",
+      "from": "module",
+      "to": "exec",
+      "label": "apt + shell",
+      "fromSide": "right",
+      "toSide": "left",
+      "labelAt": [654, 404]
+    },
+    {
+      "id": "exec-to-fs",
+      "from": "exec",
+      "to": "fs",
+      "label": "mutate",
+      "fromSide": "right",
+      "toSide": "left"
+    },
+    {
+      "id": "module-to-gpu",
+      "from": "module",
+      "to": "gpu",
+      "label": "enforce",
+      "fromSide": "top",
+      "toSide": "bottom",
+      "labelAt": [670, 250]
+    },
+    {
+      "id": "cli-to-gpu",
+      "from": "cli",
+      "to": "gpu",
+      "label": "gpu assign",
+      "fromSide": "left",
+      "toSide": "top",
+      "via": [[215, 362], [215, 70], [780, 70]]
+    },
+    {
+      "id": "gpu-to-fs",
+      "from": "gpu",
+      "to": "fs",
+      "label": "locked db",
+      "fromSide": "right",
+      "toSide": "top",
+      "labelAt": [935, 140]
+    },
+    {
+      "id": "user-to-ui",
+      "from": "user",
+      "to": "ui",
+      "label": "status",
+      "fromSide": "bottom",
+      "toSide": "top",
+      "labelAt": [105, 404]
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "Check and apply",
+      "items": [
+        "10 modules in a fixed defaultOrder; RunAll runs Check then Apply",
+        "5 embedded profiles: minimal, base, full, gpu-server, dgx",
+        "apt operations wrapped by internal/exec with dry-run respected"
+      ]
+    },
+    {
+      "dot": "violet",
+      "title": "GPU allocation",
+      "items": [
+        "gpu module keeps allocations in <home-base>/.rootfiles/gpu-allocations.json",
+        "syscall.Flock LOCK_EX plus tmp-and-rename serializes concurrent assign and revoke",
+        "rootfiles gpu assign/revoke call the gpu module directly; RunAll re-applies env, cgroup and Docker wrapper"
+      ]
+    },
+    {
+      "dot": "emerald",
+      "title": "Tunnel and reporting",
+      "items": [
+        "cloudflared module installs daemon plus systemd vlan network units",
+        "rootfiles tunnel update --check compares installed and upstream cloudflared without downloading",
+        "internal/ui renders styled status sections with stable marks"
+      ]
+    }
+  ]
+}
