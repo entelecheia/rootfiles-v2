@@ -131,7 +131,7 @@
       "label": "Cloudflared",
       "sublabel": "tunnel module + cli",
       "tag": "systemd network",
-      "pos": [250, 500],
+      "pos": [480, 500],
       "size": [160, 60],
       "sources": [
         { "path": "internal/module/cloudflared.go", "line": 22, "label": "cloudflared paths, vlan units" },
@@ -144,8 +144,8 @@
       "label": "Status UI",
       "sublabel": "internal/ui",
       "tag": "styled output",
-      "pos": [40, 500],
-      "size": [130, 60],
+      "pos": [250, 500],
+      "size": [160, 60],
       "sources": [
         { "path": "internal/ui/markers.go", "line": 26, "label": "OK / Fail / Pending marks" },
         { "path": "internal/ui/format.go", "line": 11, "label": "WriteHeader / WriteSection" }
@@ -156,7 +156,7 @@
     {
       "kind": "region",
       "label": "Single Go binary - apt, systemd, and file state",
-      "wraps": ["cli", "config", "module", "exec", "gpu", "tunnel"],
+      "wraps": ["cli", "config", "module", "exec", "gpu", "tunnel", "ui"],
       "pad": 14
     },
     {
@@ -217,8 +217,8 @@
       "to": "tunnel",
       "label": "tunnel cmds",
       "fromSide": "bottom",
-      "toSide": "top",
-      "labelAt": [260, 408]
+      "toSide": "left",
+      "via": [[330, 445], [445, 445], [445, 530]]
     },
     {
       "id": "tunnel-to-fs",
@@ -227,7 +227,7 @@
       "label": "units + daemon",
       "fromSide": "right",
       "toSide": "bottom",
-      "labelAt": [700, 570]
+      "labelAt": [820, 570]
     },
     {
       "id": "module-to-exec",
@@ -274,13 +274,13 @@
       "labelAt": [935, 140]
     },
     {
-      "id": "user-to-ui",
-      "from": "user",
+      "id": "cli-to-ui",
+      "from": "cli",
       "to": "ui",
-      "label": "status",
+      "label": "render",
       "fromSide": "bottom",
       "toSide": "top",
-      "labelAt": [105, 404]
+      "labelAt": [270, 475]
     }
   ],
   "cards": [
