@@ -64,6 +64,9 @@ func runApply(cmd *cobra.Command, _ []string) error {
 
 	// Apply CLI flag overrides
 	applyFlagOverrides(cmd, cfg)
+	if err := cfg.Validate(); err != nil {
+		return err
+	}
 
 	// Setup runner
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{

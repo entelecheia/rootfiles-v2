@@ -1,9 +1,12 @@
 package config
 
 import (
+	"bytes"
 	"embed"
 	"fmt"
+	"io"
 	"os"
+	"path/filepath"
 
 	"gopkg.in/yaml.v3"
 )
@@ -13,14 +16,14 @@ var embeddedProfiles embed.FS
 
 const maxExtendsDepth = 5
 
-// Load resolves a profile by name (or custom path), applies env overrides,
-// and attaches system info.
+// Load resolves a profile by name (or custom path, "-" for stdin), applies
+// env overrides, validates the result and attaches system info.
 func Load(profileName, customPath string, sysInfo *SystemInfo) (*Config, error) {
 	var cfg *Config
 	var err error
 
 	if customPath != "" {
-		cfg, err = loadFromFile(customPath)
+		cfg, err = resolveFile(customPath)
 	} else {
 		if profileName == "" {
 			profileName = "minimal"
@@ -32,6 +35,9 @@ func Load(profileName, customPath string, sysInfo *SystemInfo) (*Config, error) 
 	}
 
 	applyEnvOverrides(cfg)
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
 	cfg.System = sysInfo
 	return cfg, nil
 }
@@ -41,147 +47,161 @@ func AvailableProfiles() []string {
 	return []string{"base", "minimal", "dgx", "gpu-server", "full"}
 }
 
+// Profiles are merged as YAML trees before decoding: a key present in the
+// child overrides the parent even when its value is false/0/"" (so a child
+// can disable a module or setting), nested maps merge key by key, lists
+// replace — except packages_extra, which accumulates along the chain.
+
 func resolveProfile(name string, depth int) (*Config, error) {
-	if depth > maxExtendsDepth {
-		return nil, fmt.Errorf("profile extends chain too deep (max %d)", maxExtendsDepth)
-	}
-
-	cfg, err := loadEmbeddedProfile(name)
-	if err != nil {
-		return nil, fmt.Errorf("loading profile %q: %w", name, err)
-	}
-
-	if cfg.Extends == "" {
-		return cfg, nil
-	}
-
-	base, err := resolveProfile(cfg.Extends, depth+1)
+	tree, err := resolveEmbeddedTree(name, depth)
 	if err != nil {
 		return nil, err
 	}
-
-	return mergeConfigs(base, cfg), nil
+	return decodeTree(tree, "profile "+name)
 }
 
-func loadEmbeddedProfile(name string) (*Config, error) {
+// resolveFile loads a custom config. Its `extends` may name a built-in
+// profile or another file (relative to the including file).
+func resolveFile(path string) (*Config, error) {
+	tree, err := resolveFileTree(path, 0, map[string]bool{})
+	if err != nil {
+		return nil, err
+	}
+	return decodeTree(tree, "config "+path)
+}
+
+func resolveEmbeddedTree(name string, depth int) (map[string]any, error) {
+	if depth > maxExtendsDepth {
+		return nil, fmt.Errorf("profile extends chain too deep (max %d)", maxExtendsDepth)
+	}
 	data, err := embeddedProfiles.ReadFile("profiles/" + name + ".yaml")
 	if err != nil {
-		return nil, fmt.Errorf("profile %q not found: %w", name, err)
+		return nil, fmt.Errorf("loading profile %q: profile %q not found: %w", name, name, err)
 	}
-	var cfg Config
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		return nil, fmt.Errorf("parsing profile %q: %w", name, err)
+	tree, err := parseTree(data, "profile "+name)
+	if err != nil {
+		return nil, err
 	}
-	return &cfg, nil
+	parent, _ := tree["extends"].(string)
+	delete(tree, "extends")
+	if parent == "" {
+		return tree, nil
+	}
+	base, err := resolveEmbeddedTree(parent, depth+1)
+	if err != nil {
+		return nil, err
+	}
+	return mergeTrees(base, tree), nil
 }
 
-func loadFromFile(path string) (*Config, error) {
-	data, err := os.ReadFile(path)
+func resolveFileTree(path string, depth int, seen map[string]bool) (map[string]any, error) {
+	if depth > maxExtendsDepth {
+		return nil, fmt.Errorf("config extends chain too deep (max %d)", maxExtendsDepth)
+	}
+	var data []byte
+	var err error
+	dir := "."
+	if path == "-" {
+		data, err = io.ReadAll(os.Stdin)
+	} else {
+		abs, aerr := filepath.Abs(path)
+		if aerr == nil {
+			if seen[abs] {
+				return nil, fmt.Errorf("config extends cycle at %s", path)
+			}
+			seen[abs] = true
+			dir = filepath.Dir(abs)
+		}
+		data, err = os.ReadFile(path)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("reading config %q: %w", path, err)
 	}
+	tree, err := parseTree(data, "config "+path)
+	if err != nil {
+		return nil, err
+	}
+	parent, _ := tree["extends"].(string)
+	delete(tree, "extends")
+	if parent == "" {
+		return tree, nil
+	}
+
+	var base map[string]any
+	if isProfileName(parent) {
+		base, err = resolveEmbeddedTree(parent, depth+1)
+	} else {
+		if !filepath.IsAbs(parent) {
+			parent = filepath.Join(dir, parent)
+		}
+		base, err = resolveFileTree(parent, depth+1, seen)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return mergeTrees(base, tree), nil
+}
+
+func isProfileName(s string) bool {
+	for _, p := range AvailableProfiles() {
+		if s == p {
+			return true
+		}
+	}
+	return false
+}
+
+func parseTree(data []byte, what string) (map[string]any, error) {
+	// Strict-decode each file on its own first so unknown keys are
+	// reported with that file's name and line numbers.
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
+	var probe Config
+	if err := dec.Decode(&probe); err != nil && err != io.EOF {
+		return nil, fmt.Errorf("parsing %s: %w", what, err)
+	}
+	tree := map[string]any{}
+	if err := yaml.Unmarshal(data, &tree); err != nil {
+		return nil, fmt.Errorf("parsing %s: %w", what, err)
+	}
+	return tree, nil
+}
+
+// mergeTrees overlays overlay onto base and returns base.
+func mergeTrees(base, overlay map[string]any) map[string]any {
+	for k, ov := range overlay {
+		if k == "packages_extra" {
+			bl, _ := base[k].([]any)
+			ol, _ := ov.([]any)
+			base[k] = append(append([]any{}, bl...), ol...)
+			continue
+		}
+		bm, bIsMap := base[k].(map[string]any)
+		om, oIsMap := ov.(map[string]any)
+		if bIsMap && oIsMap {
+			base[k] = mergeTrees(bm, om)
+			continue
+		}
+		base[k] = ov
+	}
+	return base
+}
+
+// decodeTree converts a merged tree into a Config, rejecting unknown keys
+// so a typo (e.g. "disable_pasword_auth") fails loudly instead of being
+// silently ignored.
+func decodeTree(tree map[string]any, what string) (*Config, error) {
+	data, err := yaml.Marshal(tree)
+	if err != nil {
+		return nil, fmt.Errorf("encoding %s: %w", what, err)
+	}
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
 	var cfg Config
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		return nil, fmt.Errorf("parsing config %q: %w", path, err)
+	if err := dec.Decode(&cfg); err != nil && err != io.EOF {
+		return nil, fmt.Errorf("parsing %s: %w", what, err)
 	}
 	return &cfg, nil
-}
-
-// mergeConfigs overlays child onto base. Non-zero child values win.
-func mergeConfigs(base, overlay *Config) *Config {
-	merged := *base
-
-	// Scalar fields: overlay wins if non-empty
-	if overlay.Locale != "" {
-		merged.Locale = overlay.Locale
-	}
-	if overlay.Timezone != "" {
-		merged.Timezone = overlay.Timezone
-	}
-
-	// Packages: keep base, append extra from overlay
-	merged.Packages = base.Packages
-	if len(overlay.Packages) > 0 {
-		merged.Packages = overlay.Packages
-	}
-	merged.PackagesExtra = append(base.PackagesExtra, overlay.PackagesExtra...)
-
-	// Modules: overlay wins per-module if explicitly set
-	merged.Modules = mergeModules(base.Modules, overlay.Modules)
-
-	// Users: overlay wins field-by-field
-	merged.Users = mergeUsers(base.Users, overlay.Users)
-
-	// SSH: overlay wins field-by-field
-	merged.SSH = mergeSSH(base.SSH, overlay.SSH)
-
-	// Clear extends (already resolved)
-	merged.Extends = ""
-
-	return &merged
-}
-
-func mergeModules(base, overlay ModulesConfig) ModulesConfig {
-	m := base
-	if overlay.Locale.Enabled {
-		m.Locale = overlay.Locale
-	}
-	if overlay.Packages.Enabled {
-		m.Packages = overlay.Packages
-	}
-	if overlay.SSH.Enabled {
-		m.SSH = overlay.SSH
-	}
-	if overlay.Users.Enabled {
-		m.Users = overlay.Users
-	}
-	if overlay.Docker.Enabled {
-		m.Docker = overlay.Docker
-	}
-	if overlay.Nvidia.Enabled {
-		m.Nvidia = overlay.Nvidia
-	}
-	if overlay.Cloudflared.Enabled {
-		m.Cloudflared = overlay.Cloudflared
-	}
-	if overlay.Storage.Enabled {
-		m.Storage = overlay.Storage
-	}
-	if overlay.Network.Enabled {
-		m.Network = overlay.Network
-	}
-	return m
-}
-
-func mergeUsers(base, overlay UsersConfig) UsersConfig {
-	u := base
-	if overlay.HomeBase != "" {
-		u.HomeBase = overlay.HomeBase
-	}
-	if overlay.DefaultShell != "" {
-		u.DefaultShell = overlay.DefaultShell
-	}
-	if len(overlay.DefaultGroups) > 0 {
-		u.DefaultGroups = overlay.DefaultGroups
-	}
-	if overlay.SudoNopasswd {
-		u.SudoNopasswd = true
-	}
-	return u
-}
-
-func mergeSSH(base, overlay SSHConfig) SSHConfig {
-	s := base
-	if overlay.DisableRootLogin {
-		s.DisableRootLogin = true
-	}
-	if overlay.DisablePasswordAuth {
-		s.DisablePasswordAuth = true
-	}
-	if overlay.Port != 0 {
-		s.Port = overlay.Port
-	}
-	return s
 }
 
 func applyEnvOverrides(cfg *Config) {
