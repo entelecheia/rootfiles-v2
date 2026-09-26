@@ -28,4 +28,12 @@ assert_file_exists "/raid/home/rehomeuser/myfile"
 assert_file_contains "/raid/home/rehomeuser/myfile" "important-data"
 assert_symlink "/home/rehomeuser" "/raid/home/rehomeuser"
 
+# Original home is kept as a backup, not deleted
+backup=$(ls -d /home/rehomeuser.rootfiles-bak-* 2>/dev/null | head -1 || true)
+if [ -n "$backup" ] && [ -f "$backup/myfile" ]; then
+    pass "original home preserved at $backup"
+else
+    fail "original home backup missing"
+fi
+
 report

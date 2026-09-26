@@ -9,6 +9,7 @@ import (
 
 	"github.com/entelecheia/rootfiles-v2/internal/config"
 	"github.com/entelecheia/rootfiles-v2/internal/exec"
+	"github.com/entelecheia/rootfiles-v2/internal/state"
 )
 
 // Module is the interface that all rootfiles modules must implement.
@@ -25,6 +26,9 @@ type RunContext struct {
 	APT    *exec.APT
 	DryRun bool
 	Yes    bool // unattended mode
+	// Force bypasses safety guards that would otherwise refuse a change
+	// (e.g. disabling SSH password auth with no key-based login available).
+	Force bool
 }
 
 // CheckResult holds the result of a module's Check operation.
@@ -35,29 +39,35 @@ type CheckResult struct {
 
 // Change describes a single pending change.
 type Change struct {
-	Description string
-	Command     string // shell command for dry-run display
+	Description string `json:"description"`
+	Command     string `json:"command,omitempty"` // shell command for dry-run display
 }
 
 // ApplyResult holds the result of a module's Apply operation.
 type ApplyResult struct {
 	Changed  bool
 	Messages []string
+	// Warnings are non-fatal problems the operator should act on
+	// (e.g. a service reload that could not be performed).
+	Warnings []string
 }
 
 // defaultOrder defines the static module execution order.
 // Dependencies are implicit in the ordering.
 var defaultOrder = []string{
 	"locale",
+	"system", // before packages: an APT mirror applies to the first install
 	"packages",
+	"users", // before ssh: declared accounts (and their keys) must exist before password auth is disabled
 	"ssh",
-	"users",
+	"security", // after ssh: the fail2ban jail follows the configured SSH port
 	"docker",
 	"nvidia",
 	"gpu",
 	"cloudflared",
 	"storage",
 	"network",
+	"monitoring",
 }
 
 // Registry manages module registration and resolution.
@@ -69,8 +79,10 @@ type Registry struct {
 func NewRegistry() *Registry {
 	r := &Registry{modules: make(map[string]Module)}
 	r.Register(NewLocaleModule())
+	r.Register(NewSystemModule())
 	r.Register(NewPackagesModule())
 	r.Register(NewSSHModule())
+	r.Register(NewSecurityModule())
 	r.Register(NewUsersModule())
 	r.Register(NewDockerModule())
 	r.Register(NewNvidiaModule())
@@ -78,6 +90,7 @@ func NewRegistry() *Registry {
 	r.Register(NewCloudflaredModule())
 	r.Register(NewStorageModule())
 	r.Register(NewNetworkModule())
+	r.Register(NewMonitoringModule())
 	return r
 }
 
@@ -108,18 +121,31 @@ func (r *Registry) Resolve(cfg *config.Config, filter []string) []Module {
 	return result
 }
 
-// RunAll executes Check then Apply on each module in order.
-// Non-fatal module errors are logged but do not stop execution of remaining modules.
-func RunAll(ctx context.Context, modules []Module, rc *RunContext) error {
+// RunAll executes Check then Apply on each module in order and returns
+// one outcome per module. Module errors are reported but do not stop the
+// remaining modules; a cancelled context does.
+func RunAll(ctx context.Context, modules []Module, rc *RunContext) ([]state.ModuleOutcome, error) {
 	var errors []string
+	outcomes := make([]state.ModuleOutcome, 0, len(modules))
 	for _, m := range modules {
+		out := state.ModuleOutcome{Name: m.Name()}
+		if ctx.Err() != nil {
+			out.Status = "skipped"
+			outcomes = append(outcomes, out)
+			continue
+		}
 		check, err := m.Check(ctx, rc)
 		if err != nil {
 			fmt.Printf("  ⚠ %s: check error: %v\n", m.Name(), err)
+			out.Status, out.Error = "failed", "check: "+err.Error()
+			errors = append(errors, fmt.Sprintf("%s: check: %v", m.Name(), err))
+			outcomes = append(outcomes, out)
 			continue
 		}
 		if check.Satisfied {
 			fmt.Printf("  ✓ %s: already satisfied\n", m.Name())
+			out.Status = "satisfied"
+			outcomes = append(outcomes, out)
 			continue
 		}
 
@@ -129,25 +155,39 @@ func RunAll(ctx context.Context, modules []Module, rc *RunContext) error {
 		}
 
 		if rc.DryRun {
+			out.Status = "pending"
+			outcomes = append(outcomes, out)
 			continue
 		}
 
 		result, err := m.Apply(ctx, rc)
 		if err != nil {
 			fmt.Printf("  ✗ %s: %v\n", m.Name(), err)
+			out.Status, out.Error = "failed", err.Error()
 			errors = append(errors, fmt.Sprintf("%s: %v", m.Name(), err))
+			outcomes = append(outcomes, out)
 			continue
 		}
+		out.Status = "satisfied"
 		if result.Changed {
+			out.Status = "changed"
 			for _, msg := range result.Messages {
 				fmt.Printf("  ✓ %s: %s\n", m.Name(), msg)
 			}
 		}
+		for _, w := range result.Warnings {
+			fmt.Printf("  ⚠ %s: %s\n", m.Name(), w)
+		}
+		out.Messages, out.Warnings = result.Messages, result.Warnings
+		outcomes = append(outcomes, out)
+	}
+	if err := ctx.Err(); err != nil {
+		return outcomes, fmt.Errorf("interrupted: %w", err)
 	}
 	if len(errors) > 0 {
-		return fmt.Errorf("%d module(s) failed: %v", len(errors), errors)
+		return outcomes, fmt.Errorf("%d module(s) failed: %v", len(errors), errors)
 	}
-	return nil
+	return outcomes, nil
 }
 
 // ensureMetaDir ensures the .rootfiles metadata directory exists under homeBase.

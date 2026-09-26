@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"time"
 
+	"github.com/entelecheia/rootfiles-v2/internal/config"
 	"github.com/entelecheia/rootfiles-v2/internal/ui"
 )
 
@@ -18,18 +20,88 @@ type CloudflaredModule struct{}
 func NewCloudflaredModule() *CloudflaredModule { return &CloudflaredModule{} }
 func (m *CloudflaredModule) Name() string      { return "cloudflared" }
 
-const (
-	cloudflaredBinary  = "/usr/local/bin/cloudflared"
-	cloudflaredService = "cloudflared"
-	vlanNetdevPath     = "/etc/systemd/network/10-cloudflared-vlan.netdev"
-	vlanNetworkPath    = "/etc/systemd/network/10-cloudflared-vlan.network"
+// Paths are overridable in tests.
+var (
+	cloudflaredBinary   = "/usr/local/bin/cloudflared"
+	cloudflaredUnitPath = "/etc/systemd/system/cloudflared.service"
+	cloudflaredEnvPath  = "/etc/cloudflared/tunnel.env"
+	vlanNetdevPath      = "/etc/systemd/network/10-cloudflared-vlan.netdev"
+	vlanNetworkPath     = "/etc/systemd/network/10-cloudflared-vlan.network"
 )
+
+const cloudflaredService = "cloudflared"
+
+// The tunnel token is a credential: it lives in a root-only env file read
+// by systemd, never in the (world-readable) unit file or on a command line.
+// `cloudflared tunnel run` picks it up from TUNNEL_TOKEN.
+func cloudflaredUnit() string {
+	return fmt.Sprintf(`# Managed by rootfiles-v2
+[Unit]
+Description=cloudflared tunnel
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=notify
+EnvironmentFile=%s
+ExecStart=%s --no-autoupdate tunnel run
+Restart=on-failure
+RestartSec=5s
+TimeoutStartSec=0
+
+[Install]
+WantedBy=multi-user.target
+`, cloudflaredEnvPath, cloudflaredBinary)
+}
+
+func cloudflaredEnv(token string) string { return "TUNNEL_TOKEN=" + token + "\n" }
+
+func vlanIface(cfg config.PrivateNetworkConfig) string {
+	if cfg.Interface == "" {
+		return "vlan0"
+	}
+	return cfg.Interface
+}
+
+func vlanNetdev(iface string) string {
+	return fmt.Sprintf(`# Managed by rootfiles-v2 — cloudflared private network
+[NetDev]
+Name=%s
+Kind=dummy
+`, iface)
+}
+
+func vlanNetwork(iface, addr string) string {
+	return fmt.Sprintf(`# Managed by rootfiles-v2 — cloudflared private network
+[Match]
+Name=%s
+
+[Network]
+Address=%s
+`, iface, addr)
+}
+
+func fileEquals(rc *RunContext, path, want string) bool {
+	data, err := rc.Runner.ReadFile(path)
+	return err == nil && string(data) == want
+}
+
+// tunnelServiceDrift reports whether the unit or token file differs.
+func tunnelServiceDrift(rc *RunContext, token string) bool {
+	return !fileEquals(rc, cloudflaredUnitPath, cloudflaredUnit()) ||
+		!fileEquals(rc, cloudflaredEnvPath, cloudflaredEnv(token))
+}
+
+func vlanDrift(rc *RunContext, pn config.PrivateNetworkConfig) bool {
+	iface := vlanIface(pn)
+	return !fileEquals(rc, vlanNetdevPath, vlanNetdev(iface)) ||
+		!fileEquals(rc, vlanNetworkPath, vlanNetwork(iface, pn.Address))
+}
 
 func (m *CloudflaredModule) Check(_ context.Context, rc *RunContext) (*CheckResult, error) {
 	var changes []Change
 	cfg := rc.Config.Modules.Cloudflared
 
-	// Check binary
 	if !rc.Runner.FileExists(cloudflaredBinary) {
 		changes = append(changes, Change{
 			Description: "Install cloudflared binary",
@@ -37,18 +109,18 @@ func (m *CloudflaredModule) Check(_ context.Context, rc *RunContext) (*CheckResu
 		})
 	}
 
-	// Check VLAN if private network enabled
-	if cfg.PrivateNetwork.Enabled && cfg.PrivateNetwork.Address != "" {
-		iface := cfg.PrivateNetwork.Interface
-		if iface == "" {
-			iface = "vlan0"
-		}
-		if !rc.Runner.FileExists(vlanNetdevPath) {
-			changes = append(changes, Change{
-				Description: fmt.Sprintf("Create VLAN interface %s (%s)", iface, cfg.PrivateNetwork.Address),
-				Command:     "configure systemd-networkd dummy interface",
-			})
-		}
+	if cfg.TunnelToken != "" && tunnelServiceDrift(rc, cfg.TunnelToken) {
+		changes = append(changes, Change{
+			Description: "Install/update cloudflared tunnel service",
+			Command:     "write " + cloudflaredUnitPath + " + " + cloudflaredEnvPath,
+		})
+	}
+
+	if pn := cfg.PrivateNetwork; pn.Enabled && pn.Address != "" && vlanDrift(rc, pn) {
+		changes = append(changes, Change{
+			Description: fmt.Sprintf("Configure VLAN interface %s (%s)", vlanIface(pn), pn.Address),
+			Command:     "configure systemd-networkd dummy interface",
+		})
 	}
 
 	return &CheckResult{
@@ -58,10 +130,10 @@ func (m *CloudflaredModule) Check(_ context.Context, rc *RunContext) (*CheckResu
 }
 
 func (m *CloudflaredModule) Apply(ctx context.Context, rc *RunContext) (*ApplyResult, error) {
-	var messages []string
+	var messages, warnings []string
 	changed := false
+	cfg := rc.Config.Modules.Cloudflared
 
-	// Install binary
 	if !rc.Runner.FileExists(cloudflaredBinary) {
 		if err := m.installBinary(ctx, rc); err != nil {
 			return nil, err
@@ -70,18 +142,56 @@ func (m *CloudflaredModule) Apply(ctx context.Context, rc *RunContext) (*ApplyRe
 		changed = true
 	}
 
-	// Setup VLAN private network
-	cfg := rc.Config.Modules.Cloudflared
-	if cfg.PrivateNetwork.Enabled && cfg.PrivateNetwork.Address != "" {
-		if err := m.setupVLAN(ctx, rc); err != nil {
+	if cfg.TunnelToken != "" && tunnelServiceDrift(rc, cfg.TunnelToken) {
+		w, err := installTunnelService(ctx, rc, cfg.TunnelToken)
+		if err != nil {
 			return nil, err
 		}
-		messages = append(messages, fmt.Sprintf("VLAN %s configured (%s)",
-			cfg.PrivateNetwork.Interface, cfg.PrivateNetwork.Address))
+		warnings = append(warnings, w...)
+		messages = append(messages, "tunnel service installed")
 		changed = true
 	}
 
-	return &ApplyResult{Changed: changed, Messages: messages}, nil
+	if pn := cfg.PrivateNetwork; pn.Enabled && pn.Address != "" && vlanDrift(rc, pn) {
+		w, err := m.setupVLAN(ctx, rc)
+		if err != nil {
+			return nil, err
+		}
+		warnings = append(warnings, w...)
+		messages = append(messages, fmt.Sprintf("VLAN %s configured (%s)", vlanIface(pn), pn.Address))
+		changed = true
+	}
+
+	return &ApplyResult{Changed: changed, Messages: messages, Warnings: warnings}, nil
+}
+
+// installTunnelService writes the unit and token file and (re)starts the
+// service. systemctl failures are warnings: the files are in place and the
+// service starts on next boot.
+func installTunnelService(ctx context.Context, rc *RunContext, token string) ([]string, error) {
+	if strings.ContainsAny(token, "\n\r \"'") {
+		return nil, fmt.Errorf("tunnel token contains invalid characters")
+	}
+	if err := rc.Runner.MkdirAll(filepath.Dir(cloudflaredEnvPath), 0700); err != nil {
+		return nil, fmt.Errorf("creating %s: %w", filepath.Dir(cloudflaredEnvPath), err)
+	}
+	if err := rc.Runner.WriteFile(cloudflaredEnvPath, []byte(cloudflaredEnv(token)), 0600); err != nil {
+		return nil, fmt.Errorf("writing tunnel token: %w", err)
+	}
+	if err := rc.Runner.WriteFile(cloudflaredUnitPath, []byte(cloudflaredUnit()), 0644); err != nil {
+		return nil, fmt.Errorf("writing cloudflared unit: %w", err)
+	}
+	var warnings []string
+	if w := systemdReload(ctx, rc); w != "" {
+		return append(warnings, w), nil
+	}
+	if _, err := rc.Runner.Run(ctx, "systemctl", "enable", cloudflaredService); err != nil {
+		warnings = append(warnings, "enabling cloudflared: "+firstLine(err.Error()))
+	}
+	if _, err := rc.Runner.Run(ctx, "systemctl", "restart", cloudflaredService); err != nil {
+		warnings = append(warnings, "starting cloudflared: "+firstLine(err.Error()))
+	}
+	return warnings, nil
 }
 
 func (m *CloudflaredModule) installBinary(ctx context.Context, rc *RunContext) error {
@@ -92,7 +202,8 @@ func (m *CloudflaredModule) installBinary(ctx context.Context, rc *RunContext) e
 // "2024.9.1"). Empty version falls back to the "latest" alias URL, which
 // GitHub resolves server-side to whatever release cloudflared has tagged
 // as latest. Non-empty versions use the explicit release download path
-// so operators can pin.
+// so operators can pin. The download goes to a temp file that is renamed
+// into place, so a failed download never leaves a truncated binary.
 func (m *CloudflaredModule) installBinaryVersion(ctx context.Context, rc *RunContext, version string) error {
 	arch := runtime.GOARCH
 	if arch != "amd64" && arch != "arm64" {
@@ -112,67 +223,73 @@ func (m *CloudflaredModule) installBinaryVersion(ctx context.Context, rc *RunCon
 		)
 	}
 
-	if _, err := rc.Runner.Run(ctx, "curl", "-fsSL", "-o", cloudflaredBinary, url); err != nil {
+	tmp := cloudflaredBinary + ".rootfiles-download"
+	if _, err := rc.Runner.Run(ctx, "curl", "-fsSL", "--retry", "3", "-o", tmp, url); err != nil {
+		_ = rc.Runner.Remove(tmp)
 		return fmt.Errorf("downloading cloudflared: %w", err)
 	}
-	if _, err := rc.Runner.Run(ctx, "chmod", "+x", cloudflaredBinary); err != nil {
+	if _, err := rc.Runner.Run(ctx, "chmod", "0755", tmp); err != nil {
 		return fmt.Errorf("chmod cloudflared: %w", err)
 	}
+	if err := rc.Runner.Rename(tmp, cloudflaredBinary); err != nil {
+		return fmt.Errorf("installing cloudflared: %w", err)
+	}
 	return nil
 }
 
-func (m *CloudflaredModule) setupVLAN(ctx context.Context, rc *RunContext) error {
+func (m *CloudflaredModule) setupVLAN(ctx context.Context, rc *RunContext) ([]string, error) {
 	cfg := rc.Config.Modules.Cloudflared.PrivateNetwork
-	iface := cfg.Interface
-	if iface == "" {
-		iface = "vlan0"
+	iface := vlanIface(cfg)
+
+	if err := rc.Runner.MkdirAll(filepath.Dir(vlanNetdevPath), 0755); err != nil {
+		return nil, fmt.Errorf("creating systemd-networkd dir: %w", err)
+	}
+	if err := rc.Runner.WriteFile(vlanNetdevPath, []byte(vlanNetdev(iface)), 0644); err != nil {
+		return nil, fmt.Errorf("writing netdev: %w", err)
+	}
+	if err := rc.Runner.WriteFile(vlanNetworkPath, []byte(vlanNetwork(iface, cfg.Address)), 0644); err != nil {
+		return nil, fmt.Errorf("writing network: %w", err)
 	}
 
-	// Create systemd-networkd config directory
-	rc.Runner.MkdirAll("/etc/systemd/network", 0755)
-
-	// Write netdev file
-	netdev := fmt.Sprintf(`# Managed by rootfiles-v2 — cloudflared private network
-[NetDev]
-Name=%s
-Kind=dummy
-`, iface)
-	if err := rc.Runner.WriteFile(vlanNetdevPath, []byte(netdev), 0644); err != nil {
-		return fmt.Errorf("writing netdev: %w", err)
+	var warnings []string
+	if _, err := rc.Runner.Run(ctx, "systemctl", "restart", "systemd-networkd"); err == nil {
+		return nil, nil
 	}
-
-	// Write network file
-	network := fmt.Sprintf(`# Managed by rootfiles-v2 — cloudflared private network
-[Match]
-Name=%s
-
-[Network]
-Address=%s
-`, iface, cfg.Address)
-	if err := rc.Runner.WriteFile(vlanNetworkPath, []byte(network), 0644); err != nil {
-		return fmt.Errorf("writing network: %w", err)
+	// No systemd-networkd (containers, NetworkManager hosts): bring the
+	// interface up directly so the address is live now; the files take
+	// effect whenever networkd runs.
+	if _, err := rc.Runner.Query(ctx, "ip", "link", "show", iface); err != nil {
+		if _, err := rc.Runner.Run(ctx, "ip", "link", "add", iface, "type", "dummy"); err != nil {
+			warnings = append(warnings, fmt.Sprintf("creating %s: %s", iface, firstLine(err.Error())))
+			return warnings, nil
+		}
 	}
-
-	// Apply immediately
-	rc.Runner.Run(ctx, "systemctl", "restart", "systemd-networkd")
-
-	// Verify interface came up
-	if _, err := rc.Runner.Run(ctx, "ip", "link", "show", iface); err != nil {
-		// Manual fallback: create dummy interface directly
-		rc.Runner.Run(ctx, "ip", "link", "add", iface, "type", "dummy")
-		rc.Runner.Run(ctx, "ip", "addr", "add", cfg.Address, "dev", iface)
-		rc.Runner.Run(ctx, "ip", "link", "set", iface, "up")
+	if _, err := rc.Runner.Run(ctx, "ip", "addr", "replace", cfg.Address, "dev", iface); err != nil {
+		warnings = append(warnings, fmt.Sprintf("assigning %s: %s", cfg.Address, firstLine(err.Error())))
 	}
-
-	return nil
+	if _, err := rc.Runner.Run(ctx, "ip", "link", "set", iface, "up"); err != nil {
+		warnings = append(warnings, fmt.Sprintf("bringing up %s: %s", iface, firstLine(err.Error())))
+	}
+	return warnings, nil
 }
 
-// TunnelSetup installs cloudflared and configures tunnel + VLAN.
+// TunnelSetup configures VLAN, installs cloudflared and the tunnel service.
 // Called from CLI `rootfiles tunnel setup`.
 func TunnelSetup(ctx context.Context, rc *RunContext, token, vlanAddr string) error {
 	m := NewCloudflaredModule()
+	var warnings []string
 
-	// Install binary if needed
+	// VLAN first: it does not depend on the binary.
+	if vlanAddr != "" {
+		fmt.Println("Configuring VLAN private network...")
+		rc.Config.Modules.Cloudflared.PrivateNetwork.Address = vlanAddr
+		w, err := m.setupVLAN(ctx, rc)
+		if err != nil {
+			return err
+		}
+		warnings = append(warnings, w...)
+	}
+
 	if !rc.Runner.FileExists(cloudflaredBinary) {
 		fmt.Println("Installing cloudflared...")
 		if err := m.installBinary(ctx, rc); err != nil {
@@ -180,27 +297,18 @@ func TunnelSetup(ctx context.Context, rc *RunContext, token, vlanAddr string) er
 		}
 	}
 
-	// Install tunnel service
 	if token != "" {
 		fmt.Println("Setting up tunnel service...")
-		if _, err := rc.Runner.Run(ctx, cloudflaredBinary, "service", "install", token); err != nil {
-			return fmt.Errorf("installing tunnel service: %w", err)
-		}
-		rc.Runner.Run(ctx, "systemctl", "enable", "--now", cloudflaredService)
-	}
-
-	// Setup VLAN
-	if vlanAddr != "" {
-		fmt.Println("Configuring VLAN private network...")
-		rc.Config.Modules.Cloudflared.PrivateNetwork.Address = vlanAddr
-		if rc.Config.Modules.Cloudflared.PrivateNetwork.Interface == "" {
-			rc.Config.Modules.Cloudflared.PrivateNetwork.Interface = "vlan0"
-		}
-		if err := m.setupVLAN(ctx, rc); err != nil {
+		w, err := installTunnelService(ctx, rc, token)
+		if err != nil {
 			return err
 		}
+		warnings = append(warnings, w...)
 	}
 
+	for _, w := range warnings {
+		fmt.Println("  " + ui.MarkWarn + " " + w)
+	}
 	fmt.Println("Tunnel setup complete.")
 	return nil
 }
@@ -211,14 +319,17 @@ func TunnelStatus(ctx context.Context, rc *RunContext) error {
 
 	// Binary version
 	if rc.Runner.FileExists(cloudflaredBinary) {
-		res, _ := rc.Runner.Run(ctx, cloudflaredBinary, "--version")
-		ui.WriteKV(os.Stdout, "Binary", strings.TrimSpace(res.Stdout))
+		if res, err := rc.Runner.Query(ctx, cloudflaredBinary, "--version"); err == nil {
+			ui.WriteKV(os.Stdout, "Binary", strings.TrimSpace(res.Stdout))
+		} else {
+			ui.WriteKV(os.Stdout, "Binary", ui.StyleHint.Render("installed (version unknown)"))
+		}
 	} else {
 		ui.WriteKV(os.Stdout, "Binary", ui.StyleHint.Render("not installed"))
 	}
 
 	// Service status
-	res, err := rc.Runner.Run(ctx, "systemctl", "is-active", cloudflaredService)
+	res, err := rc.Runner.Query(ctx, "systemctl", "is-active", cloudflaredService)
 	if err != nil {
 		ui.WriteKV(os.Stdout, "Service", ui.StyleHint.Render("inactive"))
 	} else {
@@ -236,7 +347,7 @@ func TunnelStatus(ctx context.Context, rc *RunContext) error {
 	if iface == "" {
 		iface = "vlan0"
 	}
-	res, err = rc.Runner.Run(ctx, "ip", "addr", "show", iface)
+	res, err = rc.Runner.Query(ctx, "ip", "addr", "show", iface)
 	if err != nil {
 		ui.WriteKV(os.Stdout, fmt.Sprintf("VLAN (%s)", iface), ui.StyleHint.Render("not configured"))
 	} else {
@@ -368,22 +479,41 @@ func firstNonEmptyCloudflared(vals ...string) string {
 
 // TunnelUninstall removes tunnel service, VLAN, and binary.
 func TunnelUninstall(ctx context.Context, rc *RunContext) error {
-	// Stop and uninstall service
-	rc.Runner.Run(ctx, "systemctl", "stop", cloudflaredService)
-	rc.Runner.Run(ctx, cloudflaredBinary, "service", "uninstall")
+	var warnings []string
+	warn := func(what string, err error) {
+		warnings = append(warnings, what+": "+firstLine(err.Error()))
+	}
+
+	// Stop and remove the service (ours, or a legacy `cloudflared service
+	// install` unit at the same path).
+	if _, err := rc.Runner.Run(ctx, "systemctl", "disable", "--now", cloudflaredService); err != nil {
+		warn("stopping cloudflared", err)
+	}
+	for _, p := range []string{cloudflaredUnitPath, cloudflaredEnvPath} {
+		if err := rc.Runner.Remove(p); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("removing %s: %w", p, err)
+		}
+	}
+	if w := systemdReload(ctx, rc); w != "" {
+		warnings = append(warnings, w)
+	}
 
 	// Remove VLAN
-	cfg := rc.Config.Modules.Cloudflared.PrivateNetwork
-	iface := cfg.Interface
-	if iface == "" {
-		iface = "vlan0"
+	iface := vlanIface(rc.Config.Modules.Cloudflared.PrivateNetwork)
+	if _, err := rc.Runner.Query(ctx, "ip", "link", "show", iface); err == nil {
+		if _, err := rc.Runner.Run(ctx, "ip", "link", "delete", iface); err != nil {
+			warn("deleting "+iface, err)
+		}
 	}
-	rc.Runner.Run(ctx, "ip", "link", "delete", iface)
-	rc.Runner.Run(ctx, "rm", "-f", vlanNetdevPath, vlanNetworkPath)
+	for _, p := range []string{vlanNetdevPath, vlanNetworkPath, cloudflaredBinary} {
+		if err := rc.Runner.Remove(p); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("removing %s: %w", p, err)
+		}
+	}
 
-	// Remove binary
-	rc.Runner.Run(ctx, "rm", "-f", cloudflaredBinary)
-
+	for _, w := range warnings {
+		fmt.Println("  " + ui.MarkWarn + " " + w)
+	}
 	fmt.Println("Tunnel uninstalled (service, VLAN, binary removed).")
 	return nil
 }

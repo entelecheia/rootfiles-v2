@@ -2,6 +2,8 @@ package config
 
 import (
 	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -153,20 +155,136 @@ func TestResolveProfile_NotFound(t *testing.T) {
 	}
 }
 
-func TestMergeConfigs_OverlayWins(t *testing.T) {
-	base := &Config{
-		Locale: "en_US.UTF-8",
-		Users:  UsersConfig{HomeBase: "/home"},
+func TestMergeTrees(t *testing.T) {
+	base := map[string]any{
+		"locale":         "en_US.UTF-8",
+		"packages_extra": []any{"a"},
+		"users":          map[string]any{"home_base": "/home", "sudo_nopasswd": true},
+		"modules":        map[string]any{"docker": map[string]any{"enabled": true, "storage_dir": "/x"}},
 	}
-	overlay := &Config{
-		Users: UsersConfig{HomeBase: "/raid/home"},
+	overlay := map[string]any{
+		"packages_extra": []any{"b"},
+		"users":          map[string]any{"home_base": "/raid/home", "sudo_nopasswd": false},
+		"modules":        map[string]any{"docker": map[string]any{"enabled": false}},
 	}
-	merged := mergeConfigs(base, overlay)
-	if merged.Users.HomeBase != "/raid/home" {
-		t.Errorf("home_base = %q, want /raid/home", merged.Users.HomeBase)
+	m := mergeTrees(base, overlay)
+	users := m["users"].(map[string]any)
+	if users["home_base"] != "/raid/home" || users["sudo_nopasswd"] != false {
+		t.Errorf("users = %v", users)
 	}
-	if merged.Locale != "en_US.UTF-8" {
-		t.Errorf("locale = %q, want en_US.UTF-8 (from base)", merged.Locale)
+	docker := m["modules"].(map[string]any)["docker"].(map[string]any)
+	if docker["enabled"] != false || docker["storage_dir"] != "/x" {
+		t.Errorf("docker = %v (explicit false must win, other keys kept)", docker)
+	}
+	if extra := m["packages_extra"].([]any); len(extra) != 2 {
+		t.Errorf("packages_extra = %v, want accumulated", extra)
+	}
+	if m["locale"] != "en_US.UTF-8" {
+		t.Errorf("locale lost: %v", m["locale"])
+	}
+}
+
+func writeFile(t *testing.T, dir, name, content string) string {
+	t.Helper()
+	p := filepath.Join(dir, name)
+	if err := os.WriteFile(p, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+func TestLoad_CustomFileExtendsProfileAndDisables(t *testing.T) {
+	dir := t.TempDir()
+	p := writeFile(t, dir, "site.yaml", `extends: dgx
+modules:
+  cloudflared:
+    enabled: false
+ssh:
+  disable_root_login: false
+users:
+  sudo_nopasswd: false
+`)
+	cfg, err := Load("", p, nil)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Users.HomeBase != "/raid/home" || !cfg.Modules.Docker.Enabled {
+		t.Error("dgx settings should be inherited")
+	}
+	if cfg.Modules.Cloudflared.Enabled {
+		t.Error("child must be able to disable a module")
+	}
+	if cfg.SSH.DisableRootLogin {
+		t.Error("child must be able to set a bool back to false")
+	}
+	if !cfg.SSH.DisablePasswordAuth {
+		t.Error("unrelated ssh settings should be kept")
+	}
+	if cfg.Users.SudoNopasswd {
+		t.Error("sudo_nopasswd override to false ignored")
+	}
+	if len(cfg.PackagesExtra) == 0 || len(cfg.Packages) == 0 {
+		t.Error("packages should be inherited through the chain")
+	}
+}
+
+func TestLoad_CustomFileExtendsRelativeFile(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "common.yaml", "extends: minimal\ntimezone: UTC\n")
+	os.MkdirAll(filepath.Join(dir, "hosts"), 0755)
+	p := writeFile(t, filepath.Join(dir, "hosts"), "gpu01.yaml", "extends: ../common.yaml\nlocale: ko_KR.UTF-8\n")
+	cfg, err := Load("", p, nil)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Timezone != "UTC" || cfg.Locale != "ko_KR.UTF-8" || !cfg.Modules.Users.Enabled {
+		t.Errorf("unexpected merge: tz=%q locale=%q users=%v", cfg.Timezone, cfg.Locale, cfg.Modules.Users.Enabled)
+	}
+}
+
+func TestLoad_ExtendsCycle(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "a.yaml", "extends: b.yaml\n")
+	p := writeFile(t, dir, "b.yaml", "extends: a.yaml\n")
+	if _, err := Load("", p, nil); err == nil {
+		t.Error("expected cycle error")
+	}
+}
+
+func TestLoad_UnknownKeyRejected(t *testing.T) {
+	p := writeFile(t, t.TempDir(), "typo.yaml", "extends: minimal\nssh:\n  disable_pasword_auth: true\n")
+	_, err := Load("", p, nil)
+	if err == nil || !strings.Contains(err.Error(), "disable_pasword_auth") {
+		t.Errorf("expected unknown field error, got %v", err)
+	}
+}
+
+func TestValidate(t *testing.T) {
+	cfg := &Config{
+		SSH:   SSHConfig{Port: 70000},
+		Users: UsersConfig{HomeBase: "raid/home"},
+		Modules: ModulesConfig{
+			Nvidia:      NvidiaConfig{GPUAllocation: GPUAllocationConfig{Method: "magic"}},
+			Cloudflared: CloudflaredConfig{PrivateNetwork: PrivateNetworkConfig{Address: "172.16.0.1"}},
+			Storage:     StorageConfig{Symlinks: map[string]string{"/": "/raid"}},
+		},
+	}
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("expected validation errors")
+	}
+	for _, want := range []string{"ssh.port", "home_base", "method", "CIDR", "refusing"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error should mention %q:\n%v", want, err)
+		}
+	}
+}
+
+func TestAllProfilesValid(t *testing.T) {
+	for _, name := range AvailableProfiles() {
+		if _, err := Load(name, "", nil); err != nil {
+			t.Errorf("profile %s: %v", name, err)
+		}
 	}
 }
 

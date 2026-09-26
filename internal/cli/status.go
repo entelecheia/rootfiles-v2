@@ -15,24 +15,30 @@ import (
 	"github.com/entelecheia/rootfiles-v2/internal/config"
 	execpkg "github.com/entelecheia/rootfiles-v2/internal/exec"
 	"github.com/entelecheia/rootfiles-v2/internal/module"
+	"github.com/entelecheia/rootfiles-v2/internal/state"
 	"github.com/entelecheia/rootfiles-v2/internal/ui"
 )
 
 func newStatusCmd() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "status",
 		Short: "Show full system status at a glance",
 		Long:  "Unified dashboard: system, profile, modules, GPU allocations, tunnel, users.",
 		RunE:  runStatus,
 	}
+	addOutputFlag(cmd)
+	return cmd
 }
 
 func runStatus(cmd *cobra.Command, _ []string) error {
-	ctx := context.Background()
+	ctx := cmd.Context()
 	out := cmd.OutOrStdout()
 
+	format, err := outputFormat(cmd)
+	if err != nil {
+		return err
+	}
 	profileName, _ := cmd.Flags().GetString("profile")
-	configPath, _ := cmd.Flags().GetString("config")
 	if profileName == "" {
 		profileName = os.Getenv("ROOTFILES_PROFILE")
 	}
@@ -42,10 +48,8 @@ func runStatus(cmd *cobra.Command, _ []string) error {
 		sysInfo = &config.SystemInfo{}
 	}
 
-	active := profileName
-	if active == "" && configPath == "" {
-		active = sysInfo.SuggestProfile()
-	}
+	last, lastErr := state.Last()
+	active, configPath := resolveTarget(cmd, sysInfo)
 
 	cfg, cfgErr := config.Load(active, configPath, sysInfo)
 	if cfg == nil {
@@ -62,10 +66,15 @@ func runStatus(cmd *cobra.Command, _ []string) error {
 		Yes:    true,
 	}
 
+	if format == "json" {
+		return writeJSON(out, collectStatus(ctx, rc, sysInfo, active, configPath, cfgErr, last))
+	}
+
 	ui.WriteHeader(out, "rootfiles status")
 
 	renderSystemSection(out, sysInfo)
 	renderProfileSection(out, active, profileName, sysInfo, configPath, cfgErr)
+	renderLastApplySection(out, last, lastErr)
 	renderModulesSection(ctx, out, rc)
 	renderGPUSection(out, rc)
 	renderTunnelSection(ctx, out, rc)
@@ -127,6 +136,105 @@ func renderProfileSection(out io.Writer, active, flagProfile string, sys *config
 	}
 	if loadErr != nil {
 		ui.WriteHint(out, fmt.Sprintf("%s config load failed: %v", ui.WarnMark(), loadErr))
+	}
+}
+
+type statusReport struct {
+	System     *config.SystemInfo       `json:"system"`
+	Hostname   string                   `json:"hostname"`
+	Profile    string                   `json:"profile,omitempty"`
+	ConfigPath string                   `json:"config_path,omitempty"`
+	ConfigErr  string                   `json:"config_error,omitempty"`
+	LastApply  *state.Run               `json:"last_apply"`
+	Modules    []checkModule            `json:"modules"`
+	GPU        *module.GPUAllocationsDB `json:"gpu,omitempty"`
+	Tunnel     statusTunnel             `json:"tunnel"`
+	Users      statusUsers              `json:"users"`
+}
+
+type statusTunnel struct {
+	Binary  string `json:"binary,omitempty"`
+	Service string `json:"service"`
+	VLAN    string `json:"vlan,omitempty"`
+}
+
+type statusUsers struct {
+	HomeBase string `json:"home_base"`
+	Managed  int    `json:"managed"`
+	System   int    `json:"system"`
+}
+
+func collectStatus(ctx context.Context, rc *module.RunContext, sys *config.SystemInfo, profile, configPath string, cfgErr error, last *state.Run) statusReport {
+	r := statusReport{System: sys, Profile: profile, ConfigPath: configPath, LastApply: last, Modules: []checkModule{}}
+	r.Hostname, _ = os.Hostname()
+	if cfgErr != nil {
+		r.ConfigErr = cfgErr.Error()
+	}
+
+	modules := module.NewRegistry().Resolve(rc.Config, nil)
+	if results, err := module.CheckAll(ctx, modules, rc); err == nil {
+		for _, m := range modules {
+			cm := checkModule{Name: m.Name(), Satisfied: true, Changes: []module.Change{}}
+			if res := results[m.Name()]; res != nil {
+				cm.Satisfied = res.Satisfied
+				if res.Changes != nil {
+					cm.Changes = res.Changes
+				}
+			}
+			r.Modules = append(r.Modules, cm)
+		}
+	}
+
+	if db, err := module.LoadGPUDB(rc); err == nil && db != nil && (db.TotalGPUs > 0 || len(db.Allocations) > 0) {
+		r.GPU = db
+	}
+
+	if rc.Runner.FileExists(cloudflaredStatusBinary) {
+		if res, err := rc.Runner.Query(ctx, cloudflaredStatusBinary, "--version"); err == nil {
+			r.Tunnel.Binary = strings.TrimSpace(res.Stdout)
+		}
+	}
+	r.Tunnel.Service = systemctlStatus(ctx, "cloudflared")
+	iface := rc.Config.Modules.Cloudflared.PrivateNetwork.Interface
+	if iface == "" {
+		iface = "vlan0"
+	}
+	r.Tunnel.VLAN = interfaceAddress(iface)
+
+	r.Users.HomeBase = firstNonEmpty(rc.Config.Users.HomeBase, "/home")
+	if db, _ := module.LoadUsersDB(rc); db != nil {
+		r.Users.Managed = len(db.Users)
+	}
+	if sysUsers, err := module.ScanSystemUsersExported(ctx, rc); err == nil {
+		r.Users.System = len(sysUsers)
+	}
+	return r
+}
+
+func renderLastApplySection(out io.Writer, last *state.Run, err error) {
+	ui.WriteSection(out, "Last apply")
+	switch {
+	case err != nil:
+		ui.WriteHint(out, fmt.Sprintf("%s %v", ui.WarnMark(), err))
+		return
+	case last == nil:
+		ui.WriteHint(out, "no apply recorded on this host")
+		return
+	}
+	result := ui.StyleSuccess.Render("success")
+	if !last.Success {
+		result = ui.StyleError.Render("failed")
+	}
+	ui.WriteKV(out, "When", last.FinishedAt.Local().Format("2006-01-02 15:04:05"))
+	ui.WriteKV(out, "Result", result)
+	ui.WriteKV(out, "Version", firstNonEmpty(last.Version, "unknown"))
+	for _, m := range last.Modules {
+		if m.Status == "failed" {
+			ui.WriteKV(out, "Failed", m.Name+": "+m.Error)
+		}
+	}
+	if last.BackupID != "" {
+		ui.WriteKV(out, "Backup", last.BackupID+" (rootfiles rollback "+last.BackupID+")")
 	}
 }
 

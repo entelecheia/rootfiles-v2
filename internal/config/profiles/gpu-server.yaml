@@ -11,6 +11,7 @@ modules:
     enabled: true
   nvidia:
     enabled: true
+    persistenced: true
     gpu_allocation:
       enabled: true
       method: env
@@ -25,6 +26,8 @@ modules:
   network:
     enabled: true
     ufw: true
+    allowed_ports:
+      - 22
 
 ssh:
   disable_password_auth: true

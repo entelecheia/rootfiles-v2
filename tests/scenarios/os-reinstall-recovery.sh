@@ -55,11 +55,13 @@ assert_file_exists "/raid/home/.rootfiles/users.json"
 echo ""
 echo "--- Phase 3: Recovery ---"
 
+# Restore users (and their SSH keys) from preserved metadata first: the
+# dgx profile disables password auth, which the ssh module refuses to do
+# while no account can log in with a key.
+rootfiles user restore --profile dgx --yes 2>&1 || true
+
 # Re-apply system config (skip docker/nvidia — not available in CI)
 rootfiles apply --profile dgx --module locale,packages,ssh,users,cloudflared,storage,network --yes 2>&1 || true
-
-# Restore users from preserved metadata
-rootfiles user restore --profile dgx --yes 2>&1 || true
 
 # Verify users restored
 assert_user_exists "devuser"

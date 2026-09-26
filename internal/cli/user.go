@@ -28,6 +28,14 @@ func newUserCmd() *cobra.Command {
 		newUserGroupAddCmd(),
 		newUserGroupDelCmd(),
 		newUserPasswdCmd(),
+		newUserDelCmd(),
+		newUserLockCmd(),
+		newUserUnlockCmd(),
+		newUserExpireCmd(),
+		newUserKeyCmd(),
+		newUserDuCmd(),
+		newUserAuditCmd(),
+		newUserQuotaCmd(),
 	)
 
 	return userCmd
@@ -69,7 +77,11 @@ func newUserAddCmd() *cobra.Command {
 			groups, _ := cmd.Flags().GetStringSlice("groups")
 			noDocker, _ := cmd.Flags().GetBool("no-docker")
 
-			return module.AddUser(context.Background(), rc, username, pubkey, groups, noDocker)
+			var pubkeys []string
+			if pubkey != "" {
+				pubkeys = []string{pubkey}
+			}
+			return module.AddUser(cmd.Context(), rc, username, pubkeys, groups, noDocker)
 		},
 	}
 	cmd.Flags().String("pubkey", "", "SSH public key")
@@ -88,9 +100,9 @@ func newUserListCmd() *cobra.Command {
 			namesOnly, _ := cmd.Flags().GetBool("names")
 			if system {
 				if namesOnly {
-					return module.ListSystemUserNames(context.Background(), rc)
+					return module.ListSystemUserNames(cmd.Context(), rc)
 				}
-				return module.ListSystemUsers(context.Background(), rc)
+				return module.ListSystemUsers(cmd.Context(), rc)
 			}
 			if namesOnly {
 				return module.ListUserNames(rc)
@@ -128,21 +140,26 @@ func newUserRestoreCmd() *cobra.Command {
 			if len(args) > 0 {
 				backupPath = args[0]
 			}
-			return module.RestoreUsers(context.Background(), rc, backupPath)
+			return module.RestoreUsers(cmd.Context(), rc, backupPath)
 		},
 	}
 }
 
 func newUserRehomeCmd() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "rehome [USERNAME]",
 		Short: "Move user home to custom home base directory",
-		Args:  cobra.ExactArgs(1),
+		Long: "Copy the user's home to <home-base>/<user>, verify the copy, switch the account over and\n" +
+			"leave a symlink at the old path. The original is kept as <old>.rootfiles-bak-<ts> unless --remove-old.",
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			rc := buildRunContext(cmd)
-			return module.RehomeUser(context.Background(), rc, args[0])
+			removeOld, _ := cmd.Flags().GetBool("remove-old")
+			return module.RehomeUser(cmd.Context(), rc, args[0], removeOld)
 		},
 	}
+	cmd.Flags().Bool("remove-old", false, "Delete the original home after a verified copy")
+	return cmd
 }
 
 func newUserIDCmd() *cobra.Command {
@@ -152,7 +169,7 @@ func newUserIDCmd() *cobra.Command {
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			rc := buildRunContext(cmd)
-			return module.ShowUserID(context.Background(), rc, args[0])
+			return module.ShowUserID(cmd.Context(), rc, args[0])
 		},
 	}
 }
@@ -165,9 +182,9 @@ func newUserGroupsCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			rc := buildRunContext(cmd)
 			if len(args) > 0 {
-				return module.ListUserGroups(context.Background(), rc, args[0])
+				return module.ListUserGroups(cmd.Context(), rc, args[0])
 			}
-			return module.ListGroups(context.Background(), rc)
+			return module.ListGroups(cmd.Context(), rc)
 		},
 	}
 }
@@ -183,7 +200,7 @@ func newUserGroupAddCmd() *cobra.Command {
 			if len(groups) == 0 {
 				return fmt.Errorf("specify groups with --groups, --docker, or --sudo")
 			}
-			return module.AddUserToGroups(context.Background(), rc, args[0], groups)
+			return module.AddUserToGroups(cmd.Context(), rc, args[0], groups)
 		},
 	}
 	addGroupSelectionFlags(cmd)
@@ -201,7 +218,7 @@ func newUserGroupDelCmd() *cobra.Command {
 			if len(groups) == 0 {
 				return fmt.Errorf("specify groups with --groups, --docker, or --sudo")
 			}
-			return module.RemoveUserFromGroups(context.Background(), rc, args[0], groups)
+			return module.RemoveUserFromGroups(cmd.Context(), rc, args[0], groups)
 		},
 	}
 	addGroupSelectionFlags(cmd)
@@ -238,8 +255,9 @@ func newUserPasswdCmd() *cobra.Command {
 			password, _ := cmd.Flags().GetString("password")
 			filePath, _ := cmd.Flags().GetString("file")
 			all, _ := cmd.Flags().GetBool("all")
+			expire, _ := cmd.Flags().GetBool("expire")
 
-			entries, err := resolvePasswordTargets(context.Background(), rc, args, filePath, suffix, all)
+			entries, err := resolvePasswordTargets(cmd.Context(), rc, args, filePath, suffix, all)
 			if err != nil {
 				return err
 			}
@@ -267,11 +285,12 @@ func newUserPasswdCmd() *cobra.Command {
 				return nil
 			}
 
-			return module.SetPasswords(context.Background(), rc, entries, suffix)
+			return module.SetPasswords(cmd.Context(), rc, entries, suffix, expire)
 		},
 	}
 	cmd.Flags().String("password", "", "Set the same password for all users")
-	cmd.Flags().String("suffix", "!@", "Suffix for auto-generated passwords (username+suffix)")
+	cmd.Flags().String("suffix", "", "Legacy scheme: password = username+suffix (default: random password, printed once)")
+	cmd.Flags().Bool("expire", false, "Force a password change at next login (chage -d 0)")
 	cmd.Flags().StringP("file", "f", "", "File with usernames (or username,password per line)")
 	cmd.Flags().Bool("all", false, "Set passwords for all system users")
 	return cmd

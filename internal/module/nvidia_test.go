@@ -32,21 +32,3 @@ func TestNvidiaModule_ApplyDryRun(t *testing.T) {
 		t.Fatal("Apply returned nil result")
 	}
 }
-
-func TestContainsBytes(t *testing.T) {
-	cases := []struct {
-		data string
-		s    string
-		want bool
-	}{
-		{`{"runtimes":{"nvidia":{}}}`, "nvidia", true},
-		{`{"storage-driver":"overlay2"}`, "nvidia", false},
-		{"", "nvidia", false},
-		{"x", "xx", false},
-	}
-	for _, c := range cases {
-		if got := containsBytes([]byte(c.data), c.s); got != c.want {
-			t.Errorf("containsBytes(%q, %q) = %v, want %v", c.data, c.s, got, c.want)
-		}
-	}
-}

@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"context"
 	"fmt"
 	"strconv"
 	"strings"
@@ -36,7 +35,7 @@ func newGPUCmd() *cobra.Command {
 			}
 
 			method, _ := cmd.Flags().GetString("method")
-			return module.AssignGPUs(context.Background(), rc, username, gpus, method)
+			return module.AssignGPUs(cmd.Context(), rc, username, gpus, method)
 		},
 	}
 	assignCmd.Flags().String("gpus", "", "Comma-separated GPU indices (e.g., 0,1,2)")
@@ -50,7 +49,7 @@ func newGPUCmd() *cobra.Command {
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			rc := buildRunContext(cmd)
-			return module.RevokeGPUs(context.Background(), rc, args[0])
+			return module.RevokeGPUs(cmd.Context(), rc, args[0])
 		},
 	})
 
@@ -70,9 +69,34 @@ func newGPUCmd() *cobra.Command {
 		Short: "Show GPU status with allocation info",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			rc := buildRunContext(cmd)
-			return module.ShowGPUStatus(context.Background(), rc)
+			return module.ShowGPUStatus(cmd.Context(), rc)
 		},
 	})
+
+	migCmd := &cobra.Command{Use: "mig", Short: "Multi-Instance GPU (read-only)"}
+	migCmd.AddCommand(&cobra.Command{
+		Use:   "status",
+		Short: "Show MIG mode and instances per GPU",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			gpus, err := module.MIGStatus(cmd.Context(), buildRunContext(cmd))
+			if err != nil {
+				return err
+			}
+			out := cmd.OutOrStdout()
+			for _, g := range gpus {
+				mode := g.Current
+				if g.Pending != g.Current {
+					mode += " (pending: " + g.Pending + ", needs GPU reset)"
+				}
+				fmt.Fprintf(out, "GPU %s  %s  MIG %s\n", g.Index, g.Name, mode)
+				for _, inst := range g.Instances {
+					fmt.Fprintf(out, "    %s\n", inst)
+				}
+			}
+			return nil
+		},
+	})
+	gpuCmd.AddCommand(migCmd)
 
 	return gpuCmd
 }

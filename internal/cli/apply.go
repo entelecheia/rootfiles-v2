@@ -1,17 +1,17 @@
 package cli
 
 import (
-	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"os"
+	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/entelecheia/rootfiles-v2/internal/config"
 	"github.com/entelecheia/rootfiles-v2/internal/exec"
 	"github.com/entelecheia/rootfiles-v2/internal/module"
+	"github.com/entelecheia/rootfiles-v2/internal/state"
 	"github.com/entelecheia/rootfiles-v2/internal/ui"
 )
 
@@ -27,13 +27,14 @@ func newApplyCmd() *cobra.Command {
 }
 
 func runApply(cmd *cobra.Command, _ []string) error {
-	ctx := context.Background()
+	ctx := cmd.Context()
 
 	yes, _ := cmd.Flags().GetBool("yes")
 	dryRun, _ := cmd.Flags().GetBool("dry-run")
 	profileName, _ := cmd.Flags().GetString("profile")
 	moduleFilter, _ := cmd.Flags().GetStringSlice("module")
 	configPath, _ := cmd.Flags().GetString("config")
+	force, _ := cmd.Flags().GetBool("force")
 
 	// Check ROOTFILES_YES env
 	if os.Getenv("ROOTFILES_YES") == "true" {
@@ -63,12 +64,13 @@ func runApply(cmd *cobra.Command, _ []string) error {
 
 	// Apply CLI flag overrides
 	applyFlagOverrides(cmd, cfg)
+	applyAccountFlags(cmd, cfg)
+	if err := cfg.Validate(); err != nil {
+		return err
+	}
 
 	// Setup runner
-	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
-		Level: slog.LevelInfo,
-	}))
-	runner := exec.NewRunner(dryRun, logger)
+	runner := newRunner(cmd, dryRun)
 	apt := exec.NewAPT(runner)
 
 	// Build module list
@@ -110,10 +112,34 @@ func runApply(cmd *cobra.Command, _ []string) error {
 		APT:    apt,
 		DryRun: dryRun,
 		Yes:    yes,
+		Force:  force,
 	}
 
 	fmt.Println()
-	return module.RunAll(ctx, modules, rc)
+	started := time.Now().UTC()
+	outcomes, runErr := module.RunAll(ctx, modules, rc)
+	if dryRun {
+		return runErr
+	}
+
+	run := state.Run{
+		Version:    buildVersion,
+		Profile:    profileName,
+		ConfigPath: configPath,
+		StartedAt:  started,
+		FinishedAt: time.Now().UTC(),
+		Success:    runErr == nil,
+		Modules:    outcomes,
+	}
+	if runner.Backup.Used() {
+		run.BackupID = runner.Backup.ID
+		fmt.Printf("\nFiles changed by this run were backed up (undo with: rootfiles rollback %s)\n", run.BackupID)
+	}
+	if err := state.Record(run); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: recording apply state: %v\n", err)
+	}
+	auditf(cmd, "apply finished", "profile", profileName, "success", runErr == nil, "backup", run.BackupID)
+	return runErr
 }
 
 // selectProfile resolves the profile name. Priority: explicit --profile flag
@@ -143,6 +169,28 @@ func applyFlagOverrides(cmd *cobra.Command, cfg *config.Config) {
 	}
 }
 
+// applyAccountFlags turns --user/--ssh-pubkey (or ROOTFILES_USER /
+// ROOTFILES_SSH_PUBKEY) into a declared account, which the users module
+// creates before the ssh module hardens authentication.
+func applyAccountFlags(cmd *cobra.Command, cfg *config.Config) {
+	name, _ := cmd.Flags().GetString("user")
+	if name == "" {
+		name = os.Getenv("ROOTFILES_USER")
+	}
+	if name == "" {
+		return
+	}
+	key, _ := cmd.Flags().GetString("ssh-pubkey")
+	if key == "" {
+		key = os.Getenv("ROOTFILES_SSH_PUBKEY")
+	}
+	acct := config.AccountConfig{Name: name}
+	if key != "" {
+		acct.SSHPubkeys = []string{key}
+	}
+	cfg.Users.AddAccount(acct)
+}
+
 // configureInteractive shows a preview of all key settings and lets the user
 // review/modify them before applying. Skipped when --yes is set.
 func configureInteractive(cfg *config.Config, yes, dryRun bool) error {
@@ -151,6 +199,10 @@ func configureInteractive(cfg *config.Config, yes, dryRun bool) error {
 	}
 
 	fmt.Println("\n=== Configuration ===")
+
+	// Snapshot the profile values so the summary can flag any setting the
+	// operator made less secure than the profile intends.
+	profile := *cfg
 
 	var err error
 
@@ -163,11 +215,11 @@ func configureInteractive(cfg *config.Config, yes, dryRun bool) error {
 	// --- SSH ---
 	if cfg.IsModuleEnabled("ssh") {
 		fmt.Println("\n--- SSH ---")
-		cfg.SSH.DisableRootLogin, err = ui.Confirm("Disable root login?", false)
+		cfg.SSH.DisableRootLogin, err = ui.ConfirmDefault("Disable root login?", cfg.SSH.DisableRootLogin, false)
 		if err != nil {
 			return err
 		}
-		cfg.SSH.DisablePasswordAuth, err = ui.Confirm("Disable password authentication?", false)
+		cfg.SSH.DisablePasswordAuth, err = ui.ConfirmDefault("Disable password authentication?", cfg.SSH.DisablePasswordAuth, false)
 		if err != nil {
 			return err
 		}
@@ -178,6 +230,9 @@ func configureInteractive(cfg *config.Config, yes, dryRun bool) error {
 		cfg.SSH.Port, err = ui.InputInt("SSH port", port, false)
 		if err != nil {
 			return err
+		}
+		if cfg.SSH.Port == 22 && profile.SSH.Port == 0 {
+			cfg.SSH.Port = 0 // keep sshd's default instead of pinning it
 		}
 	}
 
@@ -190,7 +245,7 @@ func configureInteractive(cfg *config.Config, yes, dryRun bool) error {
 				return err
 			}
 		}
-		cfg.Users.SudoNopasswd, err = ui.Confirm("Sudo without password?", false)
+		cfg.Users.SudoNopasswd, err = ui.ConfirmDefault("Sudo without password?", cfg.Users.SudoNopasswd, false)
 		if err != nil {
 			return err
 		}
@@ -214,7 +269,7 @@ func configureInteractive(cfg *config.Config, yes, dryRun bool) error {
 		if err != nil {
 			return err
 		}
-		cfg.Modules.Cloudflared.PrivateNetwork.Enabled, err = ui.Confirm("Enable VLAN private network?", false)
+		cfg.Modules.Cloudflared.PrivateNetwork.Enabled, err = ui.ConfirmDefault("Enable VLAN private network?", cfg.Modules.Cloudflared.PrivateNetwork.Enabled, false)
 		if err != nil {
 			return err
 		}
@@ -229,7 +284,7 @@ func configureInteractive(cfg *config.Config, yes, dryRun bool) error {
 	// --- Network ---
 	if cfg.IsModuleEnabled("network") {
 		fmt.Println("\n--- Network ---")
-		cfg.Modules.Network.UFW, err = ui.Confirm("Enable UFW firewall?", false)
+		cfg.Modules.Network.UFW, err = ui.ConfirmDefault("Enable UFW firewall?", cfg.Modules.Network.UFW, false)
 		if err != nil {
 			return err
 		}
@@ -283,11 +338,16 @@ func configureInteractive(cfg *config.Config, yes, dryRun bool) error {
 		fmt.Printf("  Storage: data_dir=%s\n", cfg.Modules.Storage.DataDir)
 	}
 
+	downgrades := securityDowngrades(&profile, cfg)
+	for _, d := range downgrades {
+		fmt.Println("  " + ui.StyleWarning.Render(ui.MarkWarn+" weaker than profile: "+d))
+	}
+
 	if dryRun {
 		return nil
 	}
 
-	confirmed, err := ui.Confirm("\nApply this configuration?", false)
+	confirmed, err := ui.ConfirmDefault("\nApply this configuration?", len(downgrades) == 0, false)
 	if err != nil {
 		return err
 	}
@@ -295,4 +355,23 @@ func configureInteractive(cfg *config.Config, yes, dryRun bool) error {
 		return errAborted
 	}
 	return nil
+}
+
+// securityDowngrades lists settings where after is less restrictive than
+// the profile values in before.
+func securityDowngrades(before, after *config.Config) []string {
+	var out []string
+	if before.SSH.DisableRootLogin && !after.SSH.DisableRootLogin {
+		out = append(out, "SSH root login re-enabled")
+	}
+	if before.SSH.DisablePasswordAuth && !after.SSH.DisablePasswordAuth {
+		out = append(out, "SSH password authentication re-enabled")
+	}
+	if before.Modules.Network.UFW && !after.Modules.Network.UFW {
+		out = append(out, "UFW firewall disabled")
+	}
+	if !before.Users.SudoNopasswd && after.Users.SudoNopasswd {
+		out = append(out, "passwordless sudo enabled")
+	}
+	return out
 }

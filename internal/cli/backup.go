@@ -25,7 +25,7 @@ func newBackupCmd() *cobra.Command {
 			skipEtc, _ := cmd.Flags().GetBool("skip-etc")
 
 			rc := buildRunContext(cmd)
-			ctx := context.Background()
+			ctx := cmd.Context()
 
 			hostname, _ := os.Hostname()
 			dirName := fmt.Sprintf("rootfiles-backup-%s-%s", hostname, time.Now().Format("20060102"))

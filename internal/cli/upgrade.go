@@ -39,7 +39,7 @@ func newUpgradeCmd(currentVersion string) *cobra.Command {
 			targetVersion, _ := cmd.Flags().GetString("version")
 			dryRun, _ := cmd.Flags().GetBool("dry-run")
 
-			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			ctx, cancel := context.WithTimeout(cmd.Context(), 2*time.Minute)
 			defer cancel()
 
 			// Resolve target version

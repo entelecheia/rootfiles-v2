@@ -104,7 +104,7 @@ func (m *GPUModule) Apply(ctx context.Context, rc *RunContext) (*ApplyResult, er
 		return &ApplyResult{Changed: false}, nil
 	}
 
-	var messages []string
+	var messages, warnings []string
 	changed := false
 
 	for _, alloc := range db.Allocations {
@@ -126,6 +126,7 @@ func (m *GPUModule) Apply(ctx context.Context, rc *RunContext) (*ApplyResult, er
 		if method == "cgroup" || method == "both" {
 			u, err := user.Lookup(alloc.Username)
 			if err != nil {
+				warnings = append(warnings, fmt.Sprintf("cgroup GPU limit for %s skipped: %v", alloc.Username, err))
 				continue
 			}
 			slicePath := cgroupSlicePath(u.Uid)
@@ -139,7 +140,9 @@ func (m *GPUModule) Apply(ctx context.Context, rc *RunContext) (*ApplyResult, er
 				if err := rc.Runner.WriteFile(slicePath, []byte(expected), 0644); err != nil {
 					return nil, fmt.Errorf("writing cgroup conf for %s: %w", alloc.Username, err)
 				}
-				rc.Runner.Run(ctx, "systemctl", "daemon-reload")
+				if w := systemdReload(ctx, rc); w != "" {
+					warnings = append(warnings, w)
+				}
 				messages = append(messages, fmt.Sprintf("cgroup GPU slice for %s (GPUs: %s)", alloc.Username, gpuListStr(alloc.GPUs)))
 				changed = true
 			}
@@ -157,7 +160,16 @@ func (m *GPUModule) Apply(ctx context.Context, rc *RunContext) (*ApplyResult, er
 		changed = true
 	}
 
-	return &ApplyResult{Changed: changed, Messages: messages}, nil
+	return &ApplyResult{Changed: changed, Messages: messages, Warnings: warnings}, nil
+}
+
+// systemdReload runs daemon-reload and returns a warning (not an error):
+// hosts without systemd as PID 1 still get the files, applied on boot.
+func systemdReload(ctx context.Context, rc *RunContext) string {
+	if _, err := rc.Runner.Run(ctx, "systemctl", "daemon-reload"); err != nil {
+		return "systemctl daemon-reload failed: " + firstLine(err.Error())
+	}
+	return ""
 }
 
 // AssignGPUs assigns GPUs to a user and applies immediately.
@@ -236,7 +248,9 @@ func RevokeGPUs(ctx context.Context, rc *RunContext, username string) error {
 		if rc.DryRun {
 			fmt.Printf("[dry-run] would remove %s\n", scriptPath)
 		} else {
-			rc.Runner.Run(ctx, "rm", "-f", scriptPath)
+			if err := rc.Runner.Remove(scriptPath); err != nil && !os.IsNotExist(err) {
+				return fmt.Errorf("removing %s: %w", scriptPath, err)
+			}
 		}
 	}
 
@@ -249,8 +263,14 @@ func RevokeGPUs(ctx context.Context, rc *RunContext, username string) error {
 			if rc.DryRun {
 				fmt.Printf("[dry-run] would remove %s\n", sliceDir)
 			} else {
-				rc.Runner.Run(ctx, "rm", "-rf", sliceDir)
-				rc.Runner.Run(ctx, "systemctl", "daemon-reload")
+				// Remove only our drop-in; the slice dir may hold others.
+				if err := rc.Runner.Remove(slicePath); err != nil && !os.IsNotExist(err) {
+					return fmt.Errorf("removing %s: %w", slicePath, err)
+				}
+				_ = rc.Runner.Remove(sliceDir) // only succeeds when empty
+				if w := systemdReload(ctx, rc); w != "" {
+					fmt.Println("  " + ui.MarkWarn + " " + w)
+				}
 			}
 		}
 	}
@@ -541,7 +561,9 @@ func removeDockerWrapper(ctx context.Context, rc *RunContext) {
 		fmt.Printf("[dry-run] would remove %s\n", dockerWrapperPath)
 		return
 	}
-	rc.Runner.Run(ctx, "rm", "-f", dockerWrapperPath)
+	if err := rc.Runner.Remove(dockerWrapperPath); err != nil && !os.IsNotExist(err) {
+		fmt.Printf("  %s removing %s: %v\n", ui.MarkWarn, dockerWrapperPath, err)
+	}
 }
 
 // --- helpers ---
@@ -599,18 +621,25 @@ func applyAllocationMethods(ctx context.Context, rc *RunContext, username string
 	}
 
 	if method == "cgroup" || method == "both" {
-		u, _ := user.Lookup(username)
+		u, err := user.Lookup(username)
+		if err != nil {
+			return fmt.Errorf("looking up %s for cgroup limit: %w", username, err)
+		}
 		slicePath := cgroupSlicePath(u.Uid)
 		content := buildCgroupConf(gpus)
 		if rc.DryRun {
 			fmt.Printf("[dry-run] would write %s\n", slicePath)
 		} else {
 			sliceDir := filepath.Dir(slicePath)
-			rc.Runner.MkdirAll(sliceDir, 0755)
+			if err := rc.Runner.MkdirAll(sliceDir, 0755); err != nil {
+				return fmt.Errorf("creating %s: %w", sliceDir, err)
+			}
 			if err := rc.Runner.WriteFile(slicePath, []byte(content), 0644); err != nil {
 				return fmt.Errorf("writing cgroup conf: %w", err)
 			}
-			rc.Runner.Run(ctx, "systemctl", "daemon-reload")
+			if w := systemdReload(ctx, rc); w != "" {
+				fmt.Println("  " + ui.MarkWarn + " " + w)
+			}
 		}
 	}
 

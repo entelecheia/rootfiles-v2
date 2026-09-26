@@ -12,6 +12,8 @@ modules:
     storage_dir: /raid/docker
   nvidia:
     enabled: true
+    persistenced: true
+    fabric_manager: true   # NVSwitch systems (DGX A100/H100/H200)
     gpu_allocation:
       enabled: true
       method: both
