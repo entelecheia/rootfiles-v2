@@ -2,6 +2,7 @@ package cli
 
 import (
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 
@@ -17,32 +18,30 @@ func newCheckCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "check",
 		Short: "Check current system state against profile",
-		Long:  "Check which modules are satisfied and which need changes.",
-		RunE:  runCheck,
+		Long: "Check which modules are satisfied and which need changes.\n" +
+			"Exit code: 0 = all satisfied, 2 = pending changes, 1 = error. Without --profile/--config,\n" +
+			"the last applied profile (or the detected suggestion) is used.",
+		RunE: runCheck,
 	}
 	cmd.Flags().BoolP("verbose", "v", false, "Show commands that will be executed")
+	addOutputFlag(cmd)
 	return cmd
 }
 
 func runCheck(cmd *cobra.Command, _ []string) error {
 	ctx := cmd.Context()
 
-	profileName, _ := cmd.Flags().GetString("profile")
 	moduleFilter, _ := cmd.Flags().GetStringSlice("module")
-	configPath, _ := cmd.Flags().GetString("config")
-
-	if profileName == "" {
-		profileName = os.Getenv("ROOTFILES_PROFILE")
+	format, err := outputFormat(cmd)
+	if err != nil {
+		return err
 	}
 
 	sysInfo, err := config.DetectSystem()
 	if err != nil {
 		return fmt.Errorf("detecting system: %w", err)
 	}
-
-	if profileName == "" && configPath == "" {
-		profileName = sysInfo.SuggestProfile()
-	}
+	profileName, configPath := resolveTarget(cmd, sysInfo)
 
 	cfg, err := config.Load(profileName, configPath, sysInfo)
 	if err != nil {
@@ -85,9 +84,53 @@ func runCheck(cmd *cobra.Command, _ []string) error {
 			satisfied++
 		}
 	}
+	allOK := satisfied == len(modules)
 
+	if format == "json" {
+		report := checkReport{Profile: profileName, ConfigPath: configPath, Satisfied: allOK}
+		for _, m := range modules {
+			mr := checkModule{Name: m.Name(), Satisfied: true, Changes: []module.Change{}}
+			if r := results[m.Name()]; r != nil {
+				mr.Satisfied = r.Satisfied
+				if r.Changes != nil {
+					mr.Changes = r.Changes
+				}
+			}
+			report.Modules = append(report.Modules, mr)
+		}
+		if err := writeJSON(out, report); err != nil {
+			return err
+		}
+	} else {
+		renderCheckText(out, profileName, configPath, modules, results, satisfied, verbose)
+	}
+
+	if !allOK {
+		return &ExitError{Code: exitDrift}
+	}
+	return nil
+}
+
+type checkModule struct {
+	Name      string          `json:"name"`
+	Satisfied bool            `json:"satisfied"`
+	Changes   []module.Change `json:"changes"`
+}
+
+type checkReport struct {
+	Profile    string        `json:"profile,omitempty"`
+	ConfigPath string        `json:"config_path,omitempty"`
+	Satisfied  bool          `json:"satisfied"`
+	Modules    []checkModule `json:"modules"`
+}
+
+func renderCheckText(out io.Writer, profileName, configPath string, modules []module.Module, results map[string]*module.CheckResult, satisfied int, verbose bool) {
 	ui.WriteHeader(out, "rootfiles check")
-	ui.WriteKV(out, "Profile", profileName)
+	if configPath != "" {
+		ui.WriteKV(out, "Config", configPath)
+	} else {
+		ui.WriteKV(out, "Profile", profileName)
+	}
 	ui.WriteSection(out, fmt.Sprintf("Modules (%d/%d satisfied)", satisfied, len(modules)))
 
 	for _, m := range modules {
@@ -118,8 +161,6 @@ func runCheck(cmd *cobra.Command, _ []string) error {
 	if satisfied == len(modules) {
 		fmt.Fprintln(out, "  "+ui.StyleSuccess.Render(ui.MarkOK+" all modules satisfied."))
 	} else {
-		ui.WriteHint(out, "run 'rootfiles apply' to apply pending changes.")
+		ui.WriteHint(out, "run 'rootfiles apply' to apply pending changes (exit code 2 = pending).")
 	}
-
-	return nil
 }

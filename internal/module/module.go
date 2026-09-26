@@ -39,8 +39,8 @@ type CheckResult struct {
 
 // Change describes a single pending change.
 type Change struct {
-	Description string
-	Command     string // shell command for dry-run display
+	Description string `json:"description"`
+	Command     string `json:"command,omitempty"` // shell command for dry-run display
 }
 
 // ApplyResult holds the result of a module's Apply operation.
