@@ -230,8 +230,13 @@ jobs:
       - name: Load quota kernel modules
         if: matrix.scenario == 'user-quota'
         # Containers share the host kernel; without quota_v2 the scenario
-        # can only check the refusal path, not enforcement.
-        run: sudo modprobe -a quota_v2 quota_tree || true
+        # can only check the refusal path, not enforcement. On Azure runner
+        # kernels the module is only in linux-modules-extra.
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq "linux-modules-extra-$(uname -r)" || true
+          sudo modprobe -a quota_v2 quota_tree || true
+          lsmod | grep -E '^quota_(v2|tree)' || echo "::warning::quota_v2 unavailable; quota enforcement not tested"
       - name: Run scenario
         run: |
           docker run --rm --privileged \
