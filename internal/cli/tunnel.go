@@ -199,10 +199,13 @@ func buildRunContext(cmd *cobra.Command) *module.RunContext {
 		// can still proceed (some paths like `tunnel status` tolerate a bare cfg),
 		// but the user sees why their profile customizations are not being applied.
 		logger.Warn("loading profile config failed, continuing with fallback", "profile", profileName, "err", cfgErr)
+		cfg = &config.Config{System: sysInfo}
 	}
 
 	// Apply flag overrides
 	applyFlagOverrides(cmd, cfg)
+
+	force, _ := cmd.Flags().GetBool("force")
 
 	return &module.RunContext{
 		Config: cfg,
@@ -210,5 +213,6 @@ func buildRunContext(cmd *cobra.Command) *module.RunContext {
 		APT:    exec.NewAPT(runner),
 		DryRun: dryRun,
 		Yes:    yes,
+		Force:  force,
 	}
 }

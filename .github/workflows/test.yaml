@@ -213,6 +213,7 @@ jobs:
           - system-backup
           - gpu-allocation
           - status
+          - ssh-lockout-guard
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5

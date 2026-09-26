@@ -25,6 +25,13 @@ type RunContext struct {
 	APT    *exec.APT
 	DryRun bool
 	Yes    bool // unattended mode
+	// Force bypasses safety guards that would otherwise refuse a change
+	// (e.g. disabling SSH password auth with no key-based login available).
+	Force bool
+	// PendingKeyUsers lists accounts this run will create with an SSH key
+	// (e.g. apply --user --ssh-pubkey). The SSH lockout guard counts them
+	// as future key-based logins.
+	PendingKeyUsers []string
 }
 
 // CheckResult holds the result of a module's Check operation.
@@ -43,6 +50,9 @@ type Change struct {
 type ApplyResult struct {
 	Changed  bool
 	Messages []string
+	// Warnings are non-fatal problems the operator should act on
+	// (e.g. a service reload that could not be performed).
+	Warnings []string
 }
 
 // defaultOrder defines the static module execution order.
@@ -142,6 +152,9 @@ func RunAll(ctx context.Context, modules []Module, rc *RunContext) error {
 			for _, msg := range result.Messages {
 				fmt.Printf("  ✓ %s: %s\n", m.Name(), msg)
 			}
+		}
+		for _, w := range result.Warnings {
+			fmt.Printf("  ⚠ %s: %s\n", m.Name(), w)
 		}
 	}
 	if len(errors) > 0 {

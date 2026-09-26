@@ -36,3 +36,53 @@ func TestNetworkModule_ApplyDisabledNoChange(t *testing.T) {
 		t.Error("Apply with UFW disabled should not report changes")
 	}
 }
+
+func TestParseUFWStatus(t *testing.T) {
+	out := `Status: active
+
+To                         Action      From
+--                         ----        ----
+22                         ALLOW       Anywhere
+2222/tcp                   ALLOW       Anywhere
+80,443/tcp                 ALLOW       Anywhere
+53/udp                     ALLOW       Anywhere
+8080                       DENY        Anywhere
+22 (v6)                    ALLOW       Anywhere (v6)
+`
+	st := parseUFWStatus(out)
+	if !st.Active {
+		t.Error("expected active")
+	}
+	for _, p := range []int{22, 2222, 80, 443} {
+		if !st.Allowed[p] {
+			t.Errorf("port %d should be allowed", p)
+		}
+	}
+	for _, p := range []int{53, 8080, 222} {
+		if st.Allowed[p] {
+			t.Errorf("port %d should not be allowed", p)
+		}
+	}
+}
+
+func TestParseUFWStatus_Inactive(t *testing.T) {
+	if parseUFWStatus("Status: inactive\n").Active {
+		t.Error(`"Status: inactive" must not be parsed as active`)
+	}
+}
+
+func TestNetworkModule_RequiredPortsIncludeSSH(t *testing.T) {
+	rc := newDryRunRC(t)
+	rc.Config.SSH.Port = 2222
+	rc.Config.Modules.Network = config.NetworkConfig{UFW: true, AllowedPorts: []int{443, 80}}
+	got := NewNetworkModule().requiredPorts(context.Background(), rc)
+	want := []int{80, 443, 2222}
+	if len(got) != len(want) {
+		t.Fatalf("requiredPorts = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("requiredPorts = %v, want %v", got, want)
+		}
+	}
+}

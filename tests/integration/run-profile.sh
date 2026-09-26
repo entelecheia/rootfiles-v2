@@ -10,6 +10,13 @@ echo "=== Integration Test: profile=$PROFILE ==="
 # Apply all modules except docker and nvidia.
 CI_MODULES="locale,packages,ssh,users,cloudflared,storage,network"
 
+# Operators have key-based access before SSH is hardened; the ssh module
+# refuses to disable password auth when no account holds an authorized key.
+id ciadmin >/dev/null 2>&1 || useradd -m -s /bin/bash ciadmin
+install -d -m 700 -o ciadmin -g ciadmin /home/ciadmin/.ssh
+echo "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl ci" \
+    > /home/ciadmin/.ssh/authorized_keys
+
 # Apply profile
 echo "--- Applying profile: $PROFILE ---"
 rootfiles apply --profile "$PROFILE" --module "$CI_MODULES" --yes 2>&1 || true

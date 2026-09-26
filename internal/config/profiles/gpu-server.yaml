@@ -25,6 +25,8 @@ modules:
   network:
     enabled: true
     ufw: true
+    allowed_ports:
+      - 22
 
 ssh:
   disable_password_auth: true

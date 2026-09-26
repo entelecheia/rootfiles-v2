@@ -34,6 +34,7 @@ func runApply(cmd *cobra.Command, _ []string) error {
 	profileName, _ := cmd.Flags().GetString("profile")
 	moduleFilter, _ := cmd.Flags().GetStringSlice("module")
 	configPath, _ := cmd.Flags().GetString("config")
+	force, _ := cmd.Flags().GetBool("force")
 
 	// Check ROOTFILES_YES env
 	if os.Getenv("ROOTFILES_YES") == "true" {
@@ -110,6 +111,7 @@ func runApply(cmd *cobra.Command, _ []string) error {
 		APT:    apt,
 		DryRun: dryRun,
 		Yes:    yes,
+		Force:  force,
 	}
 
 	fmt.Println()
