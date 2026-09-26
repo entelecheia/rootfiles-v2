@@ -243,6 +243,7 @@ func newUserPasswdCmd() *cobra.Command {
 			password, _ := cmd.Flags().GetString("password")
 			filePath, _ := cmd.Flags().GetString("file")
 			all, _ := cmd.Flags().GetBool("all")
+			expire, _ := cmd.Flags().GetBool("expire")
 
 			entries, err := resolvePasswordTargets(context.Background(), rc, args, filePath, suffix, all)
 			if err != nil {
@@ -272,11 +273,12 @@ func newUserPasswdCmd() *cobra.Command {
 				return nil
 			}
 
-			return module.SetPasswords(context.Background(), rc, entries, suffix)
+			return module.SetPasswords(context.Background(), rc, entries, suffix, expire)
 		},
 	}
 	cmd.Flags().String("password", "", "Set the same password for all users")
-	cmd.Flags().String("suffix", "!@", "Suffix for auto-generated passwords (username+suffix)")
+	cmd.Flags().String("suffix", "", "Legacy scheme: password = username+suffix (default: random password, printed once)")
+	cmd.Flags().Bool("expire", false, "Force a password change at next login (chage -d 0)")
 	cmd.Flags().StringP("file", "f", "", "File with usernames (or username,password per line)")
 	cmd.Flags().Bool("all", false, "Set passwords for all system users")
 	return cmd

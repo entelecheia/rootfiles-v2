@@ -101,7 +101,8 @@ func (m *UsersModule) Apply(ctx context.Context, rc *RunContext) (*ApplyResult, 
 	changed := false
 
 	// Create custom home base
-	if cfg.HomeBase != "" && cfg.HomeBase != "/home" {
+	if cfg.HomeBase != "" && cfg.HomeBase != "/home" &&
+		(!rc.Runner.FileExists(cfg.HomeBase) || !isDir(filepath.Join(cfg.HomeBase, ".rootfiles"))) {
 		if err := rc.Runner.MkdirAll(cfg.HomeBase, 0755); err != nil {
 			return nil, fmt.Errorf("creating home base: %w", err)
 		}
@@ -133,8 +134,11 @@ func (m *UsersModule) Apply(ctx context.Context, rc *RunContext) (*ApplyResult, 
 				newLines = append(newLines, "HOME="+cfg.HomeBase)
 			}
 			content = strings.Join(newLines, "\n")
-			rc.Runner.WriteFile("/etc/default/useradd", []byte(content), 0644)
+			if err := rc.Runner.WriteFile("/etc/default/useradd", []byte(content), 0644); err != nil {
+				return nil, fmt.Errorf("writing /etc/default/useradd: %w", err)
+			}
 			messages = append(messages, "updated /etc/default/useradd")
+			changed = true
 		}
 	}
 
@@ -143,6 +147,9 @@ func (m *UsersModule) Apply(ctx context.Context, rc *RunContext) (*ApplyResult, 
 
 // AddUser creates a user with the given config. Called from CLI `rootfiles user add`.
 func AddUser(ctx context.Context, rc *RunContext, username, pubkey string, extraGroups []string, noDocker bool) error {
+	if err := checkUsername(username); err != nil {
+		return err
+	}
 	cfg := rc.Config.Users
 	homeBase := cfg.HomeBase
 	if homeBase == "" {
@@ -153,27 +160,18 @@ func AddUser(ctx context.Context, rc *RunContext, username, pubkey string, extra
 	if shell == "" {
 		shell = "/usr/bin/zsh"
 	}
+	if !rc.DryRun && !rc.Runner.FileExists(shell) {
+		fmt.Printf("  %s shell %s not found, using /bin/bash\n", "⚠", shell)
+		shell = "/bin/bash"
+	}
 
 	// Check if user exists
 	if _, err := user.Lookup(username); err == nil {
 		return fmt.Errorf("user %s already exists", username)
 	}
 
-	// Create user
-	args := []string{
-		"--home-dir", homeDir,
-		"--create-home",
-		"--shell", shell,
-	}
-	if _, err := rc.Runner.Run(ctx, "useradd", append(args, username)...); err != nil {
-		return fmt.Errorf("creating user: %w", err)
-	}
-
-	// Build group list
-	groups := cfg.DefaultGroups
-	if len(extraGroups) > 0 {
-		groups = append(groups, extraGroups...)
-	}
+	// Build group list (copy: never append into the config's slice)
+	groups := append(append([]string{}, cfg.DefaultGroups...), extraGroups...)
 	if noDocker {
 		var filtered []string
 		for _, g := range groups {
@@ -183,34 +181,39 @@ func AddUser(ctx context.Context, rc *RunContext, username, pubkey string, extra
 		}
 		groups = filtered
 	}
+	groups, missing := existingGroups(groups)
+	for _, g := range missing {
+		fmt.Printf("  ⚠ group %s does not exist yet, skipped (add later with 'rootfiles user group-add')\n", g)
+	}
 
-	// Add to groups
+	// Create user
+	args := []string{
+		"--home-dir", homeDir,
+		"--create-home",
+		"--shell", shell,
+	}
 	if len(groups) > 0 {
-		rc.Runner.Run(ctx, "usermod", "-aG", strings.Join(groups, ","), username)
+		args = append(args, "--groups", strings.Join(groups, ","))
+	}
+	if _, err := rc.Runner.Run(ctx, "useradd", append(args, username)...); err != nil {
+		return fmt.Errorf("creating user: %w", err)
 	}
 
-	// Sudoers
 	if cfg.SudoNopasswd {
-		sudoContent := fmt.Sprintf("%s ALL=(ALL) NOPASSWD:ALL\n", username)
-		sudoPath := fmt.Sprintf("/etc/sudoers.d/%s", username)
-		rc.Runner.WriteFile(sudoPath, []byte(sudoContent), 0440)
-	}
-
-	// SSH key
-	if pubkey != "" {
-		sshDir := filepath.Join(homeDir, ".ssh")
-		rc.Runner.MkdirAll(sshDir, 0700)
-		authKeys := filepath.Join(sshDir, "authorized_keys")
-		rc.Runner.WriteFile(authKeys, []byte(pubkey+"\n"), 0600)
-		// Fix ownership
-		u, _ := user.Lookup(username)
-		if u != nil {
-			rc.Runner.Run(ctx, "chown", "-R", u.Uid+":"+u.Gid, sshDir)
+		if err := writeSudoers(ctx, rc, username); err != nil {
+			return err
 		}
 	}
 
-	// Save to metadata
-	saveUserMeta(rc, username, homeDir, shell, groups, cfg.SudoNopasswd, pubkey)
+	if pubkey != "" {
+		if err := installAuthorizedKeys(ctx, rc, username, homeDir, []string{pubkey}); err != nil {
+			return err
+		}
+	}
+
+	if err := saveUserMeta(rc, username, homeDir, shell, groups, cfg.SudoNopasswd, pubkey); err != nil {
+		return fmt.Errorf("recording user metadata: %w", err)
+	}
 
 	fmt.Printf("User %s created (home: %s, shell: %s, groups: %v)\n", username, homeDir, shell, groups)
 	return nil
@@ -336,8 +339,7 @@ func scanSystemUsers(ctx context.Context, rc *RunContext) ([]UserMeta, error) {
 		}
 
 		// Check sudoers
-		sudoPath := fmt.Sprintf("/etc/sudoers.d/%s", name)
-		if rc.Runner.FileExists(sudoPath) {
+		if rc.Runner.FileExists(sudoersPath(name)) {
 			meta.SudoNopasswd = true
 		}
 
@@ -385,7 +387,12 @@ func RestoreUsers(ctx context.Context, rc *RunContext, backupPath string) error 
 		return fmt.Errorf("parsing backup: %w", err)
 	}
 
+	var failed []string
 	for _, u := range db.Users {
+		if err := checkUsername(u.Name); err != nil {
+			failed = append(failed, err.Error())
+			continue
+		}
 		// Check if user already exists
 		if _, err := user.Lookup(u.Name); err == nil {
 			fmt.Printf("  User %s already exists, skipping\n", u.Name)
@@ -408,38 +415,13 @@ func RestoreUsers(ctx context.Context, rc *RunContext, backupPath string) error 
 		args = append(args, u.Name)
 
 		if _, err := rc.Runner.Run(ctx, "useradd", args...); err != nil {
-			fmt.Printf("  Warning: failed to create user %s: %v\n", u.Name, err)
+			failed = append(failed, fmt.Sprintf("%s: %v", u.Name, firstLine(err.Error())))
 			continue
 		}
 
-		// Restore groups
-		if len(u.Groups) > 0 {
-			rc.Runner.Run(ctx, "usermod", "-aG", strings.Join(u.Groups, ","), u.Name)
-		}
-
-		// Restore sudoers
-		if u.SudoNopasswd {
-			sudoContent := fmt.Sprintf("%s ALL=(ALL) NOPASSWD:ALL\n", u.Name)
-			rc.Runner.WriteFile(fmt.Sprintf("/etc/sudoers.d/%s", u.Name), []byte(sudoContent), 0440)
-		}
-
-		// Fix ownership if home preserved
-		if homeExists {
-			rc.Runner.Run(ctx, "chown", "-R",
-				strconv.Itoa(u.UID)+":"+strconv.Itoa(u.GID), u.Home)
-		}
-
-		// Restore SSH pubkeys if home was freshly created (no existing authorized_keys)
-		if len(u.SSHPubkeys) > 0 {
-			authKeysPath := filepath.Join(u.Home, ".ssh", "authorized_keys")
-			if !rc.Runner.FileExists(authKeysPath) {
-				sshDir := filepath.Join(u.Home, ".ssh")
-				rc.Runner.MkdirAll(sshDir, 0700)
-				content := strings.Join(u.SSHPubkeys, "\n") + "\n"
-				rc.Runner.WriteFile(authKeysPath, []byte(content), 0600)
-				rc.Runner.Run(ctx, "chown", "-R",
-					strconv.Itoa(u.UID)+":"+strconv.Itoa(u.GID), sshDir)
-			}
+		if err := restoreUserExtras(ctx, rc, u, homeExists); err != nil {
+			failed = append(failed, fmt.Sprintf("%s: %v", u.Name, err))
+			continue
 		}
 
 		status := "created"
@@ -449,6 +431,45 @@ func RestoreUsers(ctx context.Context, rc *RunContext, backupPath string) error 
 		fmt.Printf("  User %s %s\n", u.Name, status)
 	}
 
+	if len(failed) > 0 {
+		return fmt.Errorf("%d user(s) failed to restore: %s", len(failed), strings.Join(failed, "; "))
+	}
+	return nil
+}
+
+// restoreUserExtras re-applies groups, sudoers, ownership and SSH keys for
+// a user just recreated from a backup.
+func restoreUserExtras(ctx context.Context, rc *RunContext, u UserMeta, homeExists bool) error {
+	groups, missing := existingGroups(u.Groups)
+	for _, g := range missing {
+		fmt.Printf("  ⚠ %s: group %s does not exist, skipped\n", u.Name, g)
+	}
+	if len(groups) > 0 {
+		if _, err := rc.Runner.Run(ctx, "usermod", "-aG", strings.Join(groups, ","), u.Name); err != nil {
+			return fmt.Errorf("adding groups: %w", err)
+		}
+	}
+
+	if u.SudoNopasswd {
+		if err := writeSudoers(ctx, rc, u.Name); err != nil {
+			return err
+		}
+	}
+
+	// A preserved home keeps its files but the uid/gid may have changed.
+	if homeExists {
+		if _, err := rc.Runner.Run(ctx, "chown", "-R",
+			strconv.Itoa(u.UID)+":"+strconv.Itoa(u.GID), u.Home); err != nil {
+			return fmt.Errorf("fixing ownership of %s: %w", u.Home, err)
+		}
+	}
+
+	// Restore SSH keys only when the home has none of its own.
+	if len(u.SSHPubkeys) > 0 && !rc.Runner.FileExists(filepath.Join(u.Home, ".ssh", "authorized_keys")) {
+		if err := installAuthorizedKeys(ctx, rc, u.Name, u.Home, u.SSHPubkeys); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -703,23 +724,50 @@ type PasswordEntry struct {
 	Password string // empty means auto-generate (username + suffix)
 }
 
-// SetPasswords sets passwords for the given entries.
-func SetPasswords(ctx context.Context, rc *RunContext, entries []PasswordEntry, suffix string) error {
+// SetPasswords sets passwords for the given entries. Entries without a
+// password get username+suffix when suffix is set (legacy scheme), otherwise
+// a random password that is printed once. With expire, users must change
+// the password at next login.
+func SetPasswords(ctx context.Context, rc *RunContext, entries []PasswordEntry, suffix string, expire bool) error {
+	var failed []string
 	for _, e := range entries {
 		pass := e.Password
+		generated := ""
 		if pass == "" {
-			pass = e.Username + suffix
+			if suffix != "" {
+				pass = e.Username + suffix
+			} else {
+				p, err := generatePassword(16)
+				if err != nil {
+					return fmt.Errorf("generating password: %w", err)
+				}
+				pass, generated = p, p
+			}
 		}
-		script := fmt.Sprintf("echo '%s:%s' | chpasswd", e.Username, pass)
 		if rc.DryRun {
 			fmt.Printf("  [dry-run] set password for %s (password: ****)\n", e.Username)
 			continue
 		}
-		if _, err := rc.Runner.RunShell(ctx, script); err != nil {
-			fmt.Printf("  Failed to set password for %s: %v\n", e.Username, err)
+		if err := setPassword(ctx, rc, e.Username, pass); err != nil {
+			fmt.Printf("  Failed to set password for %s: %s\n", e.Username, firstLine(err.Error()))
+			failed = append(failed, e.Username)
+			continue
+		}
+		if expire {
+			if _, err := rc.Runner.Run(ctx, "chage", "-d", "0", e.Username); err != nil {
+				fmt.Printf("  Password set for %s, but expiring it failed: %s\n", e.Username, firstLine(err.Error()))
+				failed = append(failed, e.Username)
+				continue
+			}
+		}
+		if generated != "" {
+			fmt.Printf("  Password set for %s: %s\n", e.Username, generated)
 		} else {
 			fmt.Printf("  Password set for %s\n", e.Username)
 		}
+	}
+	if len(failed) > 0 {
+		return fmt.Errorf("failed to set password for: %s", strings.Join(failed, ", "))
 	}
 	return nil
 }
@@ -752,19 +800,23 @@ func LoadPasswordFile(path, suffix string) ([]PasswordEntry, error) {
 	return entries, nil
 }
 
-func saveUserMeta(rc *RunContext, username, home, shell string, groups []string, sudoNopasswd bool, pubkey string) {
+func saveUserMeta(rc *RunContext, username, home, shell string, groups []string, sudoNopasswd bool, pubkey string) error {
 	cfg := rc.Config.Users
 	homeBase := cfg.HomeBase
 	if homeBase == "" {
 		homeBase = "/home"
 	}
 
-	ensureMetaDir(rc.Runner, homeBase)
+	if err := ensureMetaDir(rc.Runner, homeBase); err != nil {
+		return err
+	}
 	dbPath := filepath.Join(homeBase, ".rootfiles", "users.json")
 	var db UsersDB
 
 	if data, err := rc.Runner.ReadFile(dbPath); err == nil {
-		json.Unmarshal(data, &db)
+		if err := json.Unmarshal(data, &db); err != nil {
+			return fmt.Errorf("parsing %s: %w", dbPath, err)
+		}
 	}
 	if db.Version == 0 {
 		db.Version = 1
@@ -772,20 +824,20 @@ func saveUserMeta(rc *RunContext, username, home, shell string, groups []string,
 		db.CreatedBy = "rootfiles-v2"
 	}
 
-	// Get UID/GID
-	u, _ := user.Lookup(username)
-	uid, _ := strconv.Atoi(u.Uid)
-	gid, _ := strconv.Atoi(u.Gid)
-
 	meta := UserMeta{
 		Name:         username,
-		UID:          uid,
-		GID:          gid,
 		Shell:        shell,
 		Groups:       groups,
 		SudoNopasswd: sudoNopasswd,
 		CreatedAt:    time.Now().UTC().Format(time.RFC3339),
 		Home:         home,
+	}
+	// The account does not exist in dry-run; record what we can.
+	if u, err := user.Lookup(username); err == nil {
+		meta.UID, _ = strconv.Atoi(u.Uid)
+		meta.GID, _ = strconv.Atoi(u.Gid)
+	} else if !rc.DryRun {
+		return fmt.Errorf("looking up %s: %w", username, err)
 	}
 	if pubkey != "" {
 		meta.SSHPubkeys = []string{pubkey}
@@ -804,6 +856,9 @@ func saveUserMeta(rc *RunContext, username, home, shell string, groups []string,
 		db.Users = append(db.Users, meta)
 	}
 
-	data, _ := json.MarshalIndent(db, "", "  ")
-	rc.Runner.WriteFile(dbPath, data, 0600)
+	data, err := json.MarshalIndent(db, "", "  ")
+	if err != nil {
+		return err
+	}
+	return rc.Runner.WriteFile(dbPath, data, 0600)
 }

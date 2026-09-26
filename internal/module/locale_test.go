@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/entelecheia/rootfiles-v2/internal/exec"
 )
 
 func TestLocaleModule_Name(t *testing.T) {
@@ -92,6 +94,8 @@ func TestLocaleModule_ApplyWithoutSystemd(t *testing.T) {
 func TestLocaleModule_UnknownTimezone(t *testing.T) {
 	fakeLocaleFS(t)
 	rc := newRealRC(t)
+	// Never install packages on the test host.
+	rc.APT = exec.NewAPT(newDryRunRC(t).Runner)
 	rc.Config.Timezone = "Mars/Olympus"
 	if _, err := NewLocaleModule().Apply(context.Background(), rc); err == nil {
 		t.Error("Apply should reject an unknown timezone")

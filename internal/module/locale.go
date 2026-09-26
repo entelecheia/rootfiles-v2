@@ -98,7 +98,17 @@ func (m *LocaleModule) Apply(ctx context.Context, rc *RunContext) (*ApplyResult,
 	}
 
 	if cfg.Timezone != "" && currentTimezone(rc) != cfg.Timezone {
-		if !rc.DryRun && !rc.Runner.FileExists(filepath.Join(zoneinfoDir, cfg.Timezone)) {
+		zoneFile := filepath.Join(zoneinfoDir, cfg.Timezone)
+		if !rc.DryRun && !rc.Runner.FileExists(zoneFile) && !rc.APT.IsInstalled("tzdata") {
+			// Minimal images ship without zone data.
+			if err := rc.APT.Update(ctx); err != nil {
+				return nil, fmt.Errorf("apt update: %w", err)
+			}
+			if err := rc.APT.Install(ctx, []string{"tzdata"}); err != nil {
+				return nil, fmt.Errorf("installing tzdata: %w", err)
+			}
+		}
+		if !rc.DryRun && !rc.Runner.FileExists(zoneFile) {
 			return nil, fmt.Errorf("unknown timezone %q (not in %s)", cfg.Timezone, zoneinfoDir)
 		}
 		if _, err := rc.Runner.Run(ctx, timedatectlBin, "set-timezone", cfg.Timezone); err != nil {
