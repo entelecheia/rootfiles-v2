@@ -28,7 +28,7 @@ fi
 
 rootfiles user quota set qa 50M --profile minimal --home-base /qhome 2>&1 || true
 out=$(rootfiles user quota show --profile minimal --home-base /qhome 2>&1 || true)
-if grep -Eq "^qa .*50M" <<<"$out"; then pass "quota visible in report"; else fail "quota report: $out"; fi
+if grep -Eq "^qa .*(50M|51200K)" <<<"$out"; then pass "quota visible in report"; else fail "quota report: $out"; fi
 
 if su qa -c "dd if=/dev/zero of=/qhome/qa/big bs=1M count=80 status=none" 2>/dev/null; then
     fail "quota not enforced"
