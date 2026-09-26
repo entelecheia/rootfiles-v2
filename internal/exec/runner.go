@@ -133,3 +133,25 @@ func (r *Runner) Symlink(target, link string) error {
 	r.Logger.Info("symlink", "target", target, "link", link)
 	return os.Symlink(target, link)
 }
+
+// Remove deletes a single file, symlink, or empty directory. It never
+// recurses, so a populated directory yields an error instead of data loss.
+// Respects dry-run.
+func (r *Runner) Remove(path string) error {
+	if r.DryRun {
+		r.Logger.Info("dry-run: remove", "path", path)
+		return nil
+	}
+	r.Logger.Info("remove", "path", path)
+	return os.Remove(path)
+}
+
+// Rename moves a path. Respects dry-run.
+func (r *Runner) Rename(oldPath, newPath string) error {
+	if r.DryRun {
+		r.Logger.Info("dry-run: rename", "from", oldPath, "to", newPath)
+		return nil
+	}
+	r.Logger.Info("rename", "from", oldPath, "to", newPath)
+	return os.Rename(oldPath, newPath)
+}

@@ -134,15 +134,20 @@ func newUserRestoreCmd() *cobra.Command {
 }
 
 func newUserRehomeCmd() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "rehome [USERNAME]",
 		Short: "Move user home to custom home base directory",
-		Args:  cobra.ExactArgs(1),
+		Long: "Copy the user's home to <home-base>/<user>, verify the copy, switch the account over and\n" +
+			"leave a symlink at the old path. The original is kept as <old>.rootfiles-bak-<ts> unless --remove-old.",
+		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			rc := buildRunContext(cmd)
-			return module.RehomeUser(context.Background(), rc, args[0])
+			removeOld, _ := cmd.Flags().GetBool("remove-old")
+			return module.RehomeUser(context.Background(), rc, args[0], removeOld)
 		},
 	}
+	cmd.Flags().Bool("remove-old", false, "Delete the original home after a verified copy")
+	return cmd
 }
 
 func newUserIDCmd() *cobra.Command {

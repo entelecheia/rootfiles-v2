@@ -453,7 +453,7 @@ func RestoreUsers(ctx context.Context, rc *RunContext, backupPath string) error 
 }
 
 // RehomeUser moves a user's home from /home/<name> to the custom home base.
-func RehomeUser(ctx context.Context, rc *RunContext, username string) error {
+func RehomeUser(ctx context.Context, rc *RunContext, username string, removeOld bool) error {
 	cfg := rc.Config.Users
 	homeBase := cfg.HomeBase
 	if homeBase == "" {
@@ -472,9 +472,32 @@ func RehomeUser(ctx context.Context, rc *RunContext, username string) error {
 		return fmt.Errorf("user %s already at %s", username, newHome)
 	}
 
+	// Refuse to merge into a populated destination: rsync would silently
+	// interleave two homes and the later cleanup could not tell them apart.
+	if entries, err := os.ReadDir(newHome); err == nil && len(entries) > 0 {
+		return fmt.Errorf("destination %s already exists and is not empty", newHome)
+	}
+
 	// Copy files
-	if _, err := rc.Runner.Run(ctx, "rsync", "-a", oldHome+"/", newHome+"/"); err != nil {
+	if _, err := rc.Runner.Run(ctx, "rsync", "-aH", oldHome+"/", newHome+"/"); err != nil {
 		return fmt.Errorf("copying home: %w", err)
+	}
+
+	// Verify the copy before touching the original: a checksum dry-run must
+	// report no differences.
+	if !rc.DryRun {
+		res, err := rc.Runner.Query(ctx, "rsync", "-aH", "--checksum", "--dry-run", "--itemize-changes", oldHome+"/", newHome+"/")
+		if err != nil {
+			return fmt.Errorf("verifying copied home: %w", err)
+		}
+		if diff := strings.TrimSpace(res.Stdout); diff != "" {
+			return fmt.Errorf("copied home differs from original, leaving %s untouched:\n%s", oldHome, diff)
+		}
+	}
+
+	// Fix ownership
+	if _, err := rc.Runner.Run(ctx, "chown", "-R", u.Uid+":"+u.Gid, newHome); err != nil {
+		return fmt.Errorf("fixing ownership of %s: %w", newHome, err)
 	}
 
 	// Update user home
@@ -482,12 +505,22 @@ func RehomeUser(ctx context.Context, rc *RunContext, username string) error {
 		return fmt.Errorf("updating user home: %w", err)
 	}
 
-	// Remove old home and create symlink for compatibility
-	rc.Runner.Run(ctx, "rm", "-rf", oldHome)
-	rc.Runner.Symlink(newHome, oldHome)
-
-	// Fix ownership
-	rc.Runner.Run(ctx, "chown", "-R", u.Uid+":"+u.Gid, newHome)
+	// Keep the original as a backup (removed only on explicit request) and
+	// leave a compatibility symlink in its place.
+	backup := fmt.Sprintf("%s.rootfiles-bak-%s", oldHome, time.Now().Format("20060102-150405"))
+	if err := rc.Runner.Rename(oldHome, backup); err != nil {
+		return fmt.Errorf("moving old home aside: %w", err)
+	}
+	if err := rc.Runner.Symlink(newHome, oldHome); err != nil {
+		return fmt.Errorf("creating compatibility symlink %s: %w", oldHome, err)
+	}
+	if removeOld {
+		if _, err := rc.Runner.Run(ctx, "rm", "-rf", "--one-file-system", backup); err != nil {
+			return fmt.Errorf("removing old home backup %s: %w", backup, err)
+		}
+	} else {
+		fmt.Printf("Original home kept at %s (delete it once verified)\n", backup)
+	}
 
 	fmt.Printf("User %s moved: %s → %s (symlink created)\n", username, oldHome, newHome)
 	return nil
