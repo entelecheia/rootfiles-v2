@@ -73,6 +73,31 @@ func newGPUCmd() *cobra.Command {
 		},
 	})
 
+	migCmd := &cobra.Command{Use: "mig", Short: "Multi-Instance GPU (read-only)"}
+	migCmd.AddCommand(&cobra.Command{
+		Use:   "status",
+		Short: "Show MIG mode and instances per GPU",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			gpus, err := module.MIGStatus(cmd.Context(), buildRunContext(cmd))
+			if err != nil {
+				return err
+			}
+			out := cmd.OutOrStdout()
+			for _, g := range gpus {
+				mode := g.Current
+				if g.Pending != g.Current {
+					mode += " (pending: " + g.Pending + ", needs GPU reset)"
+				}
+				fmt.Fprintf(out, "GPU %s  %s  MIG %s\n", g.Index, g.Name, mode)
+				for _, inst := range g.Instances {
+					fmt.Fprintf(out, "    %s\n", inst)
+				}
+			}
+			return nil
+		},
+	})
+	gpuCmd.AddCommand(migCmd)
+
 	return gpuCmd
 }
 
