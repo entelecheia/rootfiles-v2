@@ -28,10 +28,6 @@ type RunContext struct {
 	// Force bypasses safety guards that would otherwise refuse a change
 	// (e.g. disabling SSH password auth with no key-based login available).
 	Force bool
-	// PendingKeyUsers lists accounts this run will create with an SSH key
-	// (e.g. apply --user --ssh-pubkey). The SSH lockout guard counts them
-	// as future key-based logins.
-	PendingKeyUsers []string
 }
 
 // CheckResult holds the result of a module's Check operation.
@@ -60,8 +56,8 @@ type ApplyResult struct {
 var defaultOrder = []string{
 	"locale",
 	"packages",
+	"users", // before ssh: declared accounts (and their keys) must exist before password auth is disabled
 	"ssh",
-	"users",
 	"docker",
 	"nvidia",
 	"gpu",

@@ -49,6 +49,11 @@ func runCheck(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return fmt.Errorf("loading config: %w", err)
 	}
+	applyFlagOverrides(cmd, cfg)
+	applyAccountFlags(cmd, cfg)
+	if err := cfg.Validate(); err != nil {
+		return err
+	}
 
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
 		Level: slog.LevelWarn,

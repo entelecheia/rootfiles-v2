@@ -5,8 +5,11 @@ import (
 	"fmt"
 	"net/netip"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
+
+var validAccountName = regexp.MustCompile(`^[a-z_][a-z0-9_.-]*$`)
 
 // Validate reports semantic errors that YAML decoding cannot catch. All
 // problems are returned together so a config can be fixed in one pass.
@@ -42,6 +45,22 @@ func (c *Config) Validate() error {
 		checkAbs("modules.storage.symlinks["+link+"]", target)
 		if filepath.Clean(link) == "/" {
 			add("modules.storage.symlinks: refusing to replace /")
+		}
+	}
+
+	seen := map[string]bool{}
+	for _, a := range c.Users.Accounts {
+		if !validAccountName.MatchString(a.Name) || len(a.Name) > 32 {
+			add("users.accounts: invalid name %q", a.Name)
+		}
+		if seen[a.Name] {
+			add("users.accounts: duplicate name %q", a.Name)
+		}
+		seen[a.Name] = true
+		for _, k := range a.SSHPubkeys {
+			if f := strings.Fields(k); len(f) < 2 || strings.ContainsAny(k, "\n") {
+				add("users.accounts[%s].ssh_pubkeys: %q is not an OpenSSH public key line", a.Name, k)
+			}
 		}
 	}
 

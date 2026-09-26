@@ -29,7 +29,7 @@ func TestRegistry_ResolveAll(t *testing.T) {
 		t.Errorf("expected 10 modules, got %d", len(modules))
 	}
 	// Verify order
-	expected := []string{"locale", "packages", "ssh", "users", "docker", "nvidia", "gpu", "cloudflared", "storage", "network"}
+	expected := []string{"locale", "packages", "users", "ssh", "docker", "nvidia", "gpu", "cloudflared", "storage", "network"}
 	for i, m := range modules {
 		if m.Name() != expected[i] {
 			t.Errorf("module[%d] = %q, want %q", i, m.Name(), expected[i])

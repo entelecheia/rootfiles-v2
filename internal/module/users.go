@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/entelecheia/rootfiles-v2/internal/config"
 )
 
 type UsersModule struct{}
@@ -89,6 +91,12 @@ func (m *UsersModule) Check(_ context.Context, rc *RunContext) (*CheckResult, er
 		}
 	}
 
+	for _, a := range rc.Config.Users.Accounts {
+		for _, d := range accountDrift(context.Background(), rc, a) {
+			changes = append(changes, Change{Description: d.desc, Command: d.cmd})
+		}
+	}
+
 	return &CheckResult{
 		Satisfied: len(changes) == 0,
 		Changes:   changes,
@@ -142,11 +150,140 @@ func (m *UsersModule) Apply(ctx context.Context, rc *RunContext) (*ApplyResult, 
 		}
 	}
 
+	for _, a := range rc.Config.Users.Accounts {
+		msgs, err := convergeAccount(ctx, rc, a)
+		if err != nil {
+			return nil, fmt.Errorf("account %s: %w", a.Name, err)
+		}
+		if len(msgs) > 0 {
+			messages = append(messages, msgs...)
+			changed = true
+		}
+	}
+
 	return &ApplyResult{Changed: changed, Messages: messages}, nil
 }
 
+type accountChange struct{ desc, cmd string }
+
+// accountGroups is default_groups ∪ the account's own groups.
+func accountGroups(rc *RunContext, a config.AccountConfig) []string {
+	return append(append([]string{}, rc.Config.Users.DefaultGroups...), a.Groups...)
+}
+
+// accountDrift lists what differs between a declared account and the
+// system. Groups that do not exist yet (e.g. docker before Docker is
+// installed) are not reported.
+func accountDrift(ctx context.Context, rc *RunContext, a config.AccountConfig) []accountChange {
+	u, err := user.Lookup(a.Name)
+	if err != nil {
+		return []accountChange{{fmt.Sprintf("Create user %s", a.Name), "useradd " + a.Name}}
+	}
+	var out []accountChange
+	if missing := missingKeys(filepath.Join(u.HomeDir, ".ssh", "authorized_keys"), a.SSHPubkeys); len(missing) > 0 {
+		out = append(out, accountChange{fmt.Sprintf("Add %d SSH key(s) for %s", len(missing), a.Name), "append ~/.ssh/authorized_keys"})
+	}
+	if missing := missingGroups(ctx, rc, a.Name, accountGroups(rc, a)); len(missing) > 0 {
+		out = append(out, accountChange{fmt.Sprintf("Add %s to groups %v", a.Name, missing), "usermod -aG " + strings.Join(missing, ",") + " " + a.Name})
+	}
+	return out
+}
+
+// convergeAccount creates the account or adds missing keys/groups.
+func convergeAccount(ctx context.Context, rc *RunContext, a config.AccountConfig) ([]string, error) {
+	u, err := user.Lookup(a.Name)
+	if err != nil {
+		if err := AddUser(ctx, rc, a.Name, a.SSHPubkeys, a.Groups, false); err != nil {
+			return nil, err
+		}
+		return []string{"created user " + a.Name}, nil
+	}
+	var msgs []string
+	akPath := filepath.Join(u.HomeDir, ".ssh", "authorized_keys")
+	if missing := missingKeys(akPath, a.SSHPubkeys); len(missing) > 0 {
+		// Append, keeping existing lines (including comments) verbatim.
+		var lines []string
+		if existing, _ := rc.Runner.ReadFile(akPath); len(strings.TrimSpace(string(existing))) > 0 {
+			lines = strings.Split(strings.TrimRight(string(existing), "\n"), "\n")
+		}
+		if err := installAuthorizedKeys(ctx, rc, a.Name, u.HomeDir, append(lines, missing...)); err != nil {
+			return nil, err
+		}
+		msgs = append(msgs, fmt.Sprintf("added %d SSH key(s) for %s", len(missing), a.Name))
+	}
+	if missing := missingGroups(ctx, rc, a.Name, accountGroups(rc, a)); len(missing) > 0 {
+		if _, err := rc.Runner.Run(ctx, "usermod", "-aG", strings.Join(missing, ","), a.Name); err != nil {
+			return nil, fmt.Errorf("adding groups: %w", err)
+		}
+		msgs = append(msgs, fmt.Sprintf("added %s to groups %v", a.Name, missing))
+	}
+	return msgs, nil
+}
+
+// missingKeys returns the wanted keys not present in an authorized_keys
+// file, comparing key type + blob (comments/options are ignored).
+func missingKeys(path string, want []string) []string {
+	data, _ := os.ReadFile(path)
+	have := map[string]bool{}
+	for _, line := range nonEmptyLines(string(data)) {
+		have[keyID(line)] = true
+	}
+	var missing []string
+	for _, k := range want {
+		if !have[keyID(k)] {
+			missing = append(missing, k)
+		}
+	}
+	return missing
+}
+
+// keyID extracts "<type> <base64>" from an authorized_keys line, skipping
+// any leading options.
+func keyID(line string) string {
+	f := strings.Fields(line)
+	for i := 0; i+1 < len(f); i++ {
+		if strings.HasPrefix(f[i], "ssh-") || strings.HasPrefix(f[i], "ecdsa-") || strings.HasPrefix(f[i], "sk-") {
+			return f[i] + " " + f[i+1]
+		}
+	}
+	return strings.TrimSpace(line)
+}
+
+func nonEmptyLines(s string) []string {
+	var out []string
+	for _, l := range strings.Split(s, "\n") {
+		if t := strings.TrimSpace(l); t != "" && !strings.HasPrefix(t, "#") {
+			out = append(out, t)
+		}
+	}
+	return out
+}
+
+// missingGroups returns existing groups in want that username is not in.
+func missingGroups(ctx context.Context, rc *RunContext, username string, want []string) []string {
+	present, _ := existingGroups(want)
+	if len(present) == 0 {
+		return nil
+	}
+	res, err := rc.Runner.Query(ctx, "id", "-Gn", username)
+	if err != nil {
+		return nil
+	}
+	have := map[string]bool{}
+	for _, g := range strings.Fields(res.Stdout) {
+		have[g] = true
+	}
+	var missing []string
+	for _, g := range present {
+		if !have[g] {
+			missing = append(missing, g)
+		}
+	}
+	return missing
+}
+
 // AddUser creates a user with the given config. Called from CLI `rootfiles user add`.
-func AddUser(ctx context.Context, rc *RunContext, username, pubkey string, extraGroups []string, noDocker bool) error {
+func AddUser(ctx context.Context, rc *RunContext, username string, pubkeys []string, extraGroups []string, noDocker bool) error {
 	if err := checkUsername(username); err != nil {
 		return err
 	}
@@ -205,13 +342,13 @@ func AddUser(ctx context.Context, rc *RunContext, username, pubkey string, extra
 		}
 	}
 
-	if pubkey != "" {
-		if err := installAuthorizedKeys(ctx, rc, username, homeDir, []string{pubkey}); err != nil {
+	if len(pubkeys) > 0 {
+		if err := installAuthorizedKeys(ctx, rc, username, homeDir, pubkeys); err != nil {
 			return err
 		}
 	}
 
-	if err := saveUserMeta(rc, username, homeDir, shell, groups, cfg.SudoNopasswd, pubkey); err != nil {
+	if err := saveUserMeta(rc, username, homeDir, shell, groups, cfg.SudoNopasswd, pubkeys); err != nil {
 		return fmt.Errorf("recording user metadata: %w", err)
 	}
 
@@ -800,7 +937,7 @@ func LoadPasswordFile(path, suffix string) ([]PasswordEntry, error) {
 	return entries, nil
 }
 
-func saveUserMeta(rc *RunContext, username, home, shell string, groups []string, sudoNopasswd bool, pubkey string) error {
+func saveUserMeta(rc *RunContext, username, home, shell string, groups []string, sudoNopasswd bool, pubkeys []string) error {
 	cfg := rc.Config.Users
 	homeBase := cfg.HomeBase
 	if homeBase == "" {
@@ -839,9 +976,7 @@ func saveUserMeta(rc *RunContext, username, home, shell string, groups []string,
 	} else if !rc.DryRun {
 		return fmt.Errorf("looking up %s: %w", username, err)
 	}
-	if pubkey != "" {
-		meta.SSHPubkeys = []string{pubkey}
-	}
+	meta.SSHPubkeys = pubkeys
 
 	// Update or append
 	found := false

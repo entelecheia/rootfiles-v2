@@ -69,7 +69,11 @@ func newUserAddCmd() *cobra.Command {
 			groups, _ := cmd.Flags().GetStringSlice("groups")
 			noDocker, _ := cmd.Flags().GetBool("no-docker")
 
-			return module.AddUser(context.Background(), rc, username, pubkey, groups, noDocker)
+			var pubkeys []string
+			if pubkey != "" {
+				pubkeys = []string{pubkey}
+			}
+			return module.AddUser(context.Background(), rc, username, pubkeys, groups, noDocker)
 		},
 	}
 	cmd.Flags().String("pubkey", "", "SSH public key")

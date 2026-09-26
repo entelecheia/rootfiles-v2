@@ -106,14 +106,17 @@ func TestSSHModule_LockoutGuard(t *testing.T) {
 		{"root key only, root login disabled", config.SSHConfig{DisablePasswordAuth: true, DisableRootLogin: true}, []string{"root"}, nil, true},
 		{"user key", config.SSHConfig{DisablePasswordAuth: true, DisableRootLogin: true}, []string{"alice"}, nil, false},
 		{"system account key ignored", config.SSHConfig{DisablePasswordAuth: true, DisableRootLogin: true}, []string{"daemon"}, nil, true},
-		{"pending user with key", config.SSHConfig{DisablePasswordAuth: true, DisableRootLogin: true}, nil, []string{"bob"}, false},
+		{"declared account with key", config.SSHConfig{DisablePasswordAuth: true, DisableRootLogin: true}, nil, []string{"bob"}, false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			fakePasswd(t, c.keyed...)
 			rc := newDryRunRC(t)
 			rc.Config.SSH = c.cfg
-			rc.PendingKeyUsers = c.pending
+			rc.Config.Modules.Users.Enabled = true
+			for _, n := range c.pending {
+				rc.Config.Users.Accounts = append(rc.Config.Users.Accounts, config.AccountConfig{Name: n, SSHPubkeys: []string{"ssh-ed25519 AAAA k"}})
+			}
 			err := NewSSHModule().lockoutGuard(rc)
 			if (err != nil) != c.wantErr {
 				t.Errorf("lockoutGuard() err = %v, wantErr %v", err, c.wantErr)

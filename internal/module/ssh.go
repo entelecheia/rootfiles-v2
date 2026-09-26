@@ -107,13 +107,29 @@ func (m *SSHModule) lockoutGuard(rc *RunContext) error {
 	if !cfg.DisablePasswordAuth {
 		return nil
 	}
-	if len(keyLoginAccounts(!cfg.DisableRootLogin)) > 0 || len(rc.PendingKeyUsers) > 0 {
+	if len(keyLoginAccounts(!cfg.DisableRootLogin)) > 0 || len(declaredKeyAccounts(rc)) > 0 {
 		return nil
 	}
 	if cfg.DisableRootLogin {
 		return fmt.Errorf("disabling password auth and root login, but no non-root account has an SSH authorized key")
 	}
 	return fmt.Errorf("disabling password auth, but no account has an SSH authorized key")
+}
+
+// declaredKeyAccounts lists users.accounts entries with SSH keys. The
+// users module (which runs before ssh) creates them, so they count as
+// key-based logins even when not yet present (e.g. in check/dry-run).
+func declaredKeyAccounts(rc *RunContext) []string {
+	if !rc.Config.IsModuleEnabled("users") {
+		return nil
+	}
+	var names []string
+	for _, a := range rc.Config.Users.Accounts {
+		if len(a.SSHPubkeys) > 0 {
+			names = append(names, a.Name)
+		}
+	}
+	return names
 }
 
 // validate runs `sshd -t` when sshd is installed. sshd refuses to test

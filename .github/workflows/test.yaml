@@ -214,6 +214,7 @@ jobs:
           - gpu-allocation
           - status
           - ssh-lockout-guard
+          - declarative-accounts
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5

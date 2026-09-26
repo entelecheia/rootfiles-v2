@@ -74,6 +74,45 @@ type UsersConfig struct {
 	DefaultShell  string   `yaml:"default_shell"`
 	DefaultGroups []string `yaml:"default_groups"`
 	SudoNopasswd  bool     `yaml:"sudo_nopasswd"`
+	// Accounts are converged by the users module: created if missing,
+	// missing SSH keys and group memberships added. Never removed.
+	Accounts []AccountConfig `yaml:"accounts,omitempty"`
+}
+
+// AccountConfig declares a login account.
+type AccountConfig struct {
+	Name       string   `yaml:"name"`
+	SSHPubkeys []string `yaml:"ssh_pubkeys,omitempty"`
+	Groups     []string `yaml:"groups,omitempty"` // in addition to users.default_groups
+}
+
+// AddAccount merges an account into Accounts (keys and groups are unioned
+// when the name already exists).
+func (u *UsersConfig) AddAccount(a AccountConfig) {
+	for i := range u.Accounts {
+		if u.Accounts[i].Name == a.Name {
+			u.Accounts[i].SSHPubkeys = appendUnique(u.Accounts[i].SSHPubkeys, a.SSHPubkeys...)
+			u.Accounts[i].Groups = appendUnique(u.Accounts[i].Groups, a.Groups...)
+			return
+		}
+	}
+	u.Accounts = append(u.Accounts, a)
+}
+
+func appendUnique(list []string, items ...string) []string {
+	for _, it := range items {
+		found := false
+		for _, l := range list {
+			if l == it {
+				found = true
+				break
+			}
+		}
+		if !found && it != "" {
+			list = append(list, it)
+		}
+	}
+	return list
 }
 
 type SSHConfig struct {

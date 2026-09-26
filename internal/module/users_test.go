@@ -273,3 +273,15 @@ func TestScanSystemUsers_ParsesPasswd(t *testing.T) {
 		}
 	}
 }
+
+func TestKeyIDAndMissingKeys(t *testing.T) {
+	if keyID(`from="10.0.0.0/8" ssh-ed25519 AAAAblob user@host`) != "ssh-ed25519 AAAAblob" {
+		t.Error("options/comment should be ignored")
+	}
+	p := filepath.Join(t.TempDir(), "authorized_keys")
+	os.WriteFile(p, []byte("# keys\nssh-ed25519 AAAAone old-comment\n"), 0600)
+	missing := missingKeys(p, []string{"ssh-ed25519 AAAAone new-comment", "ssh-rsa AAAAtwo"})
+	if len(missing) != 1 || !strings.HasPrefix(missing[0], "ssh-rsa") {
+		t.Errorf("missingKeys = %v", missing)
+	}
+}

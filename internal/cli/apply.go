@@ -64,6 +64,7 @@ func runApply(cmd *cobra.Command, _ []string) error {
 
 	// Apply CLI flag overrides
 	applyFlagOverrides(cmd, cfg)
+	applyAccountFlags(cmd, cfg)
 	if err := cfg.Validate(); err != nil {
 		return err
 	}
@@ -146,6 +147,28 @@ func applyFlagOverrides(cmd *cobra.Command, cfg *config.Config) {
 	if v, _ := cmd.Flags().GetString("vlan-address"); v != "" {
 		cfg.Modules.Cloudflared.PrivateNetwork.Address = v
 	}
+}
+
+// applyAccountFlags turns --user/--ssh-pubkey (or ROOTFILES_USER /
+// ROOTFILES_SSH_PUBKEY) into a declared account, which the users module
+// creates before the ssh module hardens authentication.
+func applyAccountFlags(cmd *cobra.Command, cfg *config.Config) {
+	name, _ := cmd.Flags().GetString("user")
+	if name == "" {
+		name = os.Getenv("ROOTFILES_USER")
+	}
+	if name == "" {
+		return
+	}
+	key, _ := cmd.Flags().GetString("ssh-pubkey")
+	if key == "" {
+		key = os.Getenv("ROOTFILES_SSH_PUBKEY")
+	}
+	acct := config.AccountConfig{Name: name}
+	if key != "" {
+		acct.SSHPubkeys = []string{key}
+	}
+	cfg.Users.AddAccount(acct)
 }
 
 // configureInteractive shows a preview of all key settings and lets the user
