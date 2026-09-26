@@ -3,13 +3,36 @@ package module
 import (
 	"context"
 	"fmt"
-	"strings"
+	"os"
 )
 
 type DockerModule struct{}
 
 func NewDockerModule() *DockerModule { return &DockerModule{} }
 func (m *DockerModule) Name() string { return "docker" }
+
+var composePluginPaths = []string{
+	"/usr/libexec/docker/cli-plugins/docker-compose",
+	"/usr/lib/docker/cli-plugins/docker-compose",
+}
+
+// daemonUpdates returns the daemon.json keys this module wants to change.
+// Only data-root is enforced; log rotation defaults are added when the
+// operator has not chosen a log driver. Other keys are left untouched.
+func (m *DockerModule) daemonUpdates(cfg map[string]any, storageDir string) map[string]any {
+	updates := map[string]any{}
+	if storageDir == "" {
+		return updates
+	}
+	if cur, _ := cfg["data-root"].(string); cur != storageDir {
+		updates["data-root"] = storageDir
+	}
+	if _, ok := cfg["log-driver"]; !ok {
+		updates["log-driver"] = "json-file"
+		updates["log-opts"] = map[string]any{"max-size": "10m", "max-file": "3"}
+	}
+	return updates
+}
 
 func (m *DockerModule) Check(ctx context.Context, rc *RunContext) (*CheckResult, error) {
 	var changes []Change
@@ -21,22 +44,23 @@ func (m *DockerModule) Check(ctx context.Context, rc *RunContext) (*CheckResult,
 		})
 	}
 
-	// Check docker-compose compatibility symlink
-	if _, err := rc.Runner.ReadFile("/usr/local/bin/docker-compose"); err != nil {
+	if !rc.Runner.FileExists("/usr/local/bin/docker-compose") {
 		changes = append(changes, Change{
 			Description: "Create docker-compose compatibility symlink",
 			Command:     "ln -sf /usr/libexec/docker/cli-plugins/docker-compose /usr/local/bin/docker-compose",
 		})
 	}
 
-	// Check daemon.json
 	cfg := rc.Config.Modules.Docker
 	if cfg.StorageDir != "" {
-		data, _ := rc.Runner.ReadFile("/etc/docker/daemon.json")
-		if !strings.Contains(string(data), cfg.StorageDir) {
+		daemon, err := readDaemonJSON(rc)
+		if err != nil {
+			return nil, err
+		}
+		for key, val := range m.daemonUpdates(daemon, cfg.StorageDir) {
 			changes = append(changes, Change{
-				Description: fmt.Sprintf("Configure Docker storage at %s", cfg.StorageDir),
-				Command:     "write /etc/docker/daemon.json",
+				Description: fmt.Sprintf("Set Docker daemon %s = %v", key, val),
+				Command:     "merge into " + dockerDaemonJSONPath,
 			})
 		}
 	}
@@ -48,12 +72,11 @@ func (m *DockerModule) Check(ctx context.Context, rc *RunContext) (*CheckResult,
 }
 
 func (m *DockerModule) Apply(ctx context.Context, rc *RunContext) (*ApplyResult, error) {
-	var messages []string
+	var messages, warnings []string
 	changed := false
 	cfg := rc.Config.Modules.Docker
 
 	if !rc.Runner.CommandExists("docker") {
-		// Add Docker repo
 		codename := "jammy"
 		if rc.Config.System != nil && rc.Config.System.Codename != "" {
 			codename = rc.Config.System.Codename
@@ -63,11 +86,17 @@ func (m *DockerModule) Apply(ctx context.Context, rc *RunContext) (*ApplyResult,
 			arch = rc.Config.System.Arch
 		}
 
-		rc.APT.AddKeyring(ctx, "docker", "https://download.docker.com/linux/ubuntu/gpg")
+		if err := rc.APT.AddKeyring(ctx, "docker", "https://download.docker.com/linux/ubuntu/gpg"); err != nil {
+			return nil, fmt.Errorf("adding docker apt key: %w", err)
+		}
 		repoLine := fmt.Sprintf("deb [arch=%s signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu %s stable",
 			arch, codename)
-		rc.APT.AddSourceList(ctx, "docker", repoLine)
-		rc.APT.Update(ctx)
+		if err := rc.APT.AddSourceList(ctx, "docker", repoLine); err != nil {
+			return nil, fmt.Errorf("adding docker apt source: %w", err)
+		}
+		if err := rc.APT.Update(ctx); err != nil {
+			return nil, fmt.Errorf("apt update: %w", err)
+		}
 
 		pkgs := []string{"docker-ce", "docker-ce-cli", "containerd.io",
 			"docker-buildx-plugin", "docker-compose-plugin"}
@@ -78,40 +107,53 @@ func (m *DockerModule) Apply(ctx context.Context, rc *RunContext) (*ApplyResult,
 		changed = true
 	}
 
-	// Configure daemon.json
+	// Merge managed keys into daemon.json, preserving everything else
+	// (notably the nvidia runtime registered by nvidia-ctk or DGX OS).
+	restart := false
 	if cfg.StorageDir != "" {
-		daemonJSON := fmt.Sprintf(`{
-  "data-root": "%s",
-  "log-driver": "json-file",
-  "log-opts": {
-    "max-size": "10m",
-    "max-file": "3"
-  }
-}
-`, cfg.StorageDir)
-
-		rc.Runner.MkdirAll("/etc/docker", 0755)
-		rc.Runner.MkdirAll(cfg.StorageDir, 0710)
-
-		data, _ := rc.Runner.ReadFile("/etc/docker/daemon.json")
-		if !strings.Contains(string(data), cfg.StorageDir) {
-			rc.Runner.WriteFile("/etc/docker/daemon.json", []byte(daemonJSON), 0644)
-			rc.Runner.Run(ctx, "systemctl", "restart", "docker")
+		daemon, err := readDaemonJSON(rc)
+		if err != nil {
+			return nil, err
+		}
+		updates := m.daemonUpdates(daemon, cfg.StorageDir)
+		if len(updates) > 0 {
+			if old, _ := daemon["data-root"].(string); updates["data-root"] != nil {
+				if old == "" {
+					old = "/var/lib/docker"
+				}
+				if hasEntries(old) {
+					warnings = append(warnings, fmt.Sprintf(
+						"existing images/volumes in %s are not migrated to %s", old, cfg.StorageDir))
+				}
+			}
+			for k, v := range updates {
+				daemon[k] = v
+			}
+			if err := rc.Runner.MkdirAll(cfg.StorageDir, 0710); err != nil {
+				return nil, fmt.Errorf("creating docker data-root: %w", err)
+			}
+			if err := writeDaemonJSON(rc, daemon); err != nil {
+				return nil, fmt.Errorf("writing daemon.json: %w", err)
+			}
 			messages = append(messages, fmt.Sprintf("Docker data-root set to %s", cfg.StorageDir))
 			changed = true
+			restart = true
 		}
 	}
 
-	// Ensure docker-compose v1 compatibility symlink exists
-	if _, err := rc.Runner.ReadFile("/usr/local/bin/docker-compose"); err != nil {
-		// docker compose v2 plugin is at /usr/libexec/docker/cli-plugins/docker-compose
-		// or /usr/lib/docker/cli-plugins/docker-compose
-		for _, src := range []string{
-			"/usr/libexec/docker/cli-plugins/docker-compose",
-			"/usr/lib/docker/cli-plugins/docker-compose",
-		} {
-			if _, serr := rc.Runner.ReadFile(src); serr == nil {
-				rc.Runner.Run(ctx, "ln", "-sf", src, "/usr/local/bin/docker-compose")
+	// docker-compose v1 compatibility symlink
+	if !rc.Runner.FileExists("/usr/local/bin/docker-compose") {
+		for _, src := range composePluginPaths {
+			if rc.Runner.FileExists(src) {
+				// A dangling symlink fails FileExists but blocks Symlink.
+				if fi, err := os.Lstat("/usr/local/bin/docker-compose"); err == nil && fi.Mode()&os.ModeSymlink != 0 {
+					if err := rc.Runner.Remove("/usr/local/bin/docker-compose"); err != nil {
+						return nil, fmt.Errorf("removing stale docker-compose symlink: %w", err)
+					}
+				}
+				if err := rc.Runner.Symlink(src, "/usr/local/bin/docker-compose"); err != nil {
+					return nil, fmt.Errorf("creating docker-compose symlink: %w", err)
+				}
 				messages = append(messages, "docker-compose compatibility symlink created")
 				changed = true
 				break
@@ -119,8 +161,24 @@ func (m *DockerModule) Apply(ctx context.Context, rc *RunContext) (*ApplyResult,
 		}
 	}
 
-	// Enable and start
-	rc.Runner.Run(ctx, "systemctl", "enable", "--now", "docker")
+	if _, err := rc.Runner.Run(ctx, "systemctl", "enable", "--now", "docker"); err != nil {
+		warnings = append(warnings, fmt.Sprintf("enabling docker service: %s", firstLine(err.Error())))
+	} else if restart {
+		if _, err := rc.Runner.Run(ctx, "systemctl", "restart", "docker"); err != nil {
+			warnings = append(warnings, fmt.Sprintf("restarting docker: %s", firstLine(err.Error())))
+		}
+	}
 
-	return &ApplyResult{Changed: changed, Messages: messages}, nil
+	return &ApplyResult{Changed: changed, Messages: messages, Warnings: warnings}, nil
+}
+
+// hasEntries reports whether dir exists and contains anything.
+func hasEntries(dir string) bool {
+	f, err := os.Open(dir)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	names, _ := f.Readdirnames(1)
+	return len(names) > 0
 }
