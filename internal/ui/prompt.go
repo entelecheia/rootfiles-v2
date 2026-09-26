@@ -21,12 +21,26 @@ func Confirm(message string, unattended bool) (bool, error) {
 	return confirmed, err
 }
 
+// ConfirmDefault asks for yes/no with def pre-selected. Returns def
+// immediately if unattended, so profile values survive both paths.
+func ConfirmDefault(message string, def, unattended bool) (bool, error) {
+	if unattended {
+		return def, nil
+	}
+	confirmed := def
+	err := huh.NewConfirm().
+		Title(message).
+		Value(&confirmed).
+		Run()
+	return confirmed, err
+}
+
 // Select presents a choice. Returns defaultVal if unattended.
 func Select(message string, options []string, defaultVal string, unattended bool) (string, error) {
 	if unattended {
 		return defaultVal, nil
 	}
-	var selected string
+	selected := defaultVal
 	opts := make([]huh.Option[string], len(options))
 	for i, o := range options {
 		opts[i] = huh.NewOption(o, o)

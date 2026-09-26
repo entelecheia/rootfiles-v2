@@ -154,6 +154,10 @@ func configureInteractive(cfg *config.Config, yes, dryRun bool) error {
 
 	fmt.Println("\n=== Configuration ===")
 
+	// Snapshot the profile values so the summary can flag any setting the
+	// operator made less secure than the profile intends.
+	profile := *cfg
+
 	var err error
 
 	// --- General ---
@@ -165,11 +169,11 @@ func configureInteractive(cfg *config.Config, yes, dryRun bool) error {
 	// --- SSH ---
 	if cfg.IsModuleEnabled("ssh") {
 		fmt.Println("\n--- SSH ---")
-		cfg.SSH.DisableRootLogin, err = ui.Confirm("Disable root login?", false)
+		cfg.SSH.DisableRootLogin, err = ui.ConfirmDefault("Disable root login?", cfg.SSH.DisableRootLogin, false)
 		if err != nil {
 			return err
 		}
-		cfg.SSH.DisablePasswordAuth, err = ui.Confirm("Disable password authentication?", false)
+		cfg.SSH.DisablePasswordAuth, err = ui.ConfirmDefault("Disable password authentication?", cfg.SSH.DisablePasswordAuth, false)
 		if err != nil {
 			return err
 		}
@@ -180,6 +184,9 @@ func configureInteractive(cfg *config.Config, yes, dryRun bool) error {
 		cfg.SSH.Port, err = ui.InputInt("SSH port", port, false)
 		if err != nil {
 			return err
+		}
+		if cfg.SSH.Port == 22 && profile.SSH.Port == 0 {
+			cfg.SSH.Port = 0 // keep sshd's default instead of pinning it
 		}
 	}
 
@@ -192,7 +199,7 @@ func configureInteractive(cfg *config.Config, yes, dryRun bool) error {
 				return err
 			}
 		}
-		cfg.Users.SudoNopasswd, err = ui.Confirm("Sudo without password?", false)
+		cfg.Users.SudoNopasswd, err = ui.ConfirmDefault("Sudo without password?", cfg.Users.SudoNopasswd, false)
 		if err != nil {
 			return err
 		}
@@ -216,7 +223,7 @@ func configureInteractive(cfg *config.Config, yes, dryRun bool) error {
 		if err != nil {
 			return err
 		}
-		cfg.Modules.Cloudflared.PrivateNetwork.Enabled, err = ui.Confirm("Enable VLAN private network?", false)
+		cfg.Modules.Cloudflared.PrivateNetwork.Enabled, err = ui.ConfirmDefault("Enable VLAN private network?", cfg.Modules.Cloudflared.PrivateNetwork.Enabled, false)
 		if err != nil {
 			return err
 		}
@@ -231,7 +238,7 @@ func configureInteractive(cfg *config.Config, yes, dryRun bool) error {
 	// --- Network ---
 	if cfg.IsModuleEnabled("network") {
 		fmt.Println("\n--- Network ---")
-		cfg.Modules.Network.UFW, err = ui.Confirm("Enable UFW firewall?", false)
+		cfg.Modules.Network.UFW, err = ui.ConfirmDefault("Enable UFW firewall?", cfg.Modules.Network.UFW, false)
 		if err != nil {
 			return err
 		}
@@ -285,11 +292,16 @@ func configureInteractive(cfg *config.Config, yes, dryRun bool) error {
 		fmt.Printf("  Storage: data_dir=%s\n", cfg.Modules.Storage.DataDir)
 	}
 
+	downgrades := securityDowngrades(&profile, cfg)
+	for _, d := range downgrades {
+		fmt.Println("  " + ui.StyleWarning.Render(ui.MarkWarn+" weaker than profile: "+d))
+	}
+
 	if dryRun {
 		return nil
 	}
 
-	confirmed, err := ui.Confirm("\nApply this configuration?", false)
+	confirmed, err := ui.ConfirmDefault("\nApply this configuration?", len(downgrades) == 0, false)
 	if err != nil {
 		return err
 	}
@@ -297,4 +309,23 @@ func configureInteractive(cfg *config.Config, yes, dryRun bool) error {
 		return errAborted
 	}
 	return nil
+}
+
+// securityDowngrades lists settings where after is less restrictive than
+// the profile values in before.
+func securityDowngrades(before, after *config.Config) []string {
+	var out []string
+	if before.SSH.DisableRootLogin && !after.SSH.DisableRootLogin {
+		out = append(out, "SSH root login re-enabled")
+	}
+	if before.SSH.DisablePasswordAuth && !after.SSH.DisablePasswordAuth {
+		out = append(out, "SSH password authentication re-enabled")
+	}
+	if before.Modules.Network.UFW && !after.Modules.Network.UFW {
+		out = append(out, "UFW firewall disabled")
+	}
+	if !before.Users.SudoNopasswd && after.Users.SudoNopasswd {
+		out = append(out, "passwordless sudo enabled")
+	}
+	return out
 }
