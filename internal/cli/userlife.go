@@ -166,3 +166,36 @@ func humanBytes(b int64) string {
 	}
 	return fmt.Sprintf("%.1f %ciB", float64(b)/float64(div), "KMGTPE"[exp])
 }
+
+func newUserQuotaCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "quota",
+		Short: "Per-user disk quotas on the home_base filesystem (xfs project / ext4 user quota)",
+	}
+	cmd.AddCommand(
+		&cobra.Command{
+			Use:   "set USERNAME SIZE",
+			Short: "Set a hard limit, e.g. 500G (recorded and re-applied on user restore)",
+			Args:  cobra.ExactArgs(2),
+			RunE: func(cmd *cobra.Command, args []string) error {
+				return module.SetQuota(cmd.Context(), buildRunContext(cmd), args[0], args[1])
+			},
+		},
+		&cobra.Command{
+			Use:   "rm USERNAME",
+			Short: "Remove a user's limit",
+			Args:  cobra.ExactArgs(1),
+			RunE: func(cmd *cobra.Command, args []string) error {
+				return module.SetQuota(cmd.Context(), buildRunContext(cmd), args[0], "0")
+			},
+		},
+		&cobra.Command{
+			Use:   "show",
+			Short: "Show the quota report",
+			RunE: func(cmd *cobra.Command, _ []string) error {
+				return module.ShowQuotas(cmd.Context(), buildRunContext(cmd))
+			},
+		},
+	)
+	return cmd
+}

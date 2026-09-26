@@ -217,6 +217,7 @@ jobs:
           - declarative-accounts
           - state-rollback-lock
           - user-lifecycle
+          - user-quota
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5

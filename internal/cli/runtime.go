@@ -26,6 +26,7 @@ var mutatingCommands = [][]string{
 	{"user", "group-add"}, {"user", "group-del"}, {"user", "passwd"},
 	{"user", "del"}, {"user", "lock"}, {"user", "unlock"}, {"user", "expire"},
 	{"user", "key", "add"}, {"user", "key", "rm"},
+	{"user", "quota", "set"}, {"user", "quota", "rm"},
 	{"schedule", "enable"}, {"schedule", "disable"},
 	{"gpu", "assign"}, {"gpu", "revoke"},
 	{"tunnel", "install"}, {"tunnel", "setup"}, {"tunnel", "restart"},

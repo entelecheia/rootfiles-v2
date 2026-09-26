@@ -31,6 +31,7 @@ type UserMeta struct {
 	SSHPubkeys   []string `json:"ssh_pubkeys,omitempty"`
 	CreatedAt    string   `json:"created_at"`
 	Home         string   `json:"home"`
+	Quota        string   `json:"quota,omitempty"` // e.g. "500G", re-applied on restore
 }
 
 // UsersDB is the metadata file format.
@@ -560,6 +561,7 @@ func RestoreUsers(ctx context.Context, rc *RunContext, backupPath string) error 
 			failed = append(failed, fmt.Sprintf("%s: %v", u.Name, err))
 			continue
 		}
+		reapplyQuota(ctx, rc, u)
 
 		status := "created"
 		if homeExists {
