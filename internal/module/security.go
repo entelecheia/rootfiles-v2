@@ -66,11 +66,23 @@ bantime  = 1h
 `, strings.Join(ps, ","))
 }
 
-// timeSyncPackage returns the NTP daemon to manage: chrony when already
-// installed (common on DGX), otherwise systemd-timesyncd.
+// timeSyncPackage returns the NTP daemon to manage: whichever one is
+// already installed (chrony is common on DGX; ntp/ntpsec/openntpd conflict
+// with systemd-timesyncd and would be removed by installing it), otherwise
+// systemd-timesyncd.
 func timeSyncPackage(rc *RunContext) (pkg, unit string) {
-	if rc.APT.IsInstalled("chrony") {
-		return "chrony", "chrony"
+	candidates := []struct{ pkg, unit string }{
+		{"chrony", "chrony"}, {"ntpsec", "ntpsec"}, {"ntp", "ntp"}, {"openntpd", "openntpd"},
+	}
+	names := make([]string, len(candidates))
+	for i, c := range candidates {
+		names[i] = c.pkg
+	}
+	installed := rc.APT.Installed(names)
+	for _, c := range candidates {
+		if installed[c.pkg] {
+			return c.pkg, c.unit
+		}
 	}
 	return "systemd-timesyncd", "systemd-timesyncd"
 }

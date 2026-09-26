@@ -2,6 +2,9 @@ package module
 
 import (
 	"context"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"testing"
 
 	"github.com/entelecheia/rootfiles-v2/internal/config"
@@ -84,5 +87,30 @@ func TestNetworkModule_RequiredPortsIncludeSSH(t *testing.T) {
 		if got[i] != want[i] {
 			t.Fatalf("requiredPorts = %v, want %v", got, want)
 		}
+	}
+}
+
+func TestParsePortDirectives(t *testing.T) {
+	got := parsePortDirectives("# Port 99\nPort 2222\nport 22\nPort 2222\nListenAddress 0.0.0.0\n")
+	if len(got) != 2 || got[0] != 2222 || got[1] != 22 {
+		t.Errorf("parsePortDirectives = %v", got)
+	}
+}
+
+func TestSSHPorts_FallsBackToConfigFiles(t *testing.T) {
+	if _, err := exec.LookPath("sshd"); err == nil {
+		t.Skip("sshd installed; sshd -T path is used instead")
+	}
+	dir := t.TempDir()
+	saved := []string{sshdConfigPath, sshdConfigDir}
+	sshdConfigPath = filepath.Join(dir, "sshd_config")
+	sshdConfigDir = filepath.Join(dir, "sshd_config.d")
+	t.Cleanup(func() { sshdConfigPath, sshdConfigDir = saved[0], saved[1] })
+	os.MkdirAll(sshdConfigDir, 0755)
+	os.WriteFile(sshdConfigPath, []byte("Include /etc/ssh/sshd_config.d/*.conf\n#Port 22\n"), 0644)
+	os.WriteFile(filepath.Join(sshdConfigDir, "50-custom.conf"), []byte("Port 2200\n"), 0644)
+
+	if got := sshPorts(context.Background(), newDryRunRC(t)); len(got) != 1 || got[0] != 2200 {
+		t.Errorf("sshPorts = %v, want [2200] from sshd_config.d", got)
 	}
 }

@@ -34,7 +34,9 @@ func (a *APT) Update(ctx context.Context) error {
 }
 
 // Install installs packages via apt-get. Existing modified conffiles are
-// kept (confold) so an install never blocks on a conffile prompt.
+// kept (confold) so an install never blocks on a conffile prompt, and
+// --no-remove aborts instead of silently removing conflicting packages
+// (e.g. ntp when systemd-timesyncd is requested).
 func (a *APT) Install(ctx context.Context, packages []string) error {
 	if len(packages) == 0 {
 		return nil
@@ -43,7 +45,7 @@ func (a *APT) Install(ctx context.Context, packages []string) error {
 	args = append(args,
 		"-o", "Dpkg::Options::=--force-confdef",
 		"-o", "Dpkg::Options::=--force-confold",
-		"install", "-y", "-qq")
+		"install", "-y", "-qq", "--no-remove")
 	args = append(args, packages...)
 	_, err := a.Runner.RunEnv(ctx, aptEnv, "apt-get", args...)
 	return err

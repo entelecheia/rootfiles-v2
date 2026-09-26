@@ -76,28 +76,60 @@ func queryUFW(ctx context.Context, rc *RunContext) (ufwState, bool) {
 
 // sshPorts returns the ports sshd listens on (or will, once the ssh module
 // has run): the configured port when set, otherwise the effective ports
-// reported by `sshd -T`, falling back to 22.
+// reported by `sshd -T`, otherwise every Port directive in the config
+// files, falling back to 22. Erring towards more ports is deliberate: the
+// result decides what the firewall must keep open.
 func sshPorts(ctx context.Context, rc *RunContext) []int {
 	if rc.Config.SSH.Port > 0 {
 		return []int{rc.Config.SSH.Port}
 	}
 	if bin := sshdBinary(rc); bin != "" {
+		// sshd -T refuses to run without its privilege separation dir,
+		// which only exists while sshd runs. Creating it is harmless.
+		_ = os.MkdirAll("/run/sshd", 0755)
 		if res, err := rc.Runner.Query(ctx, bin, "-T"); err == nil {
-			var ports []int
-			for _, line := range strings.Split(res.Stdout, "\n") {
-				f := strings.Fields(line)
-				if len(f) == 2 && strings.EqualFold(f[0], "port") {
-					if p, err := strconv.Atoi(f[1]); err == nil {
-						ports = append(ports, p)
-					}
-				}
-			}
-			if len(ports) > 0 {
+			if ports := parsePortDirectives(res.Stdout); len(ports) > 0 {
 				return ports
 			}
 		}
 	}
+	var all string
+	for _, p := range append([]string{sshdConfigPath}, globFiles(sshdConfigDir, "*.conf")...) {
+		if data, err := rc.Runner.ReadFile(p); err == nil {
+			all += string(data) + "\n"
+		}
+	}
+	if ports := parsePortDirectives(all); len(ports) > 0 {
+		return ports
+	}
 	return []int{22}
+}
+
+// Overridable in tests.
+var (
+	sshdConfigPath = "/etc/ssh/sshd_config"
+	sshdConfigDir  = "/etc/ssh/sshd_config.d"
+)
+
+// parsePortDirectives collects unique "Port N" values (case-insensitive).
+func parsePortDirectives(text string) []int {
+	seen := map[int]bool{}
+	var ports []int
+	for _, line := range strings.Split(text, "\n") {
+		f := strings.Fields(line)
+		if len(f) == 2 && strings.EqualFold(f[0], "port") {
+			if p, err := strconv.Atoi(f[1]); err == nil && p > 0 && !seen[p] {
+				seen[p] = true
+				ports = append(ports, p)
+			}
+		}
+	}
+	return ports
+}
+
+func globFiles(dir, pattern string) []string {
+	m, _ := filepath.Glob(filepath.Join(dir, pattern))
+	return m
 }
 
 // sshdBinary locates sshd, which lives in /usr/sbin and may be off PATH.
