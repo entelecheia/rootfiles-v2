@@ -1,11 +1,46 @@
-# AGENTS.md
+# rootfiles-v2
 
-Codex adapter only. Do not copy project rules from the source files into this
-file.
+Go-based server bootstrapping tool for Ubuntu and NVIDIA DGX OS.
 
-- Scope: this directory and descendants.
-- Local source files: `CLAUDE.md`, `README.md`.
-- Before changing files here, read the local source files and treat them as the source of truth for project structure, naming, sensitive content, storage rules, and commands.
-- Translate Claude-specific tool, agent, or slash-command references into available Codex tools and skills.
-- When project commands, folder rules, or policies change, update `CLAUDE.md` or `README.md`, not this adapter.
-- Verify with commands documented in the source files; if no command applies, use the smallest relevant check.
+## Build & Test
+
+```bash
+make build        # → bin/rootfiles
+make test         # go test ./... -race
+```
+
+## Architecture
+
+- `cmd/rootfiles/` — entry point
+- `internal/cli/` — cobra commands (apply, backup, check, gpu, status, tunnel, update, user); `update` keeps `upgrade` as an alias
+- `internal/config/` — config structs, YAML profile loader, system detector
+- `internal/module/` — Module interface + 10 implementations (locale, packages, ssh, users, docker, nvidia, gpu, cloudflared, storage, network)
+- `internal/exec/` — shell runner (dry-run aware), APT wrapper
+- `internal/ui/` — interactive prompts (Charm huh) + shared output styling: `styles.go` (lipgloss palette), `markers.go` (✓ ✗ → ⚠), `format.go` (WriteHeader/Section/KV/Hint/Bullet). lipgloss auto-detects TTY and honours `NO_COLOR`; all status-style reports must go through these helpers.
+
+## Module Interface
+
+Every module implements three methods with identical signatures:
+
+```go
+type Module interface {
+    Name() string
+    Check(ctx context.Context, rc *RunContext) (*CheckResult, error)
+    Apply(ctx context.Context, rc *RunContext) (*ApplyResult, error)
+}
+```
+
+- `Name()` returns the module id used in `defaultOrder` and `--module` filters.
+- `Check()` reports pending changes without side effects; `CheckResult.Satisfied` gates whether `Apply()` runs.
+- `Apply()` performs idempotent changes; returns `ApplyResult.Changed` so callers can summarise diffs.
+
+`NewRegistry()` in `internal/module/module.go` wires all 10 implementations. `defaultOrder` in the same file defines execution sequence. These two lists MUST stay in sync — `TestRegistryDefaultOrderSync` in `module_test.go` enforces this.
+
+## Conventions
+
+- Go 1.23+, conventional commits
+- Profiles embedded via go:embed in `internal/config/profiles/`
+- Module execution order is static (defined in `module.go defaultOrder`)
+- `--yes` propagates via RunContext, bypasses all prompts
+- `--dry-run` logs commands without executing (write ops gated)
+- GPU allocation DB writes go through `withGPUDBLock` (flock + atomic rename) to protect concurrent `gpu assign`/`revoke` calls
