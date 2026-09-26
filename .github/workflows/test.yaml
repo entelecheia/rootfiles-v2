@@ -227,6 +227,11 @@ jobs:
         run: go build -o rootfiles ./cmd/rootfiles/
       - name: Build test image
         run: docker build -t rootfiles-test:dgx-22.04 -f tests/integration/Dockerfile.dgx-22.04 .
+      - name: Load quota kernel modules
+        if: matrix.scenario == 'user-quota'
+        # Containers share the host kernel; without quota_v2 the scenario
+        # can only check the refusal path, not enforcement.
+        run: sudo modprobe -a quota_v2 quota_tree || true
       - name: Run scenario
         run: |
           docker run --rm --privileged \
