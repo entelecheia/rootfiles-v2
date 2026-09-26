@@ -165,7 +165,7 @@
 | 9 | `feat(cli)`: preflight·전역 lock·signal·state·audit log | Phase B | |
 | 10+ | Phase C → D → E | | 기능별 개별 PR |
 
-각 PR은 `make test`(race) + 해당 `tests/scenarios/*.sh` 통과를 기준으로 하고, CLAUDE.md의 conventional commit 규칙을 따른다.
+각 PR은 `make test`(race) + 해당 `tests/scenarios/*.sh` 통과를 기준으로 하고, AGENTS.md의 conventional commit 규칙을 따른다.
 
 ---
 
