@@ -285,3 +285,12 @@ func TestKeyIDAndMissingKeys(t *testing.T) {
 		t.Errorf("missingKeys = %v", missing)
 	}
 }
+
+func TestKeyComment(t *testing.T) {
+	if c := keyComment(`no-pty ssh-ed25519 AAAAx alice@laptop work`); c != "alice@laptop work" {
+		t.Errorf("keyComment = %q", c)
+	}
+	if c := keyComment("ssh-rsa AAAAy"); c != "" {
+		t.Errorf("keyComment without comment = %q", c)
+	}
+}

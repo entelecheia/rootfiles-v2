@@ -216,6 +216,7 @@ jobs:
           - ssh-lockout-guard
           - declarative-accounts
           - state-rollback-lock
+          - user-lifecycle
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5

@@ -53,3 +53,11 @@ func TestPreflight(t *testing.T) {
 		t.Error("second concurrent mutating command should fail on the lock")
 	}
 }
+
+func TestHumanBytes(t *testing.T) {
+	for b, want := range map[int64]string{0: "0 B", 1023: "1023 B", 1024: "1.0 KiB", 3 << 20: "3.0 MiB", 5 << 40: "5.0 TiB"} {
+		if got := humanBytes(b); got != want {
+			t.Errorf("humanBytes(%d) = %q, want %q", b, got, want)
+		}
+	}
+}

@@ -28,6 +28,13 @@ func newUserCmd() *cobra.Command {
 		newUserGroupAddCmd(),
 		newUserGroupDelCmd(),
 		newUserPasswdCmd(),
+		newUserDelCmd(),
+		newUserLockCmd(),
+		newUserUnlockCmd(),
+		newUserExpireCmd(),
+		newUserKeyCmd(),
+		newUserDuCmd(),
+		newUserAuditCmd(),
 	)
 
 	return userCmd
