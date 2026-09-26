@@ -55,6 +55,12 @@ func (r *Runner) Query(ctx context.Context, name string, args ...string) (*Resul
 
 // Run executes a command. In dry-run mode, logs but does not execute.
 func (r *Runner) Run(ctx context.Context, name string, args ...string) (*Result, error) {
+	return r.RunEnv(ctx, nil, name, args...)
+}
+
+// RunEnv is Run with extra environment variables ("KEY=value") appended to
+// the inherited environment.
+func (r *Runner) RunEnv(ctx context.Context, env []string, name string, args ...string) (*Result, error) {
 	cmdStr := name + " " + strings.Join(args, " ")
 
 	if r.DryRun {
@@ -64,6 +70,41 @@ func (r *Runner) Run(ctx context.Context, name string, args ...string) (*Result,
 
 	r.Logger.Info("exec", "cmd", cmdStr)
 	cmd := osexec.CommandContext(ctx, name, args...)
+	if len(env) > 0 {
+		cmd.Env = append(os.Environ(), env...)
+	}
+	var stdout, stderr strings.Builder
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	err := cmd.Run()
+	result := &Result{
+		Command: cmdStr,
+		Stdout:  stdout.String(),
+		Stderr:  stderr.String(),
+	}
+	if cmd.ProcessState != nil {
+		result.ExitCode = cmd.ProcessState.ExitCode()
+	}
+	if err != nil {
+		return result, fmt.Errorf("command %q failed: %w\nstderr: %s", cmdStr, err, result.Stderr)
+	}
+	return result, nil
+}
+
+// RunInput is Run with stdin fed from input. The input is never logged,
+// so it is the safe way to pass secrets (e.g. to chpasswd).
+func (r *Runner) RunInput(ctx context.Context, input string, name string, args ...string) (*Result, error) {
+	cmdStr := name + " " + strings.Join(args, " ")
+
+	if r.DryRun {
+		r.Logger.Info("dry-run", "cmd", cmdStr, "stdin", "<redacted>")
+		return &Result{Command: cmdStr}, nil
+	}
+
+	r.Logger.Info("exec", "cmd", cmdStr, "stdin", "<redacted>")
+	cmd := osexec.CommandContext(ctx, name, args...)
+	cmd.Stdin = strings.NewReader(input)
 	var stdout, stderr strings.Builder
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr

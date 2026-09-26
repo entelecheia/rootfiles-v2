@@ -14,12 +14,7 @@ func (m *PackagesModule) Check(_ context.Context, rc *RunContext) (*CheckResult,
 	var changes []Change
 	allPkgs := rc.Config.AllPackages()
 
-	var missing []string
-	for _, pkg := range allPkgs {
-		if !rc.APT.IsInstalled(pkg) {
-			missing = append(missing, pkg)
-		}
-	}
+	missing := missingPackages(rc, allPkgs)
 
 	if len(missing) > 0 {
 		changes = append(changes, Change{
@@ -37,12 +32,7 @@ func (m *PackagesModule) Check(_ context.Context, rc *RunContext) (*CheckResult,
 func (m *PackagesModule) Apply(ctx context.Context, rc *RunContext) (*ApplyResult, error) {
 	allPkgs := rc.Config.AllPackages()
 
-	var missing []string
-	for _, pkg := range allPkgs {
-		if !rc.APT.IsInstalled(pkg) {
-			missing = append(missing, pkg)
-		}
-	}
+	missing := missingPackages(rc, allPkgs)
 
 	if len(missing) == 0 {
 		return &ApplyResult{Changed: false, Messages: []string{"all packages already installed"}}, nil
@@ -62,4 +52,15 @@ func (m *PackagesModule) Apply(ctx context.Context, rc *RunContext) (*ApplyResul
 		Changed:  true,
 		Messages: []string{fmt.Sprintf("installed %d packages", len(missing))},
 	}, nil
+}
+
+func missingPackages(rc *RunContext, pkgs []string) []string {
+	installed := rc.APT.Installed(pkgs)
+	var missing []string
+	for _, pkg := range pkgs {
+		if !installed[pkg] {
+			missing = append(missing, pkg)
+		}
+	}
+	return missing
 }
