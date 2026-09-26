@@ -61,3 +61,15 @@ func TestHumanBytes(t *testing.T) {
 		}
 	}
 }
+
+func TestScheduleUnits(t *testing.T) {
+	svc := scheduleService("/usr/local/bin/rootfiles")
+	for _, want := range []string{"SuccessExitStatus=2", "rootfiles check -o json", "rootfiles doctor -o json", "Type=oneshot"} {
+		if !strings.Contains(svc, want) {
+			t.Errorf("service missing %q:\n%s", want, svc)
+		}
+	}
+	if tmr := scheduleTimer("hourly"); !strings.Contains(tmr, "OnCalendar=hourly") || !strings.Contains(tmr, "Persistent=true") {
+		t.Errorf("unexpected timer:\n%s", tmr)
+	}
+}

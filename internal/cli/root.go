@@ -47,6 +47,7 @@ func NewRootCmd(version, commit string) *cobra.Command {
 	root.AddCommand(newRollbackCmd())
 	root.AddCommand(newConfigCmd())
 	root.AddCommand(newDoctorCmd())
+	root.AddCommand(newScheduleCmd())
 
 	markMutating(root)
 	return root
