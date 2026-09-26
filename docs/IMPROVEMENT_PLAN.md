@@ -175,3 +175,50 @@
 2. `users.accounts` 선언형 목록을 도입해 `apply`가 사용자까지 수렴시키게 할 것인가, 아니면 명령형 `user add` 유지?
 3. unattended-upgrades를 DGX에서 켤 것인가? (NVIDIA 드라이버 자동 업그레이드는 반드시 제외 필요)
 4. 상태/백업 위치를 `/var/lib/rootfiles`로 할지, 기존 `<home_base>/.rootfiles`(OS 재설치 후에도 보존)에 둘지 — 재설치 복구 시나리오를 고려하면 후자에 사본을 두는 방식 권장.
+
+---
+
+## 6. 구현 현황 (2026-09-26)
+
+브랜치 `claude/wonderful-meitner-agqbm3`에 위 로드맵을 순서대로 구현했다. 각 항목은 커밋 하나에 대응한다.
+
+| 순서 | 커밋 | 범위 | 상태 |
+|------|------|------|------|
+| 1 | `4902c64` fix(storage,users) | C1, B12 | 완료 |
+| 2 | `0385ef7` fix(network,ssh) | C2–C5, B1, B2 | 완료 |
+| 3 | `d651f41` fix(ui,apply) | C6 | 완료 |
+| 4 | `59db332` fix(docker,nvidia) | B3, B4 | 완료 |
+| 5 | `59a9b8e` fix(exec,modules) | B9–B11 (+ locale/tzdata, gpu) | 완료 |
+| 6 | `0576647` fix(users) | C7, C8 | 완료 |
+| 7 | `03cf7b4` feat(config) | B7, B8 | 완료 |
+| 8 | `233b623` feat(users,cloudflared) | B5, B6 | 완료 |
+| B | `883a622` feat(cli) | preflight, lock, signal, backup/rollback, state, audit | 완료 |
+| C1 | `b7722d2` feat(check,status) | JSON, exit code 2 | 완료 |
+| C2 | `bdc4e4b` feat(cli) | `config show/validate/init` | 완료 |
+| C3 | `83c1706` feat(doctor) | `doctor` | 완료 |
+| C4 | `9594595` feat(user) | del/lock/unlock/expire/key/du/audit | 완료 |
+| C5 | `d929c34` feat(schedule) | 주기 점검 timer | 완료 |
+| D | `5efc626` feat(modules) | system, security, monitoring, nvidia 서비스 | 완료 |
+| E1 | `ff5a7db` feat(user) | 디스크 쿼터 | 완료 |
+| E2 | `b5f1bef` feat(gpu) | MIG | 읽기 전용만 (아래 참고) |
+| E3 | README | 다중 호스트 패턴 문서화, `--config -` | 완료 |
+
+### 열린 질문에 대한 결정
+
+1. **보안 약화 확인** — 대화형 요약에 "weaker than profile" 경고를 표시하고, 약화가 있으면 최종 "Apply?" 기본값을 No로 둔다.
+2. **사용자 선언형 관리** — `users.accounts`를 도입했다(생성, 키·그룹 추가만 하고 삭제는 하지 않음). `--user/--ssh-pubkey`는 여기에 합류한다. 명령형 `user add`도 유지한다.
+3. **DGX unattended-upgrades** — minimal 이상에서 켠다. 단, security pocket만 허용하고 자동 재부팅은 하지 않으며 `nvidia-*`, `libnvidia-*`, `cuda-*`, `libcudnn`, `libnccl`, `datacenter-gpu-manager`, `nvidia-fabricmanager`는 제외한다. 재부팅 필요 여부는 `doctor`가 보고한다.
+4. **상태/백업 위치** — `/var/lib/rootfiles`(state.json, history.jsonl, backups)와 `/var/log/rootfiles.log`에 둔다. OS 재설치 후 복구에 필요한 정보는 기존대로 `<home_base>/.rootfiles/users.json`(쿼터 포함)이 맡는다.
+
+### 계획과 달라진 점
+
+- **모듈 순서 변경** — `users`를 `ssh` 앞으로 옮기고(선언된 운영자 계정과 키가 먼저 생성되어야 lockout 가드를 통과), `system`은 `packages` 앞(APT 미러), `security`는 `ssh` 뒤(fail2ban 포트)에 둔다.
+- **`exec.Runner` 인터페이스 추출은 하지 않음** — 대신 경로를 패키지 변수로 두고 테스트에서 PATH에 stub 명령(`fakeBin`)을 넣는 방식으로 호스트를 건드리지 않는 테스트를 작성했다. 변경 범위 대비 효과가 같다고 판단했다.
+- **MIG 선언형 재구성은 보류** — 재구성은 실행 중 인스턴스를 파괴하고 GPU 리셋이 필요할 수 있으며, 실제 하드웨어 없이 검증할 수 없다. `gpu mig status`(읽기 전용)만 제공한다.
+- **쿼터 강제 동작 검증** — 개발 샌드박스 커널에 quota 지원이 없어 "마운트 옵션이 없으면 안내하며 거부" 경로만 컨테이너에서 확인했다. 실제 제한 동작은 CI(`user-quota` 시나리오)에서 커널이 지원할 때 검증된다.
+
+### 검증
+
+- `go test ./... -race`, `go vet`, `gofmt` 통과.
+- 컨테이너(Ubuntu 24.04, DGX mock 22.04)에서 14개 시나리오 전부와 프로필 통합 테스트 통과: 신규 `ssh-lockout-guard`, `declarative-accounts`, `state-rollback-lock`, `user-lifecycle`, `user-quota` 포함.
+- 내장 프로필 5종은 새 로더에서도 이전 로더와 바이트 단위로 동일하게 해석됨을 확인했다(Phase D에서 minimal/dgx/gpu-server에 새 기본값을 추가하기 전 기준).

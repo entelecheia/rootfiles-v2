@@ -12,10 +12,11 @@ make test         # go test ./... -race
 ## Architecture
 
 - `cmd/rootfiles/` — entry point
-- `internal/cli/` — cobra commands (apply, backup, check, gpu, status, tunnel, update, user); `update` keeps `upgrade` as an alias
-- `internal/config/` — config structs, YAML profile loader, system detector
-- `internal/module/` — Module interface + 10 implementations (locale, packages, ssh, users, docker, nvidia, gpu, cloudflared, storage, network)
-- `internal/exec/` — shell runner (dry-run aware), APT wrapper
+- `internal/cli/` — cobra commands (apply, backup, check, config, doctor, gpu, rollback, schedule, status, tunnel, update, user); `update` keeps `upgrade` as an alias. `runtime.go` holds the root/lock preflight (mutating commands are listed in `mutatingCommands`), audit logger and `newRunner`
+- `internal/config/` — config structs, YAML profile loader (profiles merged as YAML trees, strict keys), `Validate()`, system detector
+- `internal/module/` — Module interface + 13 implementations (locale, system, packages, users, ssh, security, docker, nvidia, gpu, cloudflared, storage, network, monitoring), plus `doctor.go`
+- `internal/exec/` — shell runner (dry-run aware; `Runner.Backup` preserves files before WriteFile/Remove/Rename/Symlink), APT wrapper
+- `internal/state/` — `/var/lib/rootfiles/state.json` + history, global flock
 - `internal/ui/` — interactive prompts (Charm huh) + shared output styling: `styles.go` (lipgloss palette), `markers.go` (✓ ✗ → ⚠), `format.go` (WriteHeader/Section/KV/Hint/Bullet). lipgloss auto-detects TTY and honours `NO_COLOR`; all status-style reports must go through these helpers.
 
 ## Module Interface
@@ -34,7 +35,7 @@ type Module interface {
 - `Check()` reports pending changes without side effects; `CheckResult.Satisfied` gates whether `Apply()` runs.
 - `Apply()` performs idempotent changes; returns `ApplyResult.Changed` so callers can summarise diffs.
 
-`NewRegistry()` in `internal/module/module.go` wires all 10 implementations. `defaultOrder` in the same file defines execution sequence. These two lists MUST stay in sync — `TestRegistryDefaultOrderSync` in `module_test.go` enforces this.
+`NewRegistry()` in `internal/module/module.go` wires all 13 implementations. `defaultOrder` in the same file defines execution sequence. These two lists MUST stay in sync — `TestRegistryDefaultOrderSync` in `module_test.go` enforces this.
 
 ## Conventions
 
@@ -44,3 +45,6 @@ type Module interface {
 - `--yes` propagates via RunContext, bypasses all prompts
 - `--dry-run` logs commands without executing (write ops gated)
 - GPU allocation DB writes go through `withGPUDBLock` (flock + atomic rename) to protect concurrent `gpu assign`/`revoke` calls
+- File writes/removals go through `rc.Runner` (never `os.*` directly) so dry-run and backups apply; never `rm -rf` user data
+- `Check()` and `Apply()` must agree: Apply only acts on what Check reports and returns `Changed` only for real work; non-fatal problems go in `ApplyResult.Warnings`
+- Tests must not touch the host: override package-level path vars and stub commands on PATH (`fakeBin`) instead of calling real systemctl/apt

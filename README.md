@@ -19,6 +19,7 @@ Docker + NVIDIA toolkit           Homebrew packages
 Cloudflare tunnel + VLAN          AI tools (Claude Code)
 Locale, timezone, firewall        Secrets (age)
 Storage mounts & symlinks
+Security baseline, quotas, health
 ```
 
 ## Install
@@ -58,19 +59,59 @@ sudo rootfiles apply
 sudo rootfiles apply --profile dgx --yes
 ```
 
-In interactive mode, `apply` presents each configurable setting (SSH, firewall, VLAN, storage, etc.) for review and lets you adjust values before execution. Use `--yes` to skip all prompts for CI/automation.
+In interactive mode, `apply` presents each configurable setting (SSH, firewall, VLAN, storage, etc.) for review, pre-filled with the profile's values, and flags any choice that is weaker than the profile before asking to apply. Use `--yes` to skip all prompts for CI/automation.
+
+### Safety
+
+`apply` is designed to be safe to re-run on a live server:
+
+- **No SSH lockout** — password auth is only disabled when at least one account can log in with a key (declared accounts count); enabling UFW always admits the SSH port; `sshd -t` validates the config and a failing change is reverted; a port change on socket-activated Ubuntu restarts `ssh.socket`. `--force` overrides the key check.
+- **No data loss** — existing directories are never `rm -rf`'d (a populated path blocks a symlink instead), `daemon.json` is merged key by key, `user rehome` keeps the old home as a backup.
+- **Backups & rollback** — every file a run overwrites or removes is saved under `/var/lib/rootfiles/backups/<id>`; `rootfiles rollback <id>` restores it.
+- **One run at a time** — mutating commands need root and take `/run/rootfiles.lock`; Ctrl-C cancels in-flight commands.
+- **Audit trail** — real runs are logged as JSON to `/var/log/rootfiles.log`; the last result is kept in `/var/lib/rootfiles/state.json` (shown by `status`).
 
 ## Profiles
 
 | Profile | Extends | Use case |
 |---------|---------|----------|
 | `base` | — | Locale, packages, SSH |
-| `minimal` | base | + users, cloudflared, ufw |
-| `dgx` | minimal | + Docker, NVIDIA toolkit, VLAN, RAID storage |
-| `gpu-server` | minimal | + Docker, NVIDIA toolkit (non-DGX) |
+| `minimal` | base | + users, cloudflared, ufw, security baseline, journald cap |
+| `dgx` | minimal | + Docker, NVIDIA toolkit, persistenced, fabric manager, VLAN, RAID storage |
+| `gpu-server` | minimal | + Docker, NVIDIA toolkit, persistenced (non-DGX) |
 | `full` | minimal | + Docker, storage, network |
 
 DGX OS is auto-detected (`/etc/dgx-release`) and the appropriate profile is suggested.
+
+### Site configs
+
+Keep host- or site-specific settings in a small file that extends a profile. Any key it sets wins — including `false`, so a site config can switch a module off:
+
+```yaml
+# site.yaml
+extends: dgx            # a built-in profile, or a path relative to this file
+timezone: UTC
+users:
+  accounts:             # created if missing; missing keys/groups added; never removed
+    - name: admin
+      ssh_pubkeys: ["ssh-ed25519 AAAA... admin@laptop"]
+      groups: [sudo]
+modules:
+  cloudflared:
+    enabled: false
+  system:
+    hostname: gpu01
+    apt_mirror: http://mirror.kakao.com/ubuntu
+```
+
+```bash
+rootfiles config init --extends dgx --file site.yaml   # scaffold (or --from-system to capture this host)
+rootfiles config validate --config site.yaml           # unknown keys, paths, ports, CIDRs …
+rootfiles config show --config site.yaml               # fully merged result (token masked)
+sudo rootfiles apply --config site.yaml
+```
+
+`--config -` reads the config from stdin, which is handy for fleets: `ssh gpu01 sudo rootfiles apply --yes --config - < site.yaml` (rootfiles itself stays single-host; drive many hosts from Ansible or a shell loop).
 
 ## Modules
 
@@ -78,16 +119,21 @@ All modules are idempotent and support `--dry-run`.
 
 | Module | Description |
 |--------|-------------|
-| `locale` | Locale generation, timezone |
-| `packages` | APT package installation (18+ packages) |
-| `ssh` | sshd hardening (root login, password auth, port) |
-| `users` | User creation with custom home dirs, backup/restore |
-| `docker` | Docker CE + daemon.json + storage relocation |
-| `nvidia` | NVIDIA Container Toolkit |
+| `locale` | Locale generation, timezone (installs tzdata when missing) |
+| `system` | Hostname, swapfile (only when no swap), sysctl, journald cap, Ubuntu APT mirror |
+| `packages` | APT package installation (non-interactive, waits for the dpkg lock) |
+| `users` | Custom home base, declared `users.accounts` (keys, groups), backup/restore |
+| `ssh` | sshd hardening (root login, password + keyboard-interactive auth, port, MaxAuthTries) with lockout guard |
+| `security` | Security-only unattended upgrades (no reboot, NVIDIA/CUDA excluded), fail2ban sshd jail, NTP |
+| `docker` | Docker CE + daemon.json merge + storage relocation |
+| `nvidia` | NVIDIA Container Toolkit, Docker runtime, nvidia-persistenced / fabric manager |
 | `gpu` | Per-user GPU allocation (env vars, cgroups) |
-| `cloudflared` | Cloudflare Tunnel + VLAN private network |
+| `cloudflared` | Cloudflare Tunnel service (token in a root-only env file) + VLAN private network |
 | `storage` | RAID/NVMe directory setup, symlinks |
-| `network` | UFW firewall, port rules |
+| `network` | UFW firewall, port rules (SSH port always allowed) |
+| `monitoring` | Prometheus node exporter (opt-in) |
+
+Modules run in this order; `users` precedes `ssh` so declared operators exist before password auth is turned off.
 
 ## Usage
 
@@ -121,7 +167,7 @@ From a backup snapshot:
 sudo rootfiles apply --config /raid/backup/rootfiles-backup-*/config-snapshot.yaml
 ```
 
-Unattended (CI/automation — skips all interactive prompts):
+Unattended (CI/automation — skips all interactive prompts). `--user`/`--ssh-pubkey` declare an account that is created before SSH is hardened, and `--tunnel-token` installs the tunnel service:
 
 ```bash
 sudo rootfiles apply --profile dgx --yes --home-base /raid/home --tunnel-token "$CF_TUNNEL_TOKEN" --vlan-address "172.16.229.32/32" --user yjlee --ssh-pubkey "ssh-ed25519 AAAA..."
@@ -137,6 +183,38 @@ sudo rootfiles check --profile dgx
 sudo rootfiles check --config /raid/backup/rootfiles-backup-*/config-snapshot.yaml
 ```
 
+`check` exits **0** when everything is satisfied, **2** when changes are pending and **1** on errors. Machine-readable output:
+
+```bash
+rootfiles check -o json          # modules, satisfied, changes[{description, command}]
+rootfiles check -o prometheus    # rootfiles_module_satisfied{module="…"} …
+```
+
+### Health check
+
+`doctor` inspects the live system rather than the profile: SSH access (keys vs. `sshd -T`), firewall vs. SSH port, reboot-required, disk usage, NTP, GPU driver / persistence mode, failed systemd units, and the last apply. Exit code 2 on failures (`--strict`: also on warnings); `-o json|prometheus` supported.
+
+```bash
+rootfiles doctor
+```
+
+Run `check` and `doctor` on a schedule (reports go to `/var/lib/rootfiles/{check,doctor}.json`, and to the node exporter textfile directory when the `monitoring` module is enabled):
+
+```bash
+sudo rootfiles schedule enable --on-calendar daily
+sudo rootfiles schedule disable
+```
+
+### Rollback
+
+```bash
+rootfiles rollback                     # list backup sessions
+sudo rootfiles rollback 20260926-101500 --dry-run
+sudo rootfiles rollback 20260926-101500
+```
+
+Rollback restores files only (configs, units, symlinks); packages, accounts and running services are not reverted — restart affected services afterwards.
+
 ### Status dashboard
 
 Unified at-a-glance view — system info, active profile, module satisfaction, GPU allocations, tunnel service, and managed users in one pass:
@@ -145,7 +223,7 @@ Unified at-a-glance view — system info, active profile, module satisfaction, G
 rootfiles status
 ```
 
-Evaluate against a specific profile without applying anything:
+Without flags, `status` and `check` evaluate against the profile/config last applied on this host (falling back to detection). `-o json` is available. Evaluate against a specific profile without applying anything:
 
 ```bash
 rootfiles status --profile dgx
@@ -215,6 +293,12 @@ rootfiles-backup-{hostname}-{YYYYMMDD}/
 └── config-snapshot.yaml    # current system → rootfiles YAML config
 ```
 
+After an OS reinstall, restore accounts first (their SSH keys are what allow the SSH hardening to proceed), then re-apply:
+
+```bash
+sudo rootfiles user restore
+```
+
 Restore from snapshot:
 
 ```bash
@@ -281,7 +365,11 @@ sudo rootfiles user group-add yjlee --groups dev,ops
 sudo rootfiles user group-del yjlee --docker
 ```
 
-Set passwords in batch (auto-generated as `username + suffix`):
+Set passwords in batch. By default a random password is generated per user and printed once; `--suffix` keeps the legacy `username + suffix` scheme and `--expire` forces a change at next login. Passwords are passed to `chpasswd` on stdin, never on a command line:
+
+```bash
+sudo rootfiles user passwd alice bob --expire
+```
 
 ```bash
 sudo rootfiles user passwd alice bob --suffix '!@'
@@ -308,7 +396,30 @@ sudo rootfiles user restore
 ```
 
 ```bash
-sudo rootfiles user rehome yjlee
+sudo rootfiles user rehome yjlee              # verified copy; old home kept as <old>.rootfiles-bak-<ts>
+sudo rootfiles user rehome yjlee --remove-old
+```
+
+Lifecycle:
+
+```bash
+sudo rootfiles user key add yjlee "ssh-ed25519 AAAA... yjlee@laptop"
+sudo rootfiles user key list yjlee
+sudo rootfiles user key rm yjlee yjlee@laptop     # by comment, key, or list index
+sudo rootfiles user lock yjlee                    # blocks password *and* SSH key logins
+sudo rootfiles user unlock yjlee
+sudo rootfiles user expire yjlee 2026-12-31       # or: never
+sudo rootfiles user del yjlee --archive           # tar.gz home under <home_base>/.rootfiles/archive
+sudo rootfiles user du                            # home usage, largest first
+sudo rootfiles user audit                         # users.json vs. system accounts (exit 2 on drift)
+```
+
+Disk quotas on the home_base filesystem (XFS project quota with `prjquota`, or ext4 user quota with `usrquota` + `quotaon`; the limit is re-applied by `user restore`):
+
+```bash
+sudo rootfiles user quota set yjlee 500G
+sudo rootfiles user quota show
+sudo rootfiles user quota rm yjlee
 ```
 
 ### GPU allocation
@@ -344,6 +455,12 @@ Methods:
 | `both` | env + cgroup combined | Full isolation |
 
 The default method is configured per profile (`env` for gpu-server, `both` for dgx).
+
+MIG mode and instances (read-only; repartition with `nvidia-smi mig`):
+
+```bash
+rootfiles gpu mig status
+```
 
 ### Cloudflare tunnel + VLAN
 
@@ -386,6 +503,9 @@ All flags can be set via environment variables for unattended operation:
 | `ROOTFILES_SSH_PUBKEY` | SSH public key | — |
 | `ROOTFILES_TIMEZONE` | Timezone | `Asia/Seoul` |
 | `ROOTFILES_DOCKER_ROOT` | Docker storage path | `/var/lib/docker` |
+| `ROOTFILES_STATE_DIR` | State, history and file backups | `/var/lib/rootfiles` |
+| `ROOTFILES_LOG_FILE` | JSON audit log | `/var/log/rootfiles.log` |
+| `ROOTFILES_LOCK_FILE` | Global lock | `/run/rootfiles.lock` |
 
 ## Build from source
 
@@ -404,11 +524,13 @@ Requires Go 1.23+.
 ```
 cmd/rootfiles/        Entry point
 internal/
-  cli/                Cobra commands (apply, backup, check, gpu, status, tunnel, update, user)
-  config/             YAML profiles with inheritance, system detector
+  cli/                Cobra commands (apply, backup, check, config, doctor, gpu, rollback,
+                      schedule, status, tunnel, update, user) + root/lock preflight
+  config/             YAML profiles (tree-merged extends), validation, system detector
     profiles/         Embedded profile YAMLs (go:embed)
-  module/             10 modules implementing the Module interface
-  exec/               Shell runner (dry-run aware), APT wrapper
+  module/             13 modules implementing the Module interface, doctor checks
+  exec/               Shell runner (dry-run aware, per-run file backups), APT wrapper
+  state/              Applied-state record, history, global lock
   ui/                 Interactive prompts (Charm huh) + shared output styling
                       (lipgloss palette, ✓ ✗ → ⚠ markers, WriteHeader/
                       Section/KV/Hint/Bullet helpers)
@@ -426,8 +548,8 @@ Every push and pull request runs:
 | `vuln` | `govulncheck ./...` (stdlib + deps) |
 | `unit` | `go test ./... -race -count=1` + per-function coverage summary, coverage artifact |
 | `integration` | 3 OS images × 4 profiles (11 combinations) |
-| `module` | 2 OS × 7 modules + GPU on DGX mock (isolated module execution) |
-| `scenario` | 9 E2E flows: dry-run-all-profiles, user backup/restore, user rehome, user list names, tunnel setup/teardown, OS reinstall recovery, system backup, GPU allocation, status |
+| `module` | 2 OS × 9 modules + GPU on DGX mock (isolated module execution) |
+| `scenario` | 14 E2E flows: dry-run-all-profiles, user backup/restore, user rehome, user list names, user lifecycle, user quota, declarative accounts, tunnel setup/teardown, OS reinstall recovery, system backup, GPU allocation, status, SSH lockout guard, state/rollback/lock |
 | `release` | GoReleaser on every `v*` tag (triggered automatically when a version tag is pushed) |
 
 ## License
