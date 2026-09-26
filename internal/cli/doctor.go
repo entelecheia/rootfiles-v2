@@ -22,7 +22,7 @@ func newDoctorCmd() *cobra.Command {
 			"the profile). Exit code: 0 = no failures, 2 = at least one failure (or warning with --strict).",
 		RunE: runDoctor,
 	}
-	addOutputFlag(cmd)
+	addOutputFlagWithMetrics(cmd)
 	cmd.Flags().Bool("strict", false, "Treat warnings as failures for the exit code")
 	return cmd
 }
@@ -61,7 +61,22 @@ func runDoctor(cmd *cobra.Command, _ []string) error {
 	}
 
 	out := cmd.OutOrStdout()
-	if format == "json" {
+	if format == "prometheus" {
+		counts := map[string]int{module.LevelOK: 0, module.LevelWarn: 0, module.LevelFail: 0, module.LevelSkip: 0}
+		for _, f := range findings {
+			counts[f.Level]++
+		}
+		fmt.Fprintln(out, "# HELP rootfiles_doctor_findings Doctor findings by level.")
+		fmt.Fprintln(out, "# TYPE rootfiles_doctor_findings gauge")
+		for _, l := range []string{module.LevelOK, module.LevelWarn, module.LevelFail, module.LevelSkip} {
+			fmt.Fprintf(out, "rootfiles_doctor_findings{level=%q} %d\n", l, counts[l])
+		}
+		fmt.Fprintln(out, "# HELP rootfiles_doctor_check_ok 1 when a doctor check is ok or skipped.")
+		fmt.Fprintln(out, "# TYPE rootfiles_doctor_check_ok gauge")
+		for _, f := range findings {
+			fmt.Fprintf(out, "rootfiles_doctor_check_ok{check=%q} %d\n", f.Check, boolMetric(f.Level == module.LevelOK || f.Level == module.LevelSkip))
+		}
+	} else if format == "json" {
 		if err := writeJSON(out, map[string]any{"findings": findings, "failed": failed}); err != nil {
 			return err
 		}

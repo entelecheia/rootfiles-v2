@@ -5,6 +5,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -24,7 +25,7 @@ func newCheckCmd() *cobra.Command {
 		RunE: runCheck,
 	}
 	cmd.Flags().BoolP("verbose", "v", false, "Show commands that will be executed")
-	addOutputFlag(cmd)
+	addOutputFlagWithMetrics(cmd)
 	return cmd
 }
 
@@ -86,7 +87,26 @@ func runCheck(cmd *cobra.Command, _ []string) error {
 	}
 	allOK := satisfied == len(modules)
 
-	if format == "json" {
+	if format == "prometheus" {
+		fmt.Fprintln(out, "# HELP rootfiles_module_satisfied 1 when the module has no pending changes.")
+		fmt.Fprintln(out, "# TYPE rootfiles_module_satisfied gauge")
+		for _, m := range modules {
+			r := results[m.Name()]
+			fmt.Fprintf(out, "rootfiles_module_satisfied{module=%q} %d\n", m.Name(), boolMetric(r != nil && r.Satisfied))
+		}
+		fmt.Fprintln(out, "# HELP rootfiles_module_pending_changes Number of pending changes per module.")
+		fmt.Fprintln(out, "# TYPE rootfiles_module_pending_changes gauge")
+		for _, m := range modules {
+			n := 0
+			if r := results[m.Name()]; r != nil {
+				n = len(r.Changes)
+			}
+			fmt.Fprintf(out, "rootfiles_module_pending_changes{module=%q} %d\n", m.Name(), n)
+		}
+		fmt.Fprintln(out, "# HELP rootfiles_check_timestamp_seconds When the check ran.")
+		fmt.Fprintln(out, "# TYPE rootfiles_check_timestamp_seconds gauge")
+		fmt.Fprintf(out, "rootfiles_check_timestamp_seconds %d\n", time.Now().Unix())
+	} else if format == "json" {
 		report := checkReport{Profile: profileName, ConfigPath: configPath, Satisfied: allOK}
 		for _, m := range modules {
 			mr := checkModule{Name: m.Name(), Satisfied: true, Changes: []module.Change{}}

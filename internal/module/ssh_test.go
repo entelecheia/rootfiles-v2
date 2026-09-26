@@ -178,3 +178,7 @@ func TestPortLine(t *testing.T) {
 		t.Error("portLine should be empty without Port")
 	}
 }
+
+func sshCfg(noPassword bool, maxTries int) config.SSHConfig {
+	return config.SSHConfig{DisablePasswordAuth: noPassword, MaxAuthTries: maxTries}
+}

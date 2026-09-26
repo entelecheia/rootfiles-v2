@@ -167,7 +167,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        module: [locale, packages, ssh, users, cloudflared, storage, network, gpu]
+        module: [locale, system, packages, ssh, users, security, cloudflared, storage, network, gpu]
         os: [ubuntu-22.04, ubuntu-24.04]
         exclude:
           # GPU module needs nvidia-smi mock + fake /dev/nvidia*, only available in dgx image

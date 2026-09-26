@@ -56,15 +56,18 @@ type ApplyResult struct {
 // Dependencies are implicit in the ordering.
 var defaultOrder = []string{
 	"locale",
+	"system", // before packages: an APT mirror applies to the first install
 	"packages",
 	"users", // before ssh: declared accounts (and their keys) must exist before password auth is disabled
 	"ssh",
+	"security", // after ssh: the fail2ban jail follows the configured SSH port
 	"docker",
 	"nvidia",
 	"gpu",
 	"cloudflared",
 	"storage",
 	"network",
+	"monitoring",
 }
 
 // Registry manages module registration and resolution.
@@ -76,8 +79,10 @@ type Registry struct {
 func NewRegistry() *Registry {
 	r := &Registry{modules: make(map[string]Module)}
 	r.Register(NewLocaleModule())
+	r.Register(NewSystemModule())
 	r.Register(NewPackagesModule())
 	r.Register(NewSSHModule())
+	r.Register(NewSecurityModule())
 	r.Register(NewUsersModule())
 	r.Register(NewDockerModule())
 	r.Register(NewNvidiaModule())
@@ -85,6 +90,7 @@ func NewRegistry() *Registry {
 	r.Register(NewCloudflaredModule())
 	r.Register(NewStorageModule())
 	r.Register(NewNetworkModule())
+	r.Register(NewMonitoringModule())
 	return r
 }
 

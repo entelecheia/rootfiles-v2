@@ -8,7 +8,7 @@ echo "=== Integration Test: profile=$PROFILE ==="
 
 # In CI containers, docker and nvidia modules cannot work (no real Docker/GPU).
 # Apply all modules except docker and nvidia.
-CI_MODULES="locale,packages,ssh,users,cloudflared,storage,network"
+CI_MODULES="locale,system,packages,users,ssh,security,cloudflared,storage,network"
 
 # Operators have key-based access before SSH is hardened; the ssh module
 # refuses to disable password auth when no account holds an authorized key.
@@ -53,6 +53,13 @@ case "$PROFILE" in
 
         # Cloudflared binary
         assert_command_exists "cloudflared"
+
+        # System / security baseline
+        assert_file_contains "/etc/systemd/journald.conf.d/90-rootfiles.conf" "SystemMaxUse=2G"
+        assert_package_installed "unattended-upgrades"
+        assert_file_contains "/etc/apt/apt.conf.d/52rootfiles-unattended-upgrades" '"nvidia-";'
+        assert_file_contains "/etc/apt/apt.conf.d/20auto-upgrades" 'Unattended-Upgrade "1"'
+        assert_file_contains "/etc/fail2ban/jail.d/rootfiles-sshd.conf" "enabled  = true"
         ;;
 esac
 

@@ -3,6 +3,7 @@ package module
 import (
 	"context"
 	"fmt"
+	"strings"
 )
 
 type NvidiaModule struct{}
@@ -44,10 +45,41 @@ func (m *NvidiaModule) Check(_ context.Context, rc *RunContext) (*CheckResult, e
 		})
 	}
 
+	for _, svc := range m.services(rc) {
+		if !serviceActive(context.Background(), rc, svc) {
+			changes = append(changes, Change{Description: "Enable " + svc, Command: "systemctl enable --now " + svc})
+		}
+	}
+
 	return &CheckResult{
 		Satisfied: len(changes) == 0,
 		Changes:   changes,
 	}, nil
+}
+
+// services lists the driver-side daemons to keep running. Each is only
+// managed when its unit is installed (DGX OS / the driver packages ship
+// them); rootfiles does not install driver components.
+func (m *NvidiaModule) services(rc *RunContext) []string {
+	cfg := rc.Config.Modules.Nvidia
+	var out []string
+	if cfg.Persistenced && unitInstalled(context.Background(), rc, "nvidia-persistenced") {
+		out = append(out, "nvidia-persistenced")
+	}
+	if cfg.FabricManager && unitInstalled(context.Background(), rc, "nvidia-fabricmanager") {
+		out = append(out, "nvidia-fabricmanager")
+	}
+	return out
+}
+
+func unitInstalled(ctx context.Context, rc *RunContext, unit string) bool {
+	res, err := rc.Runner.Query(ctx, "systemctl", "list-unit-files", unit+".service", "--no-legend")
+	return err == nil && strings.Contains(res.Stdout, unit+".service")
+}
+
+func serviceActive(ctx context.Context, rc *RunContext, unit string) bool {
+	res, err := rc.Runner.Query(ctx, "systemctl", "is-active", unit)
+	return err == nil && strings.TrimSpace(res.Stdout) == "active"
 }
 
 func (m *NvidiaModule) Apply(ctx context.Context, rc *RunContext) (*ApplyResult, error) {
@@ -94,6 +126,18 @@ func (m *NvidiaModule) Apply(ctx context.Context, rc *RunContext) (*ApplyResult,
 			warnings = append(warnings, fmt.Sprintf("restarting docker: %s", firstLine(err.Error())))
 		}
 		messages = append(messages, "Docker nvidia runtime configured")
+		changed = true
+	}
+
+	for _, svc := range m.services(rc) {
+		if serviceActive(ctx, rc, svc) {
+			continue
+		}
+		if _, err := rc.Runner.Run(ctx, "systemctl", "enable", "--now", svc); err != nil {
+			warnings = append(warnings, "enabling "+svc+": "+firstLine(err.Error()))
+			continue
+		}
+		messages = append(messages, svc+" enabled")
 		changed = true
 	}
 

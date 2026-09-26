@@ -26,20 +26,41 @@ func (e *ExitError) ExitCode() int { return e.Code }
 // 0 = everything satisfied, 2 = pending changes / problems found.
 const exitDrift = 2
 
+const annotPrometheus = "rootfiles/prometheus"
+
 func addOutputFlag(cmd *cobra.Command) {
 	cmd.Flags().StringP("output", "o", "text", "Output format: text or json")
 }
 
+// addOutputFlagWithMetrics also allows Prometheus text exposition, for the
+// node_exporter textfile collector.
+func addOutputFlagWithMetrics(cmd *cobra.Command) {
+	cmd.Flags().StringP("output", "o", "text", "Output format: text, json or prometheus")
+	if cmd.Annotations == nil {
+		cmd.Annotations = map[string]string{}
+	}
+	cmd.Annotations[annotPrometheus] = "true"
+}
+
 func outputFormat(cmd *cobra.Command) (string, error) {
 	f, _ := cmd.Flags().GetString("output")
-	switch f {
-	case "", "text":
+	switch {
+	case f == "" || f == "text":
 		return "text", nil
-	case "json":
+	case f == "json":
 		return "json", nil
+	case f == "prometheus" && cmd.Annotations[annotPrometheus] == "true":
+		return "prometheus", nil
 	default:
-		return "", fmt.Errorf("unknown --output %q (want text or json)", f)
+		return "", fmt.Errorf("unknown --output %q", f)
 	}
+}
+
+func boolMetric(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }
 
 func writeJSON(w io.Writer, v any) error {

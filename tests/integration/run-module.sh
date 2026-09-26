@@ -12,6 +12,14 @@ rootfiles apply --profile minimal --module "$MODULE" --yes 2>&1 || true
 
 # Module-specific assertions
 case "$MODULE" in
+    system)
+        assert_file_contains "/etc/systemd/journald.conf.d/90-rootfiles.conf" "SystemMaxUse=2G"
+        ;;
+    security)
+        assert_package_installed "unattended-upgrades"
+        assert_file_contains "/etc/apt/apt.conf.d/52rootfiles-unattended-upgrades" 'Automatic-Reboot "false"'
+        assert_file_exists "/etc/fail2ban/jail.d/rootfiles-sshd.conf"
+        ;;
     locale)
         assert_file_exists "/etc/default/locale"
         assert_file_contains "/etc/default/locale" "en_US.UTF-8"

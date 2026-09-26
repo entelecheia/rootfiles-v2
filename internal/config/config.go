@@ -16,14 +16,55 @@ type Config struct {
 
 type ModulesConfig struct {
 	Locale      ModuleToggle      `yaml:"locale"`
+	System      SystemConfig      `yaml:"system"`
 	Packages    ModuleToggle      `yaml:"packages"`
 	SSH         ModuleToggle      `yaml:"ssh"`
 	Users       ModuleToggle      `yaml:"users"`
+	Security    SecurityConfig    `yaml:"security"`
 	Docker      DockerConfig      `yaml:"docker"`
 	Nvidia      NvidiaConfig      `yaml:"nvidia"`
 	Cloudflared CloudflaredConfig `yaml:"cloudflared"`
 	Storage     StorageConfig     `yaml:"storage"`
 	Network     NetworkConfig     `yaml:"network"`
+	Monitoring  MonitoringConfig  `yaml:"monitoring"`
+}
+
+// SystemConfig covers host-level basics.
+type SystemConfig struct {
+	Enabled  bool   `yaml:"enabled"`
+	Hostname string `yaml:"hostname,omitempty"`
+	// SwapSize creates /swapfile of this size (e.g. "8G") when the host has
+	// no swap at all. Existing swap is never modified.
+	SwapSize string `yaml:"swap_size,omitempty"`
+	// JournaldMaxUse caps persistent journal size (e.g. "2G").
+	JournaldMaxUse string `yaml:"journald_max_use,omitempty"`
+	// Sysctl entries are written to /etc/sysctl.d/90-rootfiles.conf.
+	Sysctl map[string]string `yaml:"sysctl,omitempty"`
+	// AptMirror replaces archive.ubuntu.com (not security.ubuntu.com) in
+	// the Ubuntu sources, e.g. http://mirror.kakao.com/ubuntu.
+	AptMirror string `yaml:"apt_mirror,omitempty"`
+}
+
+// SecurityConfig is the baseline hardening applied beyond sshd.
+type SecurityConfig struct {
+	Enabled bool `yaml:"enabled"`
+	// UnattendedUpgrades installs security updates automatically, never
+	// reboots, and never touches the NVIDIA/CUDA stack.
+	UnattendedUpgrades bool `yaml:"unattended_upgrades"`
+	// Fail2ban enables an sshd jail on the SSH port(s).
+	Fail2ban bool `yaml:"fail2ban"`
+	// TimeSync ensures NTP synchronisation (chrony if installed, else
+	// systemd-timesyncd).
+	TimeSync bool `yaml:"time_sync"`
+}
+
+// MonitoringConfig installs exporters (opt-in).
+type MonitoringConfig struct {
+	Enabled bool `yaml:"enabled"`
+	// NodeExporter installs prometheus-node-exporter; rootfiles' scheduled
+	// report also publishes rootfiles_* metrics through its textfile
+	// collector.
+	NodeExporter bool `yaml:"node_exporter"`
 }
 
 type ModuleToggle struct {
@@ -33,6 +74,12 @@ type ModuleToggle struct {
 type NvidiaConfig struct {
 	Enabled       bool                `yaml:"enabled"`
 	GPUAllocation GPUAllocationConfig `yaml:"gpu_allocation,omitempty"`
+	// Persistenced keeps the driver loaded (nvidia-persistenced), avoiding
+	// multi-second CUDA init and GPUs dropping out between jobs.
+	Persistenced bool `yaml:"persistenced,omitempty"`
+	// FabricManager enables nvidia-fabricmanager where installed (required
+	// for NVSwitch systems: DGX/HGX A100, H100, H200).
+	FabricManager bool `yaml:"fabric_manager,omitempty"`
 }
 
 type GPUAllocationConfig struct {
@@ -119,6 +166,8 @@ type SSHConfig struct {
 	DisableRootLogin    bool `yaml:"disable_root_login"`
 	DisablePasswordAuth bool `yaml:"disable_password_auth"`
 	Port                int  `yaml:"port,omitempty"`
+	// MaxAuthTries limits authentication attempts per connection.
+	MaxAuthTries int `yaml:"max_auth_tries,omitempty"`
 }
 
 // IsModuleEnabled returns whether a given module name is enabled in this config.
@@ -126,6 +175,12 @@ func (c *Config) IsModuleEnabled(name string) bool {
 	switch name {
 	case "locale":
 		return c.Modules.Locale.Enabled
+	case "system":
+		return c.Modules.System.Enabled
+	case "security":
+		return c.Modules.Security.Enabled
+	case "monitoring":
+		return c.Modules.Monitoring.Enabled
 	case "packages":
 		return c.Modules.Packages.Enabled
 	case "ssh":

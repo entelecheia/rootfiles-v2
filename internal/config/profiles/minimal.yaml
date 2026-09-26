@@ -1,8 +1,16 @@
 extends: base
 
 modules:
+  system:
+    enabled: true
+    journald_max_use: 2G
   users:
     enabled: true
+  security:
+    enabled: true
+    unattended_upgrades: true   # security pocket only, never reboots, NVIDIA/CUDA excluded
+    fail2ban: true
+    time_sync: true
   cloudflared:
     enabled: true
 

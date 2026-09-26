@@ -206,6 +206,11 @@ func (m *SSHModule) buildConfig(cfg config.SSHConfig) string {
 	}
 	if cfg.DisablePasswordAuth {
 		b.WriteString("PasswordAuthentication no\n")
+		// PAM keyboard-interactive would otherwise still accept passwords.
+		b.WriteString("KbdInteractiveAuthentication no\n")
+	}
+	if cfg.MaxAuthTries > 0 {
+		b.WriteString(fmt.Sprintf("MaxAuthTries %d\n", cfg.MaxAuthTries))
 	}
 	if cfg.Port > 0 {
 		b.WriteString(fmt.Sprintf("Port %d\n", cfg.Port))

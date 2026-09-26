@@ -8,6 +8,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/entelecheia/rootfiles-v2/internal/module"
 	"github.com/entelecheia/rootfiles-v2/internal/state"
 	"github.com/entelecheia/rootfiles-v2/internal/ui"
 )
@@ -34,7 +35,9 @@ Type=oneshot
 SuccessExitStatus=2
 ExecStart=/bin/sh -c '%[1]s check -o json > %[2]s/check.json.tmp; rc=$?; mv %[2]s/check.json.tmp %[2]s/check.json; exit $rc'
 ExecStart=/bin/sh -c '%[1]s doctor -o json > %[2]s/doctor.json.tmp; rc=$?; mv %[2]s/doctor.json.tmp %[2]s/doctor.json; exit $rc'
-`, bin, dir)
+# Publish metrics when node_exporter's textfile collector is present.
+ExecStart=/bin/sh -c 'd=%[3]s; [ -d "$d" ] || exit 0; { %[1]s check -o prometheus; %[1]s doctor -o prometheus; } > "$d/rootfiles.prom.tmp"; mv "$d/rootfiles.prom.tmp" "$d/rootfiles.prom"; exit 0'
+`, bin, dir, module.NodeExporterTextfileDir)
 }
 
 func scheduleTimer(onCalendar string) string {

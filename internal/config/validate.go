@@ -9,7 +9,12 @@ import (
 	"strings"
 )
 
-var validAccountName = regexp.MustCompile(`^[a-z_][a-z0-9_.-]*$`)
+var (
+	validAccountName = regexp.MustCompile(`^[a-z_][a-z0-9_.-]*$`)
+	validHostname    = regexp.MustCompile(`^[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$`)
+	validSize        = regexp.MustCompile(`^[1-9][0-9]*[KMGT]$`)
+	validSysctlKey   = regexp.MustCompile(`^[a-z0-9_]+(\.[a-zA-Z0-9_*-]+)+$`)
+)
 
 // Validate reports semantic errors that YAML decoding cannot catch. All
 // problems are returned together so a config can be fixed in one pass.
@@ -29,6 +34,28 @@ func (c *Config) Validate() error {
 	}
 
 	checkPort("ssh.port", c.SSH.Port)
+	if c.SSH.MaxAuthTries < 0 || c.SSH.MaxAuthTries > 100 {
+		add("ssh.max_auth_tries: %d out of range", c.SSH.MaxAuthTries)
+	}
+
+	sys := c.Modules.System
+	if sys.Hostname != "" && !validHostname.MatchString(sys.Hostname) {
+		add("modules.system.hostname: %q is not a valid hostname", sys.Hostname)
+	}
+	if sys.SwapSize != "" && !validSize.MatchString(sys.SwapSize) {
+		add("modules.system.swap_size: %q (want e.g. 8G, 512M)", sys.SwapSize)
+	}
+	if sys.JournaldMaxUse != "" && !validSize.MatchString(sys.JournaldMaxUse) {
+		add("modules.system.journald_max_use: %q (want e.g. 2G)", sys.JournaldMaxUse)
+	}
+	for k, v := range sys.Sysctl {
+		if !validSysctlKey.MatchString(k) || strings.ContainsAny(v, "\n") {
+			add("modules.system.sysctl: invalid entry %q = %q", k, v)
+		}
+	}
+	if m := sys.AptMirror; m != "" && !(strings.HasPrefix(m, "http://") || strings.HasPrefix(m, "https://")) || strings.ContainsAny(sys.AptMirror, " \n") {
+		add("modules.system.apt_mirror: %q must be an http(s) URL", sys.AptMirror)
+	}
 	for _, p := range c.Modules.Network.AllowedPorts {
 		if p <= 0 {
 			add("modules.network.allowed_ports: port %d out of range", p)
