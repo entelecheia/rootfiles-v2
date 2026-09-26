@@ -126,7 +126,7 @@ rootfiles-v2/
 ├── Makefile
 ├── PLAN.md
 ├── README.md
-└── CLAUDE.md
+└── AGENTS.md
 ```
 
 ---
