@@ -1,12 +1,23 @@
 package cli
 
-import "github.com/spf13/cobra"
+import (
+	"context"
+
+	"github.com/spf13/cobra"
+)
+
+// buildVersion is recorded in state and audit entries.
+var buildVersion = "dev"
 
 func NewRootCmd(version, commit string) *cobra.Command {
+	buildVersion = version
 	root := &cobra.Command{
-		Use:   "rootfiles",
-		Short: "Server bootstrapping tool for Ubuntu and DGX OS",
-		Long:  "rootfiles-v2: Declarative server configuration management with modular profiles.",
+		Use:               "rootfiles",
+		Short:             "Server bootstrapping tool for Ubuntu and DGX OS",
+		Long:              "rootfiles-v2: Declarative server configuration management with modular profiles.",
+		PersistentPreRunE: preflight,
+		SilenceUsage:      true,
+		SilenceErrors:     true, // main prints the error once
 	}
 	root.Version = version + " (" + commit + ")"
 
@@ -33,10 +44,15 @@ func NewRootCmd(version, commit string) *cobra.Command {
 	root.AddCommand(newUpgradeCmd(version))
 	root.AddCommand(newUserCmd())
 	root.AddCommand(newGPUCmd())
+	root.AddCommand(newRollbackCmd())
 
+	markMutating(root)
 	return root
 }
 
-func Execute(version, commit string) error {
-	return NewRootCmd(version, commit).Execute()
+// Execute runs the CLI; ctx is cancelled on SIGINT/SIGTERM so in-flight
+// commands (apt, downloads) are stopped instead of orphaned.
+func Execute(ctx context.Context, version, commit string) error {
+	defer heldLock.Release()
+	return NewRootCmd(version, commit).ExecuteContext(ctx)
 }

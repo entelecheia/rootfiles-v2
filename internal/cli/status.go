@@ -15,6 +15,7 @@ import (
 	"github.com/entelecheia/rootfiles-v2/internal/config"
 	execpkg "github.com/entelecheia/rootfiles-v2/internal/exec"
 	"github.com/entelecheia/rootfiles-v2/internal/module"
+	"github.com/entelecheia/rootfiles-v2/internal/state"
 	"github.com/entelecheia/rootfiles-v2/internal/ui"
 )
 
@@ -28,7 +29,7 @@ func newStatusCmd() *cobra.Command {
 }
 
 func runStatus(cmd *cobra.Command, _ []string) error {
-	ctx := context.Background()
+	ctx := cmd.Context()
 	out := cmd.OutOrStdout()
 
 	profileName, _ := cmd.Flags().GetString("profile")
@@ -42,7 +43,17 @@ func runStatus(cmd *cobra.Command, _ []string) error {
 		sysInfo = &config.SystemInfo{}
 	}
 
+	// Without flags, evaluate against what was last applied on this host,
+	// falling back to the detected suggestion.
+	last, lastErr := state.Last()
 	active := profileName
+	if active == "" && configPath == "" && last != nil {
+		if last.ConfigPath != "" && last.ConfigPath != "-" {
+			configPath = last.ConfigPath
+		} else {
+			active = last.Profile
+		}
+	}
 	if active == "" && configPath == "" {
 		active = sysInfo.SuggestProfile()
 	}
@@ -66,6 +77,7 @@ func runStatus(cmd *cobra.Command, _ []string) error {
 
 	renderSystemSection(out, sysInfo)
 	renderProfileSection(out, active, profileName, sysInfo, configPath, cfgErr)
+	renderLastApplySection(out, last, lastErr)
 	renderModulesSection(ctx, out, rc)
 	renderGPUSection(out, rc)
 	renderTunnelSection(ctx, out, rc)
@@ -127,6 +139,33 @@ func renderProfileSection(out io.Writer, active, flagProfile string, sys *config
 	}
 	if loadErr != nil {
 		ui.WriteHint(out, fmt.Sprintf("%s config load failed: %v", ui.WarnMark(), loadErr))
+	}
+}
+
+func renderLastApplySection(out io.Writer, last *state.Run, err error) {
+	ui.WriteSection(out, "Last apply")
+	switch {
+	case err != nil:
+		ui.WriteHint(out, fmt.Sprintf("%s %v", ui.WarnMark(), err))
+		return
+	case last == nil:
+		ui.WriteHint(out, "no apply recorded on this host")
+		return
+	}
+	result := ui.StyleSuccess.Render("success")
+	if !last.Success {
+		result = ui.StyleError.Render("failed")
+	}
+	ui.WriteKV(out, "When", last.FinishedAt.Local().Format("2006-01-02 15:04:05"))
+	ui.WriteKV(out, "Result", result)
+	ui.WriteKV(out, "Version", firstNonEmpty(last.Version, "unknown"))
+	for _, m := range last.Modules {
+		if m.Status == "failed" {
+			ui.WriteKV(out, "Failed", m.Name+": "+m.Error)
+		}
+	}
+	if last.BackupID != "" {
+		ui.WriteKV(out, "Backup", last.BackupID+" (rootfiles rollback "+last.BackupID+")")
 	}
 }
 

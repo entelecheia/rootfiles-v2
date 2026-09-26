@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"context"
 	"fmt"
 	"strconv"
 	"strings"
@@ -36,7 +35,7 @@ func newGPUCmd() *cobra.Command {
 			}
 
 			method, _ := cmd.Flags().GetString("method")
-			return module.AssignGPUs(context.Background(), rc, username, gpus, method)
+			return module.AssignGPUs(cmd.Context(), rc, username, gpus, method)
 		},
 	}
 	assignCmd.Flags().String("gpus", "", "Comma-separated GPU indices (e.g., 0,1,2)")
@@ -50,7 +49,7 @@ func newGPUCmd() *cobra.Command {
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			rc := buildRunContext(cmd)
-			return module.RevokeGPUs(context.Background(), rc, args[0])
+			return module.RevokeGPUs(cmd.Context(), rc, args[0])
 		},
 	})
 
@@ -70,7 +69,7 @@ func newGPUCmd() *cobra.Command {
 		Short: "Show GPU status with allocation info",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			rc := buildRunContext(cmd)
-			return module.ShowGPUStatus(context.Background(), rc)
+			return module.ShowGPUStatus(cmd.Context(), rc)
 		},
 	})
 

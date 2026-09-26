@@ -13,6 +13,20 @@ import (
 type Runner struct {
 	DryRun bool
 	Logger *slog.Logger
+	// Backup, when set, preserves each file before it is overwritten,
+	// renamed over or removed, enabling `rootfiles rollback`.
+	Backup *Backup
+}
+
+// preserve snapshots path into the backup session (no-op without one).
+func (r *Runner) preserve(path string) error {
+	if r.Backup == nil {
+		return nil
+	}
+	if err := r.Backup.Preserve(path); err != nil {
+		return fmt.Errorf("backing up %s before change: %w", path, err)
+	}
+	return nil
 }
 
 // Result holds the output of a command execution.
@@ -152,6 +166,9 @@ func (r *Runner) WriteFile(path string, content []byte, perm os.FileMode) error 
 		r.Logger.Info("dry-run: write file", "path", path, "size", len(content))
 		return nil
 	}
+	if err := r.preserve(path); err != nil {
+		return err
+	}
 	r.Logger.Info("write file", "path", path, "size", len(content))
 	return os.WriteFile(path, content, perm)
 }
@@ -171,6 +188,9 @@ func (r *Runner) Symlink(target, link string) error {
 		r.Logger.Info("dry-run: symlink", "target", target, "link", link)
 		return nil
 	}
+	if err := r.preserve(link); err != nil {
+		return err
+	}
 	r.Logger.Info("symlink", "target", target, "link", link)
 	return os.Symlink(target, link)
 }
@@ -183,6 +203,9 @@ func (r *Runner) Remove(path string) error {
 		r.Logger.Info("dry-run: remove", "path", path)
 		return nil
 	}
+	if err := r.preserve(path); err != nil {
+		return err
+	}
 	r.Logger.Info("remove", "path", path)
 	return os.Remove(path)
 }
@@ -192,6 +215,9 @@ func (r *Runner) Rename(oldPath, newPath string) error {
 	if r.DryRun {
 		r.Logger.Info("dry-run: rename", "from", oldPath, "to", newPath)
 		return nil
+	}
+	if err := r.preserve(newPath); err != nil {
+		return err
 	}
 	r.Logger.Info("rename", "from", oldPath, "to", newPath)
 	return os.Rename(oldPath, newPath)

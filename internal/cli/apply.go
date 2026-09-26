@@ -1,17 +1,17 @@
 package cli
 
 import (
-	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"os"
+	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/entelecheia/rootfiles-v2/internal/config"
 	"github.com/entelecheia/rootfiles-v2/internal/exec"
 	"github.com/entelecheia/rootfiles-v2/internal/module"
+	"github.com/entelecheia/rootfiles-v2/internal/state"
 	"github.com/entelecheia/rootfiles-v2/internal/ui"
 )
 
@@ -27,7 +27,7 @@ func newApplyCmd() *cobra.Command {
 }
 
 func runApply(cmd *cobra.Command, _ []string) error {
-	ctx := context.Background()
+	ctx := cmd.Context()
 
 	yes, _ := cmd.Flags().GetBool("yes")
 	dryRun, _ := cmd.Flags().GetBool("dry-run")
@@ -70,10 +70,7 @@ func runApply(cmd *cobra.Command, _ []string) error {
 	}
 
 	// Setup runner
-	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
-		Level: slog.LevelInfo,
-	}))
-	runner := exec.NewRunner(dryRun, logger)
+	runner := newRunner(cmd, dryRun)
 	apt := exec.NewAPT(runner)
 
 	// Build module list
@@ -119,7 +116,30 @@ func runApply(cmd *cobra.Command, _ []string) error {
 	}
 
 	fmt.Println()
-	return module.RunAll(ctx, modules, rc)
+	started := time.Now().UTC()
+	outcomes, runErr := module.RunAll(ctx, modules, rc)
+	if dryRun {
+		return runErr
+	}
+
+	run := state.Run{
+		Version:    buildVersion,
+		Profile:    profileName,
+		ConfigPath: configPath,
+		StartedAt:  started,
+		FinishedAt: time.Now().UTC(),
+		Success:    runErr == nil,
+		Modules:    outcomes,
+	}
+	if runner.Backup.Used() {
+		run.BackupID = runner.Backup.ID
+		fmt.Printf("\nFiles changed by this run were backed up (undo with: rootfiles rollback %s)\n", run.BackupID)
+	}
+	if err := state.Record(run); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: recording apply state: %v\n", err)
+	}
+	auditf(cmd, "apply finished", "profile", profileName, "success", runErr == nil, "backup", run.BackupID)
+	return runErr
 }
 
 // selectProfile resolves the profile name. Priority: explicit --profile flag

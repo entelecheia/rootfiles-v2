@@ -9,6 +9,7 @@ import (
 
 	"github.com/entelecheia/rootfiles-v2/internal/config"
 	"github.com/entelecheia/rootfiles-v2/internal/exec"
+	"github.com/entelecheia/rootfiles-v2/internal/state"
 )
 
 // Module is the interface that all rootfiles modules must implement.
@@ -114,18 +115,31 @@ func (r *Registry) Resolve(cfg *config.Config, filter []string) []Module {
 	return result
 }
 
-// RunAll executes Check then Apply on each module in order.
-// Non-fatal module errors are logged but do not stop execution of remaining modules.
-func RunAll(ctx context.Context, modules []Module, rc *RunContext) error {
+// RunAll executes Check then Apply on each module in order and returns
+// one outcome per module. Module errors are reported but do not stop the
+// remaining modules; a cancelled context does.
+func RunAll(ctx context.Context, modules []Module, rc *RunContext) ([]state.ModuleOutcome, error) {
 	var errors []string
+	outcomes := make([]state.ModuleOutcome, 0, len(modules))
 	for _, m := range modules {
+		out := state.ModuleOutcome{Name: m.Name()}
+		if ctx.Err() != nil {
+			out.Status = "skipped"
+			outcomes = append(outcomes, out)
+			continue
+		}
 		check, err := m.Check(ctx, rc)
 		if err != nil {
 			fmt.Printf("  ⚠ %s: check error: %v\n", m.Name(), err)
+			out.Status, out.Error = "failed", "check: "+err.Error()
+			errors = append(errors, fmt.Sprintf("%s: check: %v", m.Name(), err))
+			outcomes = append(outcomes, out)
 			continue
 		}
 		if check.Satisfied {
 			fmt.Printf("  ✓ %s: already satisfied\n", m.Name())
+			out.Status = "satisfied"
+			outcomes = append(outcomes, out)
 			continue
 		}
 
@@ -135,16 +149,22 @@ func RunAll(ctx context.Context, modules []Module, rc *RunContext) error {
 		}
 
 		if rc.DryRun {
+			out.Status = "pending"
+			outcomes = append(outcomes, out)
 			continue
 		}
 
 		result, err := m.Apply(ctx, rc)
 		if err != nil {
 			fmt.Printf("  ✗ %s: %v\n", m.Name(), err)
+			out.Status, out.Error = "failed", err.Error()
 			errors = append(errors, fmt.Sprintf("%s: %v", m.Name(), err))
+			outcomes = append(outcomes, out)
 			continue
 		}
+		out.Status = "satisfied"
 		if result.Changed {
+			out.Status = "changed"
 			for _, msg := range result.Messages {
 				fmt.Printf("  ✓ %s: %s\n", m.Name(), msg)
 			}
@@ -152,11 +172,16 @@ func RunAll(ctx context.Context, modules []Module, rc *RunContext) error {
 		for _, w := range result.Warnings {
 			fmt.Printf("  ⚠ %s: %s\n", m.Name(), w)
 		}
+		out.Messages, out.Warnings = result.Messages, result.Warnings
+		outcomes = append(outcomes, out)
+	}
+	if err := ctx.Err(); err != nil {
+		return outcomes, fmt.Errorf("interrupted: %w", err)
 	}
 	if len(errors) > 0 {
-		return fmt.Errorf("%d module(s) failed: %v", len(errors), errors)
+		return outcomes, fmt.Errorf("%d module(s) failed: %v", len(errors), errors)
 	}
-	return nil
+	return outcomes, nil
 }
 
 // ensureMetaDir ensures the .rootfiles metadata directory exists under homeBase.

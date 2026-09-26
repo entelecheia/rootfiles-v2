@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"context"
 	"fmt"
 	"log/slog"
 	"os"
@@ -26,7 +25,7 @@ func newCheckCmd() *cobra.Command {
 }
 
 func runCheck(cmd *cobra.Command, _ []string) error {
-	ctx := context.Background()
+	ctx := cmd.Context()
 
 	profileName, _ := cmd.Flags().GetString("profile")
 	moduleFilter, _ := cmd.Flags().GetStringSlice("module")

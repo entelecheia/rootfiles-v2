@@ -3,7 +3,6 @@ package cli
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"os"
 	"strings"
 
@@ -27,7 +26,7 @@ func newTunnelCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			rc := buildRunContext(cmd)
 			m := module.NewCloudflaredModule()
-			_, err := m.Apply(context.Background(), rc)
+			_, err := m.Apply(cmd.Context(), rc)
 			return err
 		},
 	})
@@ -52,7 +51,7 @@ func newTunnelCmd() *cobra.Command {
 			if vlanAddr == "" {
 				vlanAddr = os.Getenv("ROOTFILES_VLAN_ADDRESS")
 			}
-			return module.TunnelSetup(context.Background(), rc, token, vlanAddr)
+			return module.TunnelSetup(cmd.Context(), rc, token, vlanAddr)
 		},
 	})
 
@@ -61,7 +60,7 @@ func newTunnelCmd() *cobra.Command {
 		Short: "Show tunnel service and VLAN status",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			rc := buildRunContext(cmd)
-			return module.TunnelStatus(context.Background(), rc)
+			return module.TunnelStatus(cmd.Context(), rc)
 		},
 	})
 
@@ -70,7 +69,7 @@ func newTunnelCmd() *cobra.Command {
 		Short: "Restart cloudflared service",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			rc := buildRunContext(cmd)
-			_, err := rc.Runner.Run(context.Background(), "systemctl", "restart", "cloudflared")
+			_, err := rc.Runner.Run(cmd.Context(), "systemctl", "restart", "cloudflared")
 			if err != nil {
 				return fmt.Errorf("restarting cloudflared: %w", err)
 			}
@@ -92,7 +91,7 @@ Use --check to see the current installed version vs. the latest upstream tag
 without downloading or restarting anything.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			rc := buildRunContext(cmd)
-			ctx := context.Background()
+			ctx := cmd.Context()
 
 			checkOnly, _ := cmd.Flags().GetBool("check")
 			version, _ := cmd.Flags().GetString("version")
@@ -112,7 +111,7 @@ without downloading or restarting anything.`,
 		Short: "Remove tunnel service, VLAN, and binary",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			rc := buildRunContext(cmd)
-			return module.TunnelUninstall(context.Background(), rc)
+			return module.TunnelUninstall(cmd.Context(), rc)
 		},
 	})
 
@@ -183,10 +182,8 @@ func buildRunContext(cmd *cobra.Command) *module.RunContext {
 		profileName = "minimal"
 	}
 
-	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{
-		Level: slog.LevelInfo,
-	}))
-	runner := exec.NewRunner(dryRun, logger)
+	runner := newRunner(cmd, dryRun)
+	logger := runner.Logger
 
 	sysInfo, sysErr := config.DetectSystem()
 	if sysErr != nil {
