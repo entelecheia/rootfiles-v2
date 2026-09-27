@@ -42,8 +42,9 @@ issue instead of widening the change. Report what was reviewed and what was not 
 
 ## Re-review
 
-Give the reviewer the diff, the spec, and this file only: no fix-status claims, earlier dispositions,
-or do-not-reflag notes. Judge recurrence by the violated invariant, not by wording.
+Hand the reviewer the diff, the spec, and this file, and let it read the rest of the repo (AGENTS.md
+included). Do not hand it fix-status claims, earlier dispositions, or do-not-reflag notes. Judge
+recurrence by the violated invariant, not by wording.
 
 ## What Important means here
 
