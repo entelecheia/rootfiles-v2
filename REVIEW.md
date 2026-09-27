@@ -28,9 +28,11 @@ Run these passes and tag every finding with its pass:
   idempotent, and returns `Changed` only for real work.
 - A new mutating command is added to `mutatingCommands` in `internal/cli/runtime.go` so it gets
   the root and lock preflight.
-- Secrets such as the tunnel token and user passwords stay out of command lines, logs, and
-  `config show` output (README: the token is masked and kept in a root-only env file; passwords
-  reach `chpasswd` on stdin).
+- Secrets such as the tunnel token and user passwords stay out of the command lines rootfiles
+  spawns, its logs, and `config show` output (README: the token is masked and kept in a root-only
+  env file; passwords reach `chpasswd` on stdin). The CLI itself still accepts them as input
+  (`--password`, `--tunnel-token`, `tunnel setup [TOKEN]`); a change that echoes or forwards that
+  input is Important.
 
 ## Findings
 
