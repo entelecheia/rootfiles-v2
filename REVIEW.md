@@ -12,7 +12,7 @@ Run these passes and tag every finding with its pass:
 - Compliance: the change matches the issue spec and the approved plan.
   Workflow changes (`.github/workflows/`) are also checked for job timeouts, concurrency, and
   one build per commit.
-- Instruction prose (changes to AGENTS.md, SKILL.md, or prompts): for each "do not X", would
+- Instruction prose (changes to AGENTS.md, REVIEW.md, SKILL.md, or prompts): for each "do not X", would
   "do Y" alone keep the force and the boundary? Keep it for safety, permission, and contract
   boundaries. Would the principle generalize better without an example? Keep examples that fix
   a format or a high-failure behavior. Is a chain of cases standing in for a judgment? Does a new
