@@ -6,11 +6,11 @@
   "status": "pass",
   "visualReview": "pending",
   "provenance": "current",
-  "deliveryReceiptId": "ca242d9d-aacc-4c18-aa42-00e912d2785d",
+  "deliveryReceiptId": "2104fa83-cd02-4de7-8715-7c90a72cee81",
   "artifact": {
     "path": "docs/architecture/rootfiles-v2-rendered.html",
-    "sha256": "23388113bd51aad9b708f38d3103e28475eae618632eeb80469f101d9447aeb2",
-    "bytes": 769791
+    "sha256": "20c1f0afecb27eecdca8675e20d4cde64835f763388c981b8538dfa65b7e7248",
+    "bytes": 769885
   },
   "state": {
     "detail": "read",
@@ -942,18 +942,18 @@
         "file": "rootfiles-v2-rendered.visual-check.1440x900.light.png"
       },
       {
-        "sha256": "75e809748cfd4df9f1748e20ab8e3ea0c410527c0cc5db68a75122a3ea9d9716",
-        "bytes": 126893,
+        "sha256": "ede535414c5dd5472356963cf3db8f702fa7c0663adb7d715476e6697bf872b4",
+        "bytes": 126894,
         "file": "rootfiles-v2-rendered.visual-check.1440x900.dark.png"
       },
       {
-        "sha256": "3610d6a4a95f0deb65f1dd085b320d34e21c58e0773a2f783d389cda2bb32db6",
-        "bytes": 191388,
+        "sha256": "59145d222d9277221905461abcdd6439d7f1dc90e029954d42617f3b0afdccb3",
+        "bytes": 191815,
         "file": "rootfiles-v2-rendered.visual-check.2048x1320.light.png"
       },
       {
-        "sha256": "0323e6a23ad3617a5f6d716609c7c67813b1b6368a41020ddb717bc5c7f645ed",
-        "bytes": 210382,
+        "sha256": "1e4e4208d1dfa1da5e7e5b9b57a6c4500e0e5c4b4f84807ba656dcc0b2946c52",
+        "bytes": 211124,
         "file": "rootfiles-v2-rendered.visual-check.2048x1320.dark.png"
       }
     ]

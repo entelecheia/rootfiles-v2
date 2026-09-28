@@ -5423,8 +5423,8 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
         </div>
         <ul>
           <li>Mutating commands need root and a non-blocking flock on /run/rootfiles.lock; dry runs are exempt</li>
-          <li>Real mutating runs log JSON to /var/log/rootfiles.log and back up each file before it is overwritten or removed</li>
-          <li>rollback restores those files; packages, users and services are not reverted</li>
+          <li>Real mutating runs log JSON to /var/log/rootfiles.log; files changed through the Runner are backed up first</li>
+          <li>rollback restores only those Runner backups; the update binary swap, the GPU db rename, packages, users and services are not reverted</li>
           <li>--force overrides guards such as SSH lockout protection</li>
         </ul>
       </div>
@@ -5435,7 +5435,7 @@ OTHER DEALINGS IN THE FONT SOFTWARE.
           <h3>Direct operations</h3>
         </div>
         <ul>
-          <li>user add, del, lock, expire, key, quota and rehome keep metadata in &lt;home-base&gt;/.rootfiles/users.json</li>
+          <li>&lt;home-base&gt;/.rootfiles/users.json records user add, key and quota changes and drops the entry on del; lock, expire and rehome are not recorded</li>
           <li>gpu assign and revoke update gpu-allocations.json under flock with an atomic rename; gpu mig status is read-only</li>
           <li>tunnel setup installs the cloudflared service and systemd VLAN units; the cloudflared module also converges them on apply</li>
         </ul>

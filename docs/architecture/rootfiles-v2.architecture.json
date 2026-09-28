@@ -10,55 +10,7 @@
       "url": "https://github.com/entelecheia/rootfiles-v2",
       "provider": "github",
       "revision": "b7f940c3d06579a8039fc423952c4663b88f4e2c"
-    },
-    "views": [
-      {
-        "id": "apply-path",
-        "label": "Check and apply path",
-        "focus": [
-          "user",
-          "cli",
-          "config",
-          "module",
-          "runner",
-          "system"
-        ],
-        "note": "apply loads the profile; RunAll checks then applies each module through the Runner."
-      },
-      {
-        "id": "safety-path",
-        "label": "Lock, audit and rollback",
-        "focus": [
-          "cli",
-          "runner",
-          "runstate"
-        ],
-        "note": "Mutating runs take the flock, write the audit log and back up files for rollback."
-      },
-      {
-        "id": "ops-path",
-        "label": "User, GPU and tunnel ops",
-        "focus": [
-          "cli",
-          "ops",
-          "runner",
-          "system"
-        ],
-        "note": "user, gpu and tunnel commands call module functions directly with the same Runner."
-      },
-      {
-        "id": "report-path",
-        "label": "Reports and updates",
-        "focus": [
-          "user",
-          "cli",
-          "module",
-          "runstate",
-          "github"
-        ],
-        "note": "A systemd timer writes check and doctor JSON to the state dir; update pulls GitHub releases."
-      }
-    ]
+    }
   },
   "components": [
     {
@@ -434,8 +386,8 @@
       "title": "Safety model",
       "items": [
         "Mutating commands need root and a non-blocking flock on /run/rootfiles.lock; dry runs are exempt",
-        "Real mutating runs log JSON to /var/log/rootfiles.log and back up each file before it is overwritten or removed",
-        "rollback restores those files; packages, users and services are not reverted",
+        "Real mutating runs log JSON to /var/log/rootfiles.log; files changed through the Runner are backed up first",
+        "rollback restores only those Runner backups; the update binary swap, the GPU db rename, packages, users and services are not reverted",
         "--force overrides guards such as SSH lockout protection"
       ]
     },
@@ -443,7 +395,7 @@
       "dot": "violet",
       "title": "Direct operations",
       "items": [
-        "user add, del, lock, expire, key, quota and rehome keep metadata in <home-base>/.rootfiles/users.json",
+        "<home-base>/.rootfiles/users.json records user add, key and quota changes and drops the entry on del; lock, expire and rehome are not recorded",
         "gpu assign and revoke update gpu-allocations.json under flock with an atomic rename; gpu mig status is read-only",
         "tunnel setup installs the cloudflared service and systemd VLAN units; the cloudflared module also converges them on apply"
       ]
