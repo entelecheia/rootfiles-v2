@@ -113,7 +113,7 @@
       "id": "runstate",
       "type": "database",
       "label": "Run State",
-      "sublabel": "/var/lib/rootfiles",
+      "sublabel": "/var/lib, /var/log, /run",
       "tag": "lock, log, backups",
       "pos": [
         290,
@@ -126,9 +126,9 @@
       "sources": [
         {
           "path": "internal/state/state.go",
-          "line": 18,
+          "line": 19,
           "end_line": 24,
-          "label": "state, log, lock, backups paths"
+          "label": "state dir, log file, lock, backups"
         },
         {
           "path": "internal/state/state.go",
@@ -231,8 +231,8 @@
         {
           "path": "internal/exec/runner.go",
           "line": 163,
-          "end_line": 175,
-          "label": "WriteFile preserves first"
+          "end_line": 224,
+          "label": "WriteFile, Symlink, Remove, Rename preserve"
         },
         {
           "path": "internal/exec/backup.go",
@@ -246,7 +246,7 @@
       "id": "github",
       "type": "external",
       "label": "GitHub Releases",
-      "sublabel": "rootfiles, cloudflared",
+      "sublabel": "rootfiles self-update",
       "pos": [
         290,
         400
@@ -386,7 +386,7 @@
       "title": "Safety model",
       "items": [
         "Mutating commands need root and a non-blocking flock on /run/rootfiles.lock; dry runs are exempt",
-        "Real mutating runs log JSON to /var/log/rootfiles.log; files changed through the Runner are backed up first",
+        "Real mutating runs log JSON to /var/log/rootfiles.log; files the Runner writes, renames or removes are backed up first, commands it runs are not",
         "rollback restores only those Runner backups; the update binary swap, the GPU db rename, packages, users and services are not reverted",
         "--force overrides guards such as SSH lockout protection"
       ]
