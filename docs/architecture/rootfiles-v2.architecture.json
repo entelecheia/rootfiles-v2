@@ -2,38 +2,14 @@
   "schema_version": 1,
   "diagram_type": "architecture",
   "meta": {
-    "title": "rootfiles-v2 Go Workspace",
+    "title": "rootfiles-v2 rootfiles CLI",
     "locale": "en",
     "quality_profile": "showcase",
     "output": "rootfiles-v2-rendered.html",
-    "viewBox": [1376, 648],
     "repository": {
       "url": "https://github.com/entelecheia/rootfiles-v2",
       "provider": "github",
-      "revision": "96cf67fdba998ca42e27cab769e09eec753a108c"
-    },
-    "views": [
-      {
-        "id": "check-path",
-        "label": "Check and apply path",
-        "focus": ["user", "cli", "config", "module", "exec", "fs"],
-        "note": "RunAll walks Check then Apply across the 10 modules."
-      },
-      {
-        "id": "gpu-path",
-        "label": "GPU allocation path",
-        "focus": ["cli", "module", "gpu", "fs"],
-        "note": "gpu assign/revoke write the Flock-serialized db; Apply enforces it."
-      },
-      {
-        "id": "tunnel-path",
-        "label": "Tunnel path",
-        "focus": ["cli", "tunnel", "fs"],
-        "note": "cloudflared daemon and systemd vlan network units."
-      }
-    ],
-    "legend": {
-      "mode": "all"
+      "revision": "b7f940c3d06579a8039fc423952c4663b88f4e2c"
     }
   },
   "components": [
@@ -41,11 +17,28 @@
       "id": "user",
       "type": "external",
       "label": "Root Operators",
-      "sublabel": "provisioning CLI",
-      "pos": [40, 330],
-      "size": [130, 60],
+      "sublabel": "sudo, systemd timer",
+      "pos": [
+        40,
+        230
+      ],
+      "size": [
+        140,
+        64
+      ],
       "sources": [
-        { "path": "internal/cli/root.go", "line": 5, "label": "rootfiles root command" }
+        {
+          "path": "internal/cli/root.go",
+          "line": 12,
+          "end_line": 21,
+          "label": "rootfiles root command"
+        },
+        {
+          "path": "internal/cli/schedule.go",
+          "line": 25,
+          "end_line": 44,
+          "label": "timer runs check and doctor"
+        }
       ]
     },
     {
@@ -53,12 +46,34 @@
       "type": "backend",
       "label": "rootfiles CLI",
       "sublabel": "internal/cli, cobra",
-      "tag": "8 subcommands",
-      "pos": [250, 330],
-      "size": [160, 64],
+      "tag": "12 commands",
+      "pos": [
+        290,
+        227
+      ],
+      "size": [
+        140,
+        70
+      ],
       "sources": [
-        { "path": "internal/cli/root.go", "line": 27, "end_line": 34, "label": "8 AddCommand calls" },
-        { "path": "cmd/rootfiles/main.go", "line": 15, "label": "rootfiles binary entrypoint" }
+        {
+          "path": "internal/cli/root.go",
+          "line": 39,
+          "end_line": 53,
+          "label": "12 AddCommand + markMutating"
+        },
+        {
+          "path": "internal/cli/runtime.go",
+          "line": 21,
+          "end_line": 80,
+          "label": "root + lock preflight, audit"
+        },
+        {
+          "path": "cmd/rootfiles/main.go",
+          "line": 19,
+          "end_line": 38,
+          "label": "signal context, exit codes"
+        }
       ]
     },
     {
@@ -67,11 +82,94 @@
       "label": "Config Loader",
       "sublabel": "internal/config",
       "tag": "5 profiles",
-      "pos": [250, 110],
-      "size": [160, 60],
+      "pos": [
+        40,
+        60
+      ],
+      "size": [
+        140,
+        60
+      ],
       "sources": [
-        { "path": "internal/config/loader.go", "line": 18, "label": "profile Load entry" },
-        { "path": "internal/config/profiles/dgx.yaml", "line": 1, "label": "dgx profile" }
+        {
+          "path": "internal/config/loader.go",
+          "line": 21,
+          "label": "Load profile or custom YAML"
+        },
+        {
+          "path": "internal/config/loader.go",
+          "line": 154,
+          "end_line": 160,
+          "label": "strict keys"
+        },
+        {
+          "path": "internal/config/validate.go",
+          "line": 21,
+          "label": "Validate"
+        }
+      ]
+    },
+    {
+      "id": "runstate",
+      "type": "database",
+      "label": "Run State",
+      "sublabel": "/var/lib, /var/log, /run",
+      "tag": "lock, log, backups",
+      "pos": [
+        290,
+        60
+      ],
+      "size": [
+        140,
+        60
+      ],
+      "sources": [
+        {
+          "path": "internal/state/state.go",
+          "line": 19,
+          "end_line": 24,
+          "label": "state dir, log file, lock, backups"
+        },
+        {
+          "path": "internal/state/state.go",
+          "line": 57,
+          "end_line": 81,
+          "label": "Record state + history"
+        },
+        {
+          "path": "internal/state/state.go",
+          "line": 102,
+          "end_line": 125,
+          "label": "non-blocking flock"
+        }
+      ]
+    },
+    {
+      "id": "system",
+      "type": "database",
+      "label": "System State",
+      "sublabel": "apt, systemd, /etc, homes",
+      "pos": [
+        790,
+        60
+      ],
+      "size": [
+        140,
+        60
+      ],
+      "sources": [
+        {
+          "path": "internal/exec/apt.go",
+          "line": 14,
+          "end_line": 25,
+          "label": "noninteractive apt-get"
+        },
+        {
+          "path": "internal/module/cloudflared.go",
+          "line": 26,
+          "end_line": 29,
+          "label": "systemd unit paths"
+        }
       ]
     },
     {
@@ -79,208 +177,198 @@
       "type": "backend",
       "label": "Module Registry",
       "sublabel": "internal/module",
-      "tag": "10 modules",
-      "pos": [480, 330],
-      "size": [150, 60],
+      "tag": "13 modules",
+      "pos": [
+        540,
+        230
+      ],
+      "size": [
+        140,
+        64
+      ],
       "sources": [
-        { "path": "internal/module/module.go", "line": 50, "end_line": 61, "label": "defaultOrder, 10 names" },
-        { "path": "internal/module/module.go", "line": 113, "label": "RunAll: Check then Apply" }
+        {
+          "path": "internal/module/module.go",
+          "line": 57,
+          "end_line": 71,
+          "label": "defaultOrder, 13 names"
+        },
+        {
+          "path": "internal/module/module.go",
+          "line": 124,
+          "end_line": 191,
+          "label": "RunAll: Check then Apply"
+        },
+        {
+          "path": "internal/cli/apply.go",
+          "line": 59,
+          "end_line": 120,
+          "label": "apply wiring"
+        }
       ]
     },
     {
-      "id": "exec",
+      "id": "runner",
       "type": "backend",
       "label": "Exec Runner",
-      "sublabel": "internal/exec, dry-run",
-      "tag": "apt + shell",
-      "pos": [695, 330],
-      "size": [170, 64],
+      "sublabel": "internal/exec",
+      "tag": "dry-run + backup",
+      "pos": [
+        790,
+        230
+      ],
+      "size": [
+        140,
+        64
+      ],
       "sources": [
-        { "path": "internal/exec/runner.go", "line": 27, "label": "NewRunner, dry-run aware" },
-        { "path": "internal/exec/apt.go", "line": 14, "label": "NewAPT, apt-get wrapper" }
+        {
+          "path": "internal/exec/runner.go",
+          "line": 12,
+          "end_line": 30,
+          "label": "DryRun and Backup hook"
+        },
+        {
+          "path": "internal/exec/runner.go",
+          "line": 163,
+          "end_line": 224,
+          "label": "WriteFile, Symlink, Remove, Rename preserve"
+        },
+        {
+          "path": "internal/exec/backup.go",
+          "line": 16,
+          "end_line": 19,
+          "label": "per-run backup session"
+        }
       ]
     },
     {
-      "id": "gpu",
+      "id": "github",
+      "type": "external",
+      "label": "GitHub Releases",
+      "sublabel": "rootfiles self-update",
+      "pos": [
+        290,
+        400
+      ],
+      "size": [
+        140,
+        60
+      ],
+      "sources": [
+        {
+          "path": "internal/cli/upgrade.go",
+          "line": 145,
+          "end_line": 150,
+          "label": "releases/latest"
+        },
+        {
+          "path": "internal/cli/upgrade.go",
+          "line": 187,
+          "end_line": 192,
+          "label": "checksums.txt"
+        }
+      ]
+    },
+    {
+      "id": "ops",
       "type": "backend",
-      "label": "GPU Allocator",
-      "sublabel": "gpu module, Flock db",
-      "tag": "exclusive lock",
-      "pos": [695, 110],
-      "size": [170, 60],
+      "label": "User, GPU, Tunnel",
+      "sublabel": "direct module ops",
+      "tag": "flock GPU db",
+      "pos": [
+        540,
+        400
+      ],
+      "size": [
+        140,
+        60
+      ],
       "sources": [
-        { "path": "internal/module/gpu.go", "line": 719, "label": "syscall.Flock LOCK_EX" },
-        { "path": "internal/module/gpu.go", "line": 628, "label": "gpu-allocations.json path" }
+        {
+          "path": "internal/module/lifecycle.go",
+          "line": 81,
+          "end_line": 127,
+          "label": "DeleteUser"
+        },
+        {
+          "path": "internal/module/gpu.go",
+          "line": 712,
+          "end_line": 760,
+          "label": "withGPUDBLock"
+        },
+        {
+          "path": "internal/module/cloudflared.go",
+          "line": 278,
+          "end_line": 316,
+          "label": "TunnelSetup"
+        }
       ]
-    },
-    {
-      "id": "fs",
-      "type": "database",
-      "label": "System State",
-      "sublabel": "apt db, systemd, files",
-      "tag": "root-owned hosts",
-      "pos": [930, 330],
-      "size": [150, 60],
-      "sources": [
-        { "path": "internal/exec/runner.go", "line": 109, "label": "Runner.WriteFile" }
-      ]
-    },
-    {
-      "id": "tunnel",
-      "type": "cloud",
-      "label": "Cloudflared",
-      "sublabel": "tunnel module + cli",
-      "tag": "systemd network",
-      "pos": [480, 500],
-      "size": [160, 60],
-      "sources": [
-        { "path": "internal/module/cloudflared.go", "line": 22, "label": "cloudflared paths, vlan units" },
-        { "path": "internal/cli/tunnel.go", "line": 126, "label": "tunnelUpdateCheck" }
-      ]
-    },
-    {
-      "id": "ui",
-      "type": "frontend",
-      "label": "Status UI",
-      "sublabel": "internal/ui",
-      "tag": "styled output",
-      "pos": [250, 500],
-      "size": [160, 60],
-      "sources": [
-        { "path": "internal/ui/markers.go", "line": 26, "label": "OK / Fail / Pending marks" },
-        { "path": "internal/ui/format.go", "line": 11, "label": "WriteHeader / WriteSection" }
-      ]
-    }
-  ],
-  "boundaries": [
-    {
-      "kind": "region",
-      "label": "Single Go binary - apt, systemd, and file state",
-      "wraps": ["cli", "config", "module", "exec", "gpu", "tunnel", "ui"],
-      "pad": 14
-    },
-    {
-      "kind": "security-group",
-      "label": "Flock-serialized gpu allocation db",
-      "wraps": ["gpu"],
-      "pad": 14
     }
   ],
   "connections": [
     {
-      "id": "user-to-cli",
+      "id": "user-cli",
       "from": "user",
       "to": "cli",
-      "label": "sudo",
-      "variant": "emphasis",
-      "fromSide": "right",
-      "toSide": "left"
+      "label": "sudo / timer",
+      "variant": "emphasis"
     },
     {
-      "id": "cli-to-config",
+      "id": "cli-runstate",
+      "from": "cli",
+      "to": "runstate",
+      "label": "lock, audit, state"
+    },
+    {
+      "id": "cli-config",
       "from": "cli",
       "to": "config",
-      "label": "load",
-      "fromSide": "top",
-      "toSide": "bottom",
-      "labelDx": -70
-    },
-    {
-      "id": "config-to-module",
-      "from": "config",
-      "to": "module",
-      "label": "enabled set",
-      "fromSide": "bottom",
-      "toSide": "top",
-      "labelAt": [440, 240]
-    },
-    {
-      "id": "cli-to-module",
-      "from": "cli",
-      "to": "module",
-      "label": "run",
-      "fromSide": "right",
-      "toSide": "left"
-    },
-    {
-      "id": "cli-to-exec",
-      "from": "cli",
-      "to": "exec",
-      "label": "build ctx",
-      "fromSide": "bottom",
-      "toSide": "bottom",
-      "via": [[330, 445], [780, 445]]
-    },
-    {
-      "id": "cli-to-tunnel",
-      "from": "cli",
-      "to": "tunnel",
-      "label": "tunnel cmds",
-      "fromSide": "bottom",
-      "toSide": "left",
-      "via": [[330, 445], [445, 445], [445, 530]]
-    },
-    {
-      "id": "tunnel-to-fs",
-      "from": "tunnel",
-      "to": "fs",
-      "label": "units + daemon",
-      "fromSide": "right",
-      "toSide": "bottom",
-      "labelAt": [820, 570]
-    },
-    {
-      "id": "module-to-exec",
-      "from": "module",
-      "to": "exec",
-      "label": "apt + shell",
-      "fromSide": "right",
-      "toSide": "left",
-      "labelAt": [654, 404]
-    },
-    {
-      "id": "exec-to-fs",
-      "from": "exec",
-      "to": "fs",
-      "label": "mutate",
-      "fromSide": "right",
-      "toSide": "left"
-    },
-    {
-      "id": "module-to-gpu",
-      "from": "module",
-      "to": "gpu",
-      "label": "enforce",
-      "fromSide": "top",
-      "toSide": "bottom",
-      "labelAt": [670, 250]
-    },
-    {
-      "id": "cli-to-gpu",
-      "from": "cli",
-      "to": "gpu",
-      "label": "gpu assign",
+      "label": "load + validate",
       "fromSide": "left",
-      "toSide": "top",
-      "via": [[215, 362], [215, 70], [780, 70]]
+      "toSide": "right"
     },
     {
-      "id": "gpu-to-fs",
-      "from": "gpu",
-      "to": "fs",
-      "label": "locked db",
-      "fromSide": "right",
-      "toSide": "top",
-      "labelAt": [935, 140]
-    },
-    {
-      "id": "cli-to-ui",
+      "id": "cli-module",
       "from": "cli",
-      "to": "ui",
-      "label": "render",
-      "fromSide": "bottom",
-      "toSide": "top",
-      "labelAt": [270, 475]
+      "to": "module",
+      "label": "check / apply"
+    },
+    {
+      "id": "module-runner",
+      "from": "module",
+      "to": "runner",
+      "label": "exec + writes"
+    },
+    {
+      "id": "runner-system",
+      "from": "runner",
+      "to": "system",
+      "label": "apt, systemctl, files"
+    },
+    {
+      "id": "runner-runstate",
+      "from": "runner",
+      "to": "runstate",
+      "label": "backups"
+    },
+    {
+      "id": "cli-ops",
+      "from": "cli",
+      "to": "ops",
+      "label": "user / gpu / tunnel"
+    },
+    {
+      "id": "ops-runner",
+      "from": "ops",
+      "to": "runner",
+      "label": "exec + writes"
+    },
+    {
+      "id": "cli-github",
+      "from": "cli",
+      "to": "github",
+      "label": "update"
     }
   ],
   "cards": [
@@ -288,27 +376,37 @@
       "dot": "cyan",
       "title": "Check and apply",
       "items": [
-        "10 modules in a fixed defaultOrder; RunAll runs Check then Apply",
-        "5 embedded profiles: minimal, base, full, gpu-server, dgx",
-        "apt operations wrapped by internal/exec with dry-run respected"
+        "13 modules in a fixed defaultOrder; RunAll runs Check then Apply and records each outcome",
+        "check, status and doctor use an always-dry-run Runner; check and doctor exit 2 on drift or findings",
+        "5 embedded profiles (minimal, base, full, gpu-server, dgx), tree-merged with extends and strict keys"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "Safety model",
+      "items": [
+        "Mutating commands need root and a non-blocking flock on /run/rootfiles.lock; dry runs are exempt",
+        "Real mutating runs log JSON to /var/log/rootfiles.log; files the Runner writes, renames or removes are backed up first, commands it runs are not",
+        "rollback restores only those Runner backups; the update binary swap, the GPU db rename, packages, users and services are not reverted",
+        "--force overrides guards such as SSH lockout protection"
       ]
     },
     {
       "dot": "violet",
-      "title": "GPU allocation",
+      "title": "Direct operations",
       "items": [
-        "gpu module keeps allocations in <home-base>/.rootfiles/gpu-allocations.json",
-        "syscall.Flock LOCK_EX plus tmp-and-rename serializes concurrent assign and revoke",
-        "rootfiles gpu assign/revoke call the gpu module directly; RunAll re-applies env, cgroup and Docker wrapper"
+        "<home-base>/.rootfiles/users.json records user add, key and quota changes and drops the entry on del; lock, expire and rehome are not recorded",
+        "gpu assign and revoke update gpu-allocations.json under flock with an atomic rename; gpu mig status is read-only",
+        "tunnel setup installs the cloudflared service and systemd VLAN units; the cloudflared module also converges them on apply"
       ]
     },
     {
       "dot": "emerald",
-      "title": "Tunnel and reporting",
+      "title": "Reports and updates",
       "items": [
-        "cloudflared module installs daemon plus systemd vlan network units",
-        "rootfiles tunnel update --check compares installed and upstream cloudflared without downloading",
-        "internal/ui renders styled status sections with stable marks"
+        "schedule enable installs rootfiles-check.timer, which writes check.json and doctor.json to the state dir",
+        "check and doctor also emit Prometheus text for the node_exporter textfile collector",
+        "update replaces the binary with a GitHub release after verifying checksums.txt; cloudflared binaries also come from GitHub releases"
       ]
     }
   ]
