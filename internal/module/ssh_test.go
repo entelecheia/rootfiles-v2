@@ -274,3 +274,14 @@ func TestPasswordOnlyAccounts(t *testing.T) {
 		t.Errorf("unknown shadow: got %v, %v; want [bob], false", got, known)
 	}
 }
+
+func TestSSHModule_LockoutGuardUnreadableShadow(t *testing.T) {
+	fakePasswd(t, "alice")
+	shadowPath = filepath.Join(t.TempDir(), "absent")
+	rc := newDryRunRC(t)
+	rc.Config.SSH = config.SSHConfig{DisablePasswordAuth: true}
+	err := NewSSHModule().lockoutGuard(rc)
+	if err == nil || !strings.Contains(err.Error(), "shadow") || !strings.Contains(err.Error(), "bob") {
+		t.Errorf("unreadable shadow: want a conservative error naming bob, got %v", err)
+	}
+}

@@ -113,7 +113,11 @@ func (m *SSHModule) lockoutGuard(rc *RunContext) error {
 		}
 		return fmt.Errorf("disabling password auth, but no account has an SSH authorized key")
 	}
-	if stranded := strandedPasswordAccounts(rc); len(stranded) > 0 {
+	if stranded, known := strandedPasswordAccounts(rc); len(stranded) > 0 {
+		if !known {
+			return fmt.Errorf("cannot read the shadow file (run as root); accounts without an authorized key may lose access: %s",
+				strings.Join(stranded, ", "))
+		}
 		return fmt.Errorf("disabling password auth would lock out password-only accounts: %s (add their keys or list them in ssh.password_auth_users)",
 			strings.Join(stranded, ", "))
 	}
@@ -121,8 +125,9 @@ func (m *SSHModule) lockoutGuard(rc *RunContext) error {
 }
 
 // strandedPasswordAccounts lists password-only accounts that neither get a
-// declared key nor stay on the password_auth_users exception list.
-func strandedPasswordAccounts(rc *RunContext) []string {
+// declared key nor stay on the password_auth_users exception list. known is
+// false when the shadow file was unreadable (see passwordOnlyAccounts).
+func strandedPasswordAccounts(rc *RunContext) ([]string, bool) {
 	keep := map[string]bool{}
 	for _, n := range declaredKeyAccounts(rc) {
 		keep[n] = true
@@ -130,14 +135,14 @@ func strandedPasswordAccounts(rc *RunContext) []string {
 	for _, n := range rc.Config.SSH.PasswordAuthUsers {
 		keep[n] = true
 	}
-	pwOnly, _ := passwordOnlyAccounts()
+	pwOnly, known := passwordOnlyAccounts()
 	var out []string
 	for _, n := range pwOnly {
 		if !keep[n] {
 			out = append(out, n)
 		}
 	}
-	return out
+	return out, known
 }
 
 // declaredKeyAccounts lists users.accounts entries with SSH keys. The
