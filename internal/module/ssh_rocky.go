@@ -136,7 +136,10 @@ func rockyFirewallAllowsSSH(ctx context.Context, rc *RunContext, port int) (bool
 		if !known {
 			return false, fmt.Errorf("installed UFW returned an unrecognized status before changing SSH port")
 		}
-		if active && !parseUFWStatus(res.Stdout).Allowed[port] {
+		if active && port == 22 && !parseUFWStatus(res.Stdout).Allowed[port] {
+			return false, nil
+		}
+		if active && port != 22 && !ufwAllowsUnrestrictedTCPPort(res.Stdout, port) {
 			return false, nil
 		}
 	}
@@ -175,13 +178,17 @@ func rockyFirewallAllowsSSH(ctx context.Context, rc *RunContext, port int) (bool
 		}
 		activeZones = []string{zone}
 	}
+	allZonesAllow := true
 	for _, zone := range activeZones {
 		allowed, err := queryFirewalldBoolean(ctx, rc, "--zone", zone, "--query-port", strconv.Itoa(port)+"/tcp")
 		if err != nil {
 			return false, fmt.Errorf("cannot verify firewalld allowance for SSH port %d in zone %s: %w", port, zone, err)
 		}
 		if allowed {
-			return true, nil
+			if port == 22 {
+				return true, nil
+			}
+			continue
 		}
 		if port == 22 {
 			serviceAllowed, serviceErr := queryFirewalldBoolean(ctx, rc, "--zone", zone, "--query-service", "ssh")
@@ -192,8 +199,42 @@ func rockyFirewallAllowsSSH(ctx context.Context, rc *RunContext, port int) (bool
 				return true, nil
 			}
 		}
+		allZonesAllow = false
 	}
-	return false, nil
+	if port == 22 {
+		return false, nil
+	}
+	return allZonesAllow, nil
+}
+
+func ufwAllowsUnrestrictedTCPPort(out string, port int) bool {
+	ipv4Allowed, ipv6Allowed := false, false
+	for _, line := range strings.Split(out, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 3 || fields[0] != strconv.Itoa(port)+"/tcp" {
+			continue
+		}
+		ipv6Target := fields[1] == "(v6)"
+		actionIndex := 1
+		if ipv6Target {
+			actionIndex = 2
+		}
+		if len(fields) <= actionIndex+1 || fields[actionIndex] != "ALLOW" {
+			continue
+		}
+		sourceFields := fields[actionIndex+1:]
+		if len(sourceFields) > 0 && sourceFields[0] == "IN" {
+			sourceFields = sourceFields[1:]
+		}
+		source := strings.Join(sourceFields, " ")
+		if !ipv6Target && source == "Anywhere" {
+			ipv4Allowed = true
+		}
+		if ipv6Target && source == "Anywhere (v6)" {
+			ipv6Allowed = true
+		}
+	}
+	return ipv4Allowed && ipv6Allowed
 }
 
 func parseUFWActivity(out string) (active, known bool) {

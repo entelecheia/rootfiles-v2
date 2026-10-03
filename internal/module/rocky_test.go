@@ -207,6 +207,24 @@ func TestRockyFirewallAllowsSSHKnownInactiveAndExistingAllowance(t *testing.T) {
 			t.Fatalf("existing firewalld allowance returned allowed=%t err=%v", allowed, err)
 		}
 	})
+	t.Run("every active zone allows requested port", func(t *testing.T) {
+		dir := t.TempDir()
+		script := "#!/bin/sh\ncase \"$1:$2:$3\" in\n--state::) echo running;;\n--get-active-zones::) printf 'public (active)\\nmgmt (active)\\n';;\n--zone:public:--query-port|--zone:mgmt:--query-port) echo yes;;\nesac\n"
+		writeRockyFirewallFake(t, dir, script)
+		allowed, err := rockyFirewallAllowsSSH(context.Background(), newDryRunRC(t), 2222)
+		if err != nil || !allowed {
+			t.Fatalf("all active zones allowed returned allowed=%t err=%v", allowed, err)
+		}
+	})
+	t.Run("one active zone denies requested port", func(t *testing.T) {
+		dir := t.TempDir()
+		script := "#!/bin/sh\ncase \"$1:$2:$3\" in\n--state::) echo running;;\n--get-active-zones::) printf 'public (active)\\nmgmt (active)\\n';;\n--zone:public:--query-port) echo yes;;\n--zone:mgmt:--query-port) echo no; exit 1;;\nesac\n"
+		writeRockyFirewallFake(t, dir, script)
+		allowed, err := rockyFirewallAllowsSSH(context.Background(), newDryRunRC(t), 2222)
+		if err != nil || allowed {
+			t.Fatalf("one denied active zone returned allowed=%t err=%v", allowed, err)
+		}
+	})
 }
 
 func TestRockyFirewallAllowsSSHRejectsUntrustedBooleanOutput(t *testing.T) {
@@ -243,7 +261,7 @@ func TestRockyFirewallAllowsSSHFailClosedOnUnknownUFWStatus(t *testing.T) {
 
 func TestRockyFirewallAllowsSSHExistingUFWAllowance(t *testing.T) {
 	dir := t.TempDir()
-	script := "#!/bin/sh\nprintf 'Status: active\\nTo Action From\\n2222/tcp ALLOW Anywhere\\n'\n"
+	script := "#!/bin/sh\nprintf 'Status: active\\nTo Action From\\n2222/tcp ALLOW Anywhere\\n2222/tcp (v6) ALLOW Anywhere (v6)\\n'\n"
 	if err := os.WriteFile(filepath.Join(dir, "ufw"), []byte(script), 0755); err != nil {
 		t.Fatal(err)
 	}
@@ -251,6 +269,53 @@ func TestRockyFirewallAllowsSSHExistingUFWAllowance(t *testing.T) {
 	allowed, err := rockyFirewallAllowsSSH(context.Background(), newDryRunRC(t), 2222)
 	if err != nil || !allowed {
 		t.Fatalf("existing UFW allowance returned allowed=%t err=%v", allowed, err)
+	}
+}
+
+func TestRockyFirewallRequiresUnrestrictedUFWAllowance(t *testing.T) {
+	t.Run("source limited is not enough", func(t *testing.T) {
+		dir := t.TempDir()
+		script := "#!/bin/sh\nprintf 'Status: active\\nTo Action From\\n2222/tcp ALLOW 10.0.0.0/8\\n'\n"
+		if err := os.WriteFile(filepath.Join(dir, "ufw"), []byte(script), 0755); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("PATH", dir)
+		allowed, err := rockyFirewallAllowsSSH(context.Background(), newDryRunRC(t), 2222)
+		if err != nil || allowed {
+			t.Fatalf("source-limited UFW allowance returned allowed=%t err=%v", allowed, err)
+		}
+	})
+	t.Run("unrestricted TCP allowance", func(t *testing.T) {
+		dir := t.TempDir()
+		script := "#!/bin/sh\nprintf 'Status: active\\nTo Action From\\n2222/tcp ALLOW Anywhere\\n2222/tcp (v6) ALLOW Anywhere (v6)\\n'\n"
+		if err := os.WriteFile(filepath.Join(dir, "ufw"), []byte(script), 0755); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("PATH", dir)
+		allowed, err := rockyFirewallAllowsSSH(context.Background(), newDryRunRC(t), 2222)
+		if err != nil || !allowed {
+			t.Fatalf("unrestricted UFW allowance returned allowed=%t err=%v", allowed, err)
+		}
+	})
+	for _, tc := range []struct {
+		name string
+		rows string
+	}{
+		{name: "IPv4 only", rows: "2222/tcp ALLOW Anywhere\\n"},
+		{name: "IPv6 only", rows: "2222/tcp (v6) ALLOW Anywhere (v6)\\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			script := "#!/bin/sh\nprintf 'Status: active\\nTo Action From\\n" + tc.rows + "'\n"
+			if err := os.WriteFile(filepath.Join(dir, "ufw"), []byte(script), 0755); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("PATH", dir)
+			allowed, err := rockyFirewallAllowsSSH(context.Background(), newDryRunRC(t), 2222)
+			if err != nil || allowed {
+				t.Fatalf("family-limited UFW allowance returned allowed=%t err=%v", allowed, err)
+			}
+		})
 	}
 }
 
