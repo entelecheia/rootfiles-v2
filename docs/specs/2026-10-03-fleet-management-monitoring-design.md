@@ -1,6 +1,7 @@
 # Fleet management and monitoring
 
-Status: proposed, tracked in #13 (no implementation branch yet)
+Status: approved for implementation by owner on 2026-10-03, tracked in #13
+Implementation branch: feat/13-fleet-monitoring
 Date: 2026-10-03
 
 ## Problem
@@ -126,6 +127,11 @@ hosts:
 - `fleet status` also works where rootfiles is missing: it falls back to a
   fixed probe (hostname, `/etc/os-release`, uptime, `rootfiles --version`),
   so a host that still needs bootstrapping shows up as such.
+- When an inventory supplies a site config, the controller compares its resolved,
+  environment-independent canonical fingerprint with `applied_config_sha256` in
+  the fixed read-only JSON response. A mismatch reports configuration drift; a
+  missing fingerprint reports unverified configuration rather than success.
+  The controller cannot pass arbitrary `--config` paths through the sudo rule.
 - Each host lands in one of: `ok`, `drift` (exit 2 from `check`), `findings`
   (exit 2 from `doctor`), `needs-privilege` (sudo required a password),
   `unreachable` (ssh exit 255 or timeout), `error`.
@@ -163,7 +169,11 @@ users:
 
 `rootfiles fleet apply|update|bootstrap|schedule [selection] --yes [--dry-run]`
 
-- `apply` pipes the host's site config to `rootfiles apply --yes --config -`.
+- `apply` resolves profile and file-based inheritance locally without operator
+  environment overrides, then sends the effective configuration on stdin. A real
+  rollout persists it as a stable root-owned configuration before invoking
+  `rootfiles apply --yes --config <managed-path>`, so later check/status/doctor
+  use the applied configuration. Dry-run uses stdin without persisting a file.
   Configs with an inline `tunnel_token` are refused; use `tunnel_token_file`.
 - `update` runs the remote `rootfiles update` (optionally `--version`).
 - `bootstrap` installs rootfiles on a host that lacks it, through the release
@@ -221,7 +231,7 @@ modules:
       enabled: true
       data_dir: /data/monitoring
       retention: 30d
-      targets_file: /etc/rootfiles/monitoring/targets.json
+      targets_file: /etc/rootfiles/monitoring/discovery/targets.json
       alert_receiver_file: /etc/rootfiles/monitoring/receiver.yaml   # root-only 0600
       listen_address: 127.0.0.1    # default; UIs reachable only on the hub itself
       grafana_port: 3000
@@ -243,13 +253,15 @@ modules:
 - Scrape targets come from Prometheus `file_sd`. `rootfiles fleet targets`
   renders them from the inventory (`address`, groups as labels, exporter ports
   from each host's site config), and `rootfiles fleet targets --push <hub>`
-  writes them to the hub through the same SSH path. Prometheus reloads
+  writes them atomically to an isolated discovery directory on the hub through
+  the same SSH path. Mount the directory, rather than one file, so atomic file
+  replacements are visible inside the container without exposing secret files. Prometheus reloads
   `file_sd` without a restart.
 - The alerting rules are embedded, versioned with the binary, and kept small:
   - Target down for 5 minutes.
   - Filesystem above 90 percent.
   - Drift and doctor failures (`rootfiles_module_satisfied`,
-    `rootfiles_doctor_check_ok`), plus a stale-report rule on
+    `rootfiles_doctor_findings{level="fail"}`), plus a stale-report rule on
     `rootfiles_check_timestamp_seconds`, from the textfile metrics the
     `schedule` timer already publishes.
   - GPU XID errors, uncorrectable ECC errors, and sustained temperature above
