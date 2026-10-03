@@ -25,6 +25,7 @@ Observed on one operator fleet (verified 2026-10-03, 10 reachable hosts):
 | Host firewall (UFW or firewalld) active | 0 of 10 |
 | DCGM present | 4 of 10 (datacenter-class GPU hosts; the older workstation-class GPU hosts have none) |
 | Docker present | 7 of 10 |
+| An unmanaged Prometheus, Grafana and dcgm-exporter already on the default ports (9090, 9400) | 1 of 10 |
 
 The fleet mixes Ubuntu 20.04, 22.04 and 24.04 (DGX OS included) with Rocky
 Linux 8, and part of it is reachable only through a jump host. A GPU node in
@@ -64,6 +65,11 @@ GPU-level metrics.
 | Mutating fleet commands run one host at a time and stop at the first failure | user | Parallelism only for read-only commands | Rollout time becomes the bottleneck |
 | Monitoring uses Prometheus, Alertmanager, Grafana and NVIDIA DCGM Exporter. rootfiles installs and configures them; it does not reimplement metrics or alerting | user | Images and versions pinned in profile defaults | - |
 | Rocky Linux hosts get read-only fleet reporting first; mutating rollout and exporters on Rocky wait for the capability layer in #12 | AI proposes, user picks | Unsupported host and module combinations fail before mutation with an explanation | #12 lands |
+
+- 2026-10-03: Read-only fleet commands get passwordless privilege through a sudoers drop-in that allows only the exact `status`, `check` and `doctor` command lines, managed by the `users` module. Mutating commands keep requiring a root login or full sudo. Basis: owner decision on #13.
+- 2026-10-03: Hub web UIs (Grafana, Prometheus, Alertmanager) bind to loopback by default. External access goes only through a Cloudflare Tunnel on the hub, never through an opened port. Basis: owner decision on #13.
+- 2026-10-03: A perimeter firewall with an open internal segment is a supported deployment. `monitoring.perimeter_firewall: true` records it, so exporters need no host firewall rule there. Basis: owner decision on #13.
+- 2026-10-03: All exporter and hub ports are configurable, keep upstream defaults, and are checked for conflicts before apply. Basis: owner decision on #13; one observed host already holds 9090 and 9400 (verified 2026-10-03).
 
 Rejected alternatives:
 
@@ -114,8 +120,9 @@ hosts:
 `rootfiles fleet status|check|doctor [selection] [-o text|json]`
 
 - For each host, in parallel (bounded by `--parallel`), run
-  `ssh -- <dest> rootfiles <cmd> -o json`, prefixed with `sudo -n` when the
-  host's `sudo` is `nopasswd`.
+  `ssh -- <dest> /usr/local/bin/rootfiles <cmd> -o json`, prefixed with
+  `sudo -n` when the host's `sudo` is `nopasswd`. The absolute path matches
+  the sudoers rule below and does not depend on the remote `secure_path`.
 - `fleet status` also works where rootfiles is missing: it falls back to a
   fixed probe (hostname, `/etc/os-release`, uptime, `rootfiles --version`),
   so a host that still needs bootstrapping shows up as such.
@@ -126,6 +133,31 @@ hosts:
   `-o json` emits the per-host results with the remote JSON embedded verbatim.
 - Exit code: 0 when every selected host is `ok`, 2 when any host is in another
   state, 1 for controller or inventory errors. This matches `check`.
+
+### Read-only privilege (phase 1)
+
+```yaml
+users:
+  fleet_sudo_users: [ops]
+```
+
+- The `users` module writes `/etc/sudoers.d/rootfiles-fleet` with one
+  `Cmnd_Alias` that lists exactly
+  `/usr/local/bin/rootfiles status -o json`,
+  `/usr/local/bin/rootfiles check -o json` and
+  `/usr/local/bin/rootfiles doctor -o json`, and grants it `NOPASSWD` to the
+  listed users. No wildcards: `--config` or other arguments are not allowed,
+  so the rule cannot be used to read arbitrary files as root.
+- The drop-in goes through the existing `writeSudoers` path (temporary name,
+  `visudo -cf`, then rename).
+- Check refuses to write the rule when the binary is not root-owned or is
+  group- or world-writable, because a writable binary behind a `NOPASSWD`
+  rule is a root shell.
+- sudo applies the last matching rule, and both Ubuntu and Rocky read
+  `/etc/sudoers.d` after the group rules, so the `NOPASSWD` entry wins for the
+  three commands only. Apply verifies the effect with
+  `sudo -l -U <user>` instead of trusting the file contents.
+- An empty list removes the drop-in.
 
 ### Rollout (phase 2)
 
@@ -152,8 +184,11 @@ modules:
   monitoring:
     node_exporter: true
     dcgm_exporter: true            # GPU hosts only
+    node_exporter_port: 9100       # default
+    dcgm_exporter_port: 9400       # default
     listen_address: 10.0.0.11      # empty = all interfaces
     allow_from: [10.0.0.5/32]      # monitoring hub
+    perimeter_firewall: false      # true: a network firewall already blocks outside access
 ```
 
 - `dcgm_exporter` runs NVIDIA's dcgm-exporter container through Docker and the
@@ -165,11 +200,15 @@ modules:
   the observed fleet is R535 (verified 2026-10-03); compatibility is checked
   per branch during implementation.
 - `listen_address` binds node_exporter and dcgm-exporter to one address.
+- Check fails, before any change, when a configured port is already held by a
+  process rootfiles does not manage, and names the holder when it can (for
+  example an existing exporter container). The operator picks another port or
+  retires the other service.
 - `allow_from` adds source-restricted firewall rules for the exporter ports
   when the host firewall is active. rootfiles does not turn a firewall on as a
   side effect; that stays with the `network` module.
-- `doctor` warns when an exporter listens on a non-private address while no
-  host firewall restricts it.
+- `doctor` warns when an exporter listens on a non-private address while
+  neither a host firewall rule nor `perimeter_firewall: true` covers it.
 
 ### Monitoring hub (phase 4)
 
@@ -184,11 +223,23 @@ modules:
       retention: 30d
       targets_file: /etc/rootfiles/monitoring/targets.json
       alert_receiver_file: /etc/rootfiles/monitoring/receiver.yaml   # root-only 0600
+      listen_address: 127.0.0.1    # default; UIs reachable only on the hub itself
+      grafana_port: 3000
+      prometheus_port: 9090
+      alertmanager_port: 9093
 ```
 
 - Prometheus, Alertmanager and Grafana run as containers from one generated
   compose file under one systemd unit, with pinned images and bind-mounted data
   under `data_dir`.
+- The UIs publish on `listen_address` (loopback by default). Prometheus and
+  Alertmanager talk over the compose network, and scraping is outbound, so the
+  loopback binding does not affect collection. The same port-conflict check
+  as the exporters applies.
+- External access goes through a Cloudflare Tunnel on the hub (the existing
+  `cloudflared` module with `tunnel_token_file`). The public hostname for
+  Grafana and its access policy are set on the Cloudflare side; rootfiles only
+  documents the expected origin (`http://127.0.0.1:<grafana_port>`).
 - Scrape targets come from Prometheus `file_sd`. `rootfiles fleet targets`
   renders them from the inventory (`address`, groups as labels, exporter ports
   from each host's site config), and `rootfiles fleet targets --push <hub>`
@@ -212,7 +263,11 @@ modules:
 ### Security
 
 - No new listening service on managed hosts except the exporters, and those
-  bind to `listen_address` when set.
+  bind to `listen_address` when set. Hub UIs bind to loopback unless the
+  operator sets another address, and are published externally only through
+  Cloudflare.
+- The only passwordless privilege the feature adds is the read-only sudoers
+  rule, limited to three exact command lines.
 - OpenSSH hands the remote command to the remote shell as one string, so the
   remote command line holds only fixed tokens and validated values (for
   example a version matching `vX.Y.Z`), each shell-quoted. Site configs travel
@@ -228,10 +283,10 @@ modules:
 
 | Phase | Sub-issue scope | Depends on |
 |---|---|---|
-| 1 | Inventory, `fleet status/check/doctor` | - |
+| 1 | Inventory, `fleet status/check/doctor`, read-only sudoers rule | - |
 | 2 | `fleet apply/update/bootstrap/schedule` | 1 |
-| 3 | `dcgm_exporter`, `listen_address`, `allow_from`, doctor exposure check | - (Rocky: #12) |
-| 4 | Monitoring hub, `fleet targets`, embedded alert rules | 1, 3 |
+| 3 | `dcgm_exporter`, ports and conflict check, `listen_address`, `allow_from`, `perimeter_firewall`, doctor exposure check | - (Rocky: #12) |
+| 4 | Monitoring hub (loopback UIs, Cloudflare origin), `fleet targets`, embedded alert rules | 1, 3 |
 
 Phases 1 and 3 can proceed in parallel.
 
