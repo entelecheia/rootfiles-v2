@@ -34,6 +34,7 @@ var (
 	monitoringHubDatasource  = "/etc/rootfiles/monitoring/grafana-datasource.yaml"
 	monitoringHubSecretCheck = validateOptionalRootSecretFile
 	monitoringHubLstat       = os.Lstat
+	monitoringHubReadDir     = os.ReadDir
 )
 
 // checkMonitoringHub is read-only and is also used by monitoring's aggregate
@@ -264,6 +265,11 @@ func validateMonitoringDiscoveryFilesystem(target string) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("monitoring discovery directory is unsafe: %w", err)
 	}
+	if exists {
+		if err := validateMonitoringDiscoveryContents(dir, target); err != nil {
+			return false, err
+		}
+	}
 	info, err := monitoringHubLstat(target)
 	if errors.Is(err, os.ErrNotExist) {
 		return false, nil
@@ -288,6 +294,20 @@ func validateMonitoringDiscoveryFilesystem(target string) (bool, error) {
 		return false, errors.New("monitoring targets file must be readable by root")
 	}
 	return true, nil
+}
+
+func validateMonitoringDiscoveryContents(dir, target string) error {
+	entries, err := monitoringHubReadDir(dir)
+	if err != nil {
+		return errors.New("cannot inspect monitoring discovery directory contents safely")
+	}
+	allowedName := filepath.Base(target)
+	for _, entry := range entries {
+		if entry.Name() != allowedName {
+			return errors.New("monitoring discovery directory contains unexpected entries; only the configured targets file is permitted")
+		}
+	}
+	return nil
 }
 
 func validateTrustedMonitoringDirectoryPath(path string) (bool, error) {

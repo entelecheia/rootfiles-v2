@@ -612,6 +612,8 @@ The managed collector file selects only temperature, utilization, framebuffer us
 
 The opt-in monitoring hub runs Prometheus, Alertmanager and Grafana on one Docker host. It reads scrape targets from Prometheus file discovery; `rootfiles fleet targets --push <hub>` replaces that target file atomically, and Prometheus reloads it from the mounted discovery directory without restarting the containers.
 
+The discovery directory must contain only the configured targets file. Check and Apply refuse other entries before mounting the directory, including credentials, symlinks, subdirectories and temporary staging files. A check that overlaps an atomic target push can be retried after the rename completes.
+
 Hub web ports bind to `127.0.0.1` by default. For remote Grafana access, route a Cloudflare Tunnel to `http://127.0.0.1:<grafana_port>` and apply the access policy in Cloudflare. The hub does not open a public port. Prometheus, Alertmanager and Grafana use the pinned profile images. The generated administrator password is stored in a root-only file; no default password is used.
 
 The hub stores persistent data below `data_dir`. Existing data directories must be real root-owned directories with root read/write/execute permission; rootfiles refuses directories that do not meet this requirement and leaves existing ownership and contents untouched.

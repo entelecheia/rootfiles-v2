@@ -468,7 +468,12 @@ func TestMonitoringHubDataDirectoryRequiresRootWritableDirectory(t *testing.T) {
 
 func TestMonitoringHubDiscoveryFilesystemTrustsOnlyRootOwnedNonsymlinkParents(t *testing.T) {
 	oldLstat := monitoringHubLstat
-	t.Cleanup(func() { monitoringHubLstat = oldLstat })
+	oldReadDir := monitoringHubReadDir
+	t.Cleanup(func() {
+		monitoringHubLstat = oldLstat
+		monitoringHubReadDir = oldReadDir
+	})
+	monitoringHubReadDir = func(string) ([]os.DirEntry, error) { return []os.DirEntry{}, nil }
 
 	standardDir := "/etc/rootfiles/monitoring/discovery"
 	standardTarget := filepath.Join(standardDir, "targets.json")
@@ -534,6 +539,63 @@ func TestMonitoringHubDiscoveryFilesystemTrustsOnlyRootOwnedNonsymlinkParents(t 
 	if _, err := validateMonitoringDiscoveryFilesystem(target); err == nil || !strings.Contains(err.Error(), "regular file") {
 		t.Fatalf("symlink target file should be refused, got %v", err)
 	}
+}
+
+func TestMonitoringDiscoveryDirectoryContainsOnlyTargetsFile(t *testing.T) {
+	t.Run("configured target only", func(t *testing.T) {
+		dir := t.TempDir()
+		target := filepath.Join(dir, "targets.json")
+		if err := os.WriteFile(target, []byte("[]\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := validateMonitoringDiscoveryContents(dir, target); err != nil {
+			t.Fatalf("target-only directory rejected: %v", err)
+		}
+	})
+
+	t.Run("credential sibling", func(t *testing.T) {
+		dir := t.TempDir()
+		target := filepath.Join(dir, "targets.json")
+		if err := os.WriteFile(target, []byte("[]\n"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "credentials.pem"), []byte("test credential"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if err := validateMonitoringDiscoveryContents(dir, target); err == nil {
+			t.Fatal("credential sibling was accepted for a directory bind mount")
+		}
+	})
+
+	t.Run("symlink and directory siblings", func(t *testing.T) {
+		for _, name := range []string{"secret-link", "subdirectory", "targets.json.tmp.ABC"} {
+			t.Run(name, func(t *testing.T) {
+				dir := t.TempDir()
+				target := filepath.Join(dir, "targets.json")
+				if err := os.WriteFile(target, []byte("[]\n"), 0600); err != nil {
+					t.Fatal(err)
+				}
+				entry := filepath.Join(dir, name)
+				switch name {
+				case "secret-link":
+					if err := os.Symlink(filepath.Join(t.TempDir(), "outside-secret"), entry); err != nil {
+						t.Fatal(err)
+					}
+				case "subdirectory":
+					if err := os.Mkdir(entry, 0700); err != nil {
+						t.Fatal(err)
+					}
+				default:
+					if err := os.WriteFile(entry, []byte("staging"), 0600); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if err := validateMonitoringDiscoveryContents(dir, target); err == nil {
+					t.Fatalf("unexpected sibling %q was accepted", name)
+				}
+			})
+		}
+	})
 }
 
 func TestMonitoringHubUsesDiscoveryDirectoryForAtomicTargetReplacement(t *testing.T) {
