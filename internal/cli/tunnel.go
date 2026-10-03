@@ -209,8 +209,9 @@ func buildRunContext(cmd *cobra.Command) (*module.RunContext, error) {
 		logger.Warn("system detection failed, using defaults", "err", sysErr)
 	}
 	cfg, cfgErr := config.LoadWithHomeBase(profileName, "", sysInfo, homeBaseFlag(cmd))
-	if errors.Is(cfgErr, config.ErrAmbiguousHomeBase) {
-		// Guessing would read and write the wrong user and GPU databases.
+	if errors.Is(cfgErr, config.ErrAmbiguousHomeBase) || (cfgErr != nil && homeBaseFlag(cmd) != "") {
+		// Guessing, or dropping the profile under an explicit --home-base,
+		// would read and write the wrong user and GPU databases.
 		return nil, cfgErr
 	}
 	if cfgErr != nil {

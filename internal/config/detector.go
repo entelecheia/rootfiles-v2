@@ -175,19 +175,25 @@ func defaultHomeBase(sys *SystemInfo) string {
 	}
 	if ResolveDistro(sys).PackageBackend == "apt" {
 		for _, mount := range dataDriveMounts {
-			// The last /proc/mounts entry for a path is the visible one.
-			fsType := ""
-			for _, m := range sys.StorageLayout {
-				if m.MountPath == mount {
-					fsType = m.FSType
-				}
-			}
-			if homeFS[fsType] && rootOnlyBase(mount+"/home") {
+			fsType, homeType := lastMountFS(sys, mount), lastMountFS(sys, mount+"/home")
+			if homeFS[fsType] && (homeType == "" || homeFS[homeType]) && rootOnlyBase(mount+"/home") {
 				return mount + "/home"
 			}
 		}
 	}
 	return "/home"
+}
+
+// lastMountFS returns the filesystem type of the visible (last) mount at
+// path, or "" when nothing is mounted there.
+func lastMountFS(sys *SystemInfo, path string) string {
+	fsType := ""
+	for _, m := range sys.StorageLayout {
+		if m.MountPath == path {
+			fsType = m.FSType
+		}
+	}
+	return fsType
 }
 
 // ErrAmbiguousHomeBase means detection found rootfiles metadata under a
@@ -202,9 +208,14 @@ func detectHomeBase(sys *SystemInfo) (string, error) {
 		if other == hb || !rootOnlyBase(other) {
 			continue
 		}
-		for _, f := range []string{"users.json", "gpu-allocations.json"} {
-			path := filepath.Join(other, ".rootfiles", f)
-			if _, err := os.Lstat(filepath.Join(hostRoot, path)); err == nil {
+		// A regular .rootfiles file is the legacy flat users DB.
+		for _, path := range []string{
+			filepath.Join(other, ".rootfiles", "users.json"),
+			filepath.Join(other, ".rootfiles", "gpu-allocations.json"),
+			filepath.Join(other, ".rootfiles"),
+		} {
+			fi, err := os.Lstat(filepath.Join(hostRoot, path))
+			if err == nil && fi.Mode().IsRegular() {
 				return "", fmt.Errorf("users.home_base: %w: detected %s, but %s exists; set users.home_base, ROOTFILES_HOME_BASE or --home-base", ErrAmbiguousHomeBase, hb, path)
 			}
 		}

@@ -587,6 +587,16 @@ func TestLoad_AmbiguousHomeBase(t *testing.T) {
 			t.Errorf("got %v, err=%v", cfg, err)
 		}
 	})
+	t.Run("legacy flat .rootfiles file", func(t *testing.T) {
+		root := isolateHomeDetection(t, "HOME=/raid/home\n", "")
+		t.Setenv("ROOTFILES_HOME_BASE", "")
+		if err := os.WriteFile(filepath.Join(root, "home", ".rootfiles"), []byte("{}"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Load("minimal", "", sys); !errors.Is(err, ErrAmbiguousHomeBase) {
+			t.Errorf("Load error = %v, want ambiguous home base", err)
+		}
+	})
 	t.Run("untrusted base ignored", func(t *testing.T) {
 		root := isolateHomeDetection(t, "", "")
 		t.Setenv("ROOTFILES_HOME_BASE", "")
@@ -607,6 +617,10 @@ func TestDefaultHomeBase_LastMountEntryWins(t *testing.T) {
 	}
 	if got := defaultHomeBase(&SystemInfo{OS: "ubuntu", StorageLayout: []MountPoint{nfs, local}}); got != "/data/home" {
 		t.Errorf("NFS under local disk: got %q, want /data/home", got)
+	}
+	nestedNFS := MountPoint{Device: "nas:/home", MountPath: "/data/home", FSType: "nfs4"}
+	if got := defaultHomeBase(&SystemInfo{OS: "ubuntu", StorageLayout: []MountPoint{local, nestedNFS}}); got != "/home" {
+		t.Errorf("NFS mounted at /data/home: got %q, want /home", got)
 	}
 }
 

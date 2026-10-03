@@ -51,7 +51,7 @@ func runStatus(cmd *cobra.Command, _ []string) error {
 	last, lastErr := state.Last()
 	active, configPath := resolveTarget(cmd, sysInfo)
 
-	cfg, cfgErr := config.Load(active, configPath, sysInfo)
+	cfg, cfgErr := config.LoadWithHomeBase(active, configPath, sysInfo, homeBaseFlag(cmd))
 	if cfg == nil {
 		cfg = &config.Config{}
 	}
