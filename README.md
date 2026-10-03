@@ -3,7 +3,9 @@
 [![Test](https://github.com/entelecheia/rootfiles-v2/actions/workflows/test.yaml/badge.svg)](https://github.com/entelecheia/rootfiles-v2/actions/workflows/test.yaml)
 [![Release](https://img.shields.io/github/v/release/entelecheia/rootfiles-v2)](https://github.com/entelecheia/rootfiles-v2/releases/latest)
 
-Server bootstrapping for Ubuntu, NVIDIA DGX OS and Rocky Linux core profiles. Single binary, declarative host configuration, and an SSH fleet controller for Linux and macOS.
+Server bootstrapping for Ubuntu, NVIDIA DGX OS and Rocky Linux core profiles. Single binary, declarative host configuration, and an SSH fleet controller.
+
+Managed hosts must run Linux; macOS is not a supported host OS. The macOS build exists only so an operator can run the fleet controller and read-only commands from a Mac, and native host changes such as `apply` are refused there.
 
 ## What it does
 
