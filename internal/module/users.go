@@ -66,8 +66,12 @@ func LoadUsersDB(rc *RunContext) (*UsersDB, error) {
 // useraddDefaultsFile holds useradd's default HOME; tests redirect it.
 var useraddDefaultsFile = "/etc/default/useradd"
 
-// homeBaseOwner is the uid that must own a custom home base; tests stub it.
-var homeBaseOwner uint32 = 0
+// homeBaseRoot is where the ownership walk of a custom home base starts and
+// homeBaseOwner the uid that must own it; tests stub both.
+var (
+	homeBaseRoot         = "/"
+	homeBaseOwner uint32 = 0
+)
 
 // checkHomeBase refuses a custom home base that a user other than root
 // could control, by the same rule as home-base detection: that user could
@@ -76,7 +80,7 @@ func checkHomeBase(base string) error {
 	if base == "" || filepath.Clean(base) == "/home" {
 		return nil
 	}
-	if err := config.RootOnlyBase(base, homeBaseOwner); err != nil {
+	if err := config.RootOnlyBase(homeBaseRoot, base, homeBaseOwner); err != nil {
 		return fmt.Errorf("refusing home base %s: %w; make it a root-owned directory that group and others cannot write", base, err)
 	}
 	return nil
@@ -581,8 +585,12 @@ func RestoreUsers(ctx context.Context, rc *RunContext, backupPath string) error 
 		homeBase = "/home"
 	}
 
-	// Auto-detect backup path
+	// Auto-detect backup path. Its accounts, sudo rights and keys are
+	// trusted only from a base that root alone controls.
 	if backupPath == "" {
+		if err := checkHomeBase(homeBase); err != nil {
+			return err
+		}
 		backupPath = filepath.Join(homeBase, ".rootfiles", "users.json")
 	}
 

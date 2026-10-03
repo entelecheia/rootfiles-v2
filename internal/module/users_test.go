@@ -65,9 +65,11 @@ func TestUsersModule_CheckSyncsUseraddHome(t *testing.T) {
 			oldSudoersDir := sudoersDir
 			sudoersDir = t.TempDir()
 			t.Cleanup(func() { sudoersDir = oldSudoersDir })
-			path := useraddFixture(t, tc.useradd)
+			// /raid stands for a data drive under the test's temp root.
+			raid := filepath.Join(t.TempDir(), "raid")
+			path := useraddFixture(t, strings.ReplaceAll(tc.useradd, "/raid", raid))
 			rc := newDryRunRC(t)
-			rc.Config.Users = config.UsersConfig{HomeBase: tc.homeBase}
+			rc.Config.Users = config.UsersConfig{HomeBase: strings.ReplaceAll(tc.homeBase, "/raid", raid)}
 			result, err := NewUsersModule().Check(context.Background(), rc)
 			if err != nil {
 				t.Fatalf("Check: %v", err)
@@ -212,6 +214,22 @@ func TestUsersModule_RefusesUntrustedHomeBase(t *testing.T) {
 			}
 			return filepath.Join(parent, "home")
 		}, "writable by group or others"},
+		{"world-writable ancestor above a missing parent", func(t *testing.T, parent string) string {
+			if err := os.Chmod(parent, 0o777); err != nil {
+				t.Fatal(err)
+			}
+			return filepath.Join(parent, "team", "home")
+		}, "writable by group or others"},
+		{"world-writable ancestor above a root-owned parent", func(t *testing.T, parent string) string {
+			team := filepath.Join(parent, "team")
+			if err := os.Mkdir(team, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(parent, 0o777); err != nil {
+				t.Fatal(err)
+			}
+			return filepath.Join(team, "home")
+		}, "writable by group or others"},
 		{"symlinked base", func(t *testing.T, parent string) string {
 			base := filepath.Join(parent, "home")
 			if err := os.Symlink(t.TempDir(), base); err != nil {
@@ -266,6 +284,7 @@ func TestUsersModule_RefusesUntrustedHomeBase(t *testing.T) {
 				t.Fatal(err)
 			}
 			wantErr("RestoreUsers", RestoreUsers(ctx, dry, backup))
+			wantErr("RestoreUsers from the base", RestoreUsers(ctx, dry, ""))
 
 			if data, _ := os.ReadFile(path); string(data) != "# HOME=/home\n" {
 				t.Errorf("useradd defaults changed: %q", data)
@@ -282,27 +301,28 @@ func TestUsersModule_AcceptsRootOwnedHomeBase(t *testing.T) {
 	oldSudoersDir := sudoersDir
 	sudoersDir = t.TempDir()
 	t.Cleanup(func() { sudoersDir = oldSudoersDir })
-	useraddFixture(t, "# HOME=/home\n")
 	parent := t.TempDir()
-	base := filepath.Join(parent, "home")
-	for _, dir := range []string{parent, base} {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.Chmod(dir, 0o755); err != nil {
-			t.Fatal(err)
-		}
+	if err := os.Chmod(parent, 0o755); err != nil {
+		t.Fatal(err)
 	}
-	rc := newDryRunRC(t)
-	rc.DryRun = false
-	rc.Runner = exec.NewRunner(false, rc.Runner.Logger)
-	rc.Config.Users = config.UsersConfig{HomeBase: base}
-	result, err := NewUsersModule().Apply(context.Background(), rc)
-	if err != nil || !result.Changed {
-		t.Fatalf("Apply = %+v, %v; want a change", result, err)
+	existing := filepath.Join(parent, "home")
+	if err := os.Mkdir(existing, 0o755); err != nil {
+		t.Fatal(err)
 	}
-	if check, err := NewUsersModule().Check(context.Background(), rc); err != nil || !check.Satisfied {
-		t.Errorf("Check after Apply = %+v, %v; want satisfied", check, err)
+	// Missing directories below a root-owned one are created by root.
+	for _, base := range []string{existing, filepath.Join(parent, "team", "home")} {
+		useraddFixture(t, "# HOME=/home\n")
+		rc := newDryRunRC(t)
+		rc.DryRun = false
+		rc.Runner = exec.NewRunner(false, rc.Runner.Logger)
+		rc.Config.Users = config.UsersConfig{HomeBase: base}
+		result, err := NewUsersModule().Apply(context.Background(), rc)
+		if err != nil || !result.Changed {
+			t.Fatalf("%s: Apply = %+v, %v; want a change", base, result, err)
+		}
+		if check, err := NewUsersModule().Check(context.Background(), rc); err != nil || !check.Satisfied {
+			t.Errorf("%s: Check after Apply = %+v, %v; want satisfied", base, check, err)
+		}
 	}
 }
 

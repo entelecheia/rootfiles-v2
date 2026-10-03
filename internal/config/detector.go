@@ -225,20 +225,32 @@ func detectHomeBase(sys *SystemInfo) (string, error) {
 
 // rootOnlyBase reports whether only root controls base under hostRoot.
 func rootOnlyBase(base string) bool {
-	return RootOnlyBase(filepath.Join(hostRoot, base), rootUID) == nil
+	return RootOnlyBase(hostRoot, filepath.Join(hostRoot, base), rootUID) == nil
 }
 
 // RootOnlyBase returns why a user other than root (uid) could control
-// base: its parent or base itself, where present, is a symlink, not a
-// directory, owned by another uid, or writable by group or others. That
-// user could pre-create or replace the directory new homes go under, for
-// example on a world-writable scratch mount.
-func RootOnlyBase(base string, uid uint32) error {
-	base = filepath.Clean(base)
-	for _, dir := range []string{filepath.Dir(base), base} {
+// base: root or a directory between root and base, as far as they exist, is
+// a symlink, not a directory, owned by another uid, or writable by group or
+// others. That user could pre-create, rename or replace the directory new
+// homes go under, for example on a world-writable scratch mount. Missing
+// directories below the deepest existing one are created by root.
+func RootOnlyBase(root, base string, uid uint32) error {
+	root, base = filepath.Clean(root), filepath.Clean(base)
+	var dirs []string
+	for d := base; ; d = filepath.Dir(d) {
+		dirs = append(dirs, d)
+		if d == root {
+			break
+		}
+		if d == filepath.Dir(d) {
+			return fmt.Errorf("%s is not under %s", base, root)
+		}
+	}
+	for i := len(dirs) - 1; i >= 0; i-- {
+		dir := dirs[i]
 		fi, err := os.Lstat(dir)
-		if os.IsNotExist(err) {
-			continue
+		if os.IsNotExist(err) && dir != root {
+			return nil
 		}
 		if err != nil {
 			return err

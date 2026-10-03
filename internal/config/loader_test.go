@@ -532,6 +532,9 @@ func TestDefaultHomeBase_UntrustedBases(t *testing.T) {
 		{"managed base in world-writable mount", "/data/home", func(t *testing.T, root string) {
 			chmod(t, filepath.Join(root, "data"), 0o1777)
 		}},
+		{"world-writable host root", "", func(t *testing.T, root string) {
+			chmod(t, root, 0o777)
+		}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

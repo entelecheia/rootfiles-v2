@@ -10,10 +10,18 @@ import (
 )
 
 // TestMain lets the test user stand in for root as the owner of custom home
-// bases, which tests create under t.TempDir().
+// bases, which tests create under t.TempDir(): TMPDIR moves to a private
+// directory where the ownership walk starts.
 func TestMain(m *testing.M) {
-	homeBaseOwner = uint32(os.Getuid())
-	os.Exit(m.Run())
+	dir, err := os.MkdirTemp("", "rootfiles-module-test")
+	if err != nil {
+		panic(err)
+	}
+	os.Setenv("TMPDIR", dir)
+	homeBaseRoot, homeBaseOwner = dir, uint32(os.Getuid())
+	code := m.Run()
+	os.RemoveAll(dir)
+	os.Exit(code)
 }
 
 // newDryRunRC returns a RunContext with dry-run Runner and APT. Caller may
