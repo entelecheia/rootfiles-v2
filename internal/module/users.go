@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"os/user"
@@ -82,6 +83,52 @@ func checkHomeBase(base string) error {
 	}
 	if err := config.RootOnlyBase(homeBaseRoot, base, homeBaseOwner); err != nil {
 		return fmt.Errorf("refusing home base %s: %w; / and every existing directory down to the base must be owned by root and not writable by group or others", base, err)
+	}
+	return nil
+}
+
+// warnOut receives the warnings of read-only reports; tests capture it.
+var warnOut io.Writer = os.Stderr
+
+// metaHomeBase is the configured home base, /home when unset.
+func metaHomeBase(rc *RunContext) string {
+	if hb := rc.Config.Users.HomeBase; hb != "" {
+		return hb
+	}
+	return "/home"
+}
+
+// requireTrustedMetadata refuses the user and GPU databases under the home
+// base when a user other than root could control them: checkHomeBase
+// rejects the base, or <base>/.rootfiles is a symlink or a directory such a
+// user owns or can write. That user could plant a symlink at a database
+// path so root overwrites another file, or edit what the databases grant.
+func requireTrustedMetadata(rc *RunContext) error {
+	base := metaHomeBase(rc)
+	if err := checkHomeBase(base); err != nil {
+		return err
+	}
+	meta := filepath.Join(base, ".rootfiles")
+	if fi, err := os.Lstat(meta); os.IsNotExist(err) || (err == nil && fi.Mode().IsRegular()) {
+		return nil // missing, or the legacy flat users database
+	}
+	if err := config.RootOnlyBase(meta, meta, homeBaseOwner); err != nil {
+		return fmt.Errorf("refusing rootfiles metadata in %s: %w", meta, err)
+	}
+	return nil
+}
+
+// warnUntrustedMetadata lets a read-only report go on, naming the reason.
+func warnUntrustedMetadata(rc *RunContext) {
+	if err := requireTrustedMetadata(rc); err != nil {
+		fmt.Fprintf(warnOut, "⚠ %v; this report reads it anyway\n", err)
+	}
+}
+
+// refuseSymlink stops a database write that would follow a symlink.
+func refuseSymlink(path string) error {
+	if fi, err := os.Lstat(path); err == nil && fi.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("refusing to write %s: it is a symlink", path)
 	}
 	return nil
 }
@@ -362,7 +409,7 @@ func AddUser(ctx context.Context, rc *RunContext, username string, pubkeys []str
 	if homeBase == "" {
 		homeBase = "/home"
 	}
-	if err := checkHomeBase(homeBase); err != nil {
+	if err := requireTrustedMetadata(rc); err != nil {
 		return err
 	}
 	homeDir := filepath.Join(homeBase, username)
@@ -441,10 +488,13 @@ func BackupUsers(rc *RunContext, outputPath string) error {
 		homeBase = "/home"
 	}
 
-	// Load existing managed users DB (if any)
+	// Load existing managed users DB (if any). A backup is a restore input,
+	// so the DB of an untrusted base is left out, not just warned about.
 	var db UsersDB
 	dbPath := filepath.Join(homeBase, ".rootfiles", "users.json")
-	if data, err := rc.Runner.ReadFile(dbPath); err == nil {
+	if err := requireTrustedMetadata(rc); err != nil {
+		fmt.Fprintf(warnOut, "⚠ %v; leaving the users database out of the backup\n", err)
+	} else if data, err := rc.Runner.ReadFile(dbPath); err == nil {
 		json.Unmarshal(data, &db)
 	}
 
@@ -588,7 +638,7 @@ func RestoreUsers(ctx context.Context, rc *RunContext, backupPath string) error 
 	// Auto-detect backup path. Its accounts, sudo rights and keys are
 	// trusted only from a base that root alone controls.
 	if backupPath == "" {
-		if err := checkHomeBase(homeBase); err != nil {
+		if err := requireTrustedMetadata(rc); err != nil {
 			return err
 		}
 		backupPath = filepath.Join(homeBase, ".rootfiles", "users.json")
@@ -779,6 +829,7 @@ func RehomeUser(ctx context.Context, rc *RunContext, username string, removeOld 
 
 // ListUsers shows managed users from metadata.
 func ListUsers(rc *RunContext) error {
+	warnUntrustedMetadata(rc)
 	cfg := rc.Config.Users
 	homeBase := cfg.HomeBase
 	if homeBase == "" {
@@ -1094,6 +1145,9 @@ func saveUserMeta(rc *RunContext, username, home, shell string, groups []string,
 
 	data, err := json.MarshalIndent(db, "", "  ")
 	if err != nil {
+		return err
+	}
+	if err := refuseSymlink(dbPath); err != nil {
 		return err
 	}
 	return rc.Runner.WriteFile(dbPath, data, 0600)
