@@ -1,10 +1,11 @@
 package cli
 
 import (
+	"path/filepath"
+
 	"github.com/entelecheia/rootfiles-v2/internal/config"
 	"github.com/entelecheia/rootfiles-v2/internal/exec"
 	"github.com/entelecheia/rootfiles-v2/internal/state"
-	"path/filepath"
 )
 
 // appliedFingerprint only claims provenance for a successful apply of the

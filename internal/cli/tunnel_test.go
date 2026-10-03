@@ -191,6 +191,29 @@ func TestBuildRunContext_ConfigSelection(t *testing.T) {
 	if rc, err := runContextFor(t, buildRunContext, userAdd); err != nil || rc.Config.Users.HomeBase != "/srv/home" {
 		t.Errorf("last applied config: got %+v, err=%v", rc, err)
 	}
+	// A reused config must be one root alone controls and this process can
+	// read; otherwise the subcommand falls back instead of trusting it.
+	for _, mode := range []os.FileMode{0o666, 0o000} {
+		if mode == 0 && os.Geteuid() == 0 {
+			continue // root reads a 0000 file
+		}
+		if err := os.Chmod(site, mode); err != nil {
+			t.Fatal(err)
+		}
+		if rc, err := runContextFor(t, buildRunContext, userAdd); err != nil || rc.Config.Users.DefaultShell == "/bin/sh" {
+			t.Errorf("recorded config with mode %o: got %+v, err=%v; want the fallback profile", mode, rc, err)
+		}
+	}
+	if err := os.Chmod(site, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// A recorded profile is used when no config path was recorded.
+	if err := state.Record(state.Run{Profile: "dgx", Success: true}); err != nil {
+		t.Fatal(err)
+	}
+	if rc, err := runContextFor(t, buildRunContext, userAdd); err != nil || rc.Config.Users.HomeBase != "/raid/home" {
+		t.Errorf("recorded profile: got %+v, err=%v; want the dgx home base", rc, err)
+	}
 	// A relative recorded path is not resolved against the current directory.
 	other := t.TempDir()
 	writeFile(t, filepath.Join(other, "site.yaml"), "extends: minimal\nusers:\n  home_base: /srv/other\n")

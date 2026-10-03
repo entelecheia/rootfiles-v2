@@ -2,6 +2,7 @@ package cli
 
 import (
 	"os"
+	"syscall"
 	"testing"
 )
 
@@ -9,6 +10,15 @@ import (
 // home-base detection against the host, and clears the other config
 // overrides so a developer's shell cannot fail a load.
 func TestMain(m *testing.M) {
+	// Reused configs must be root-owned and below a root-only walk; let the
+	// test user stand in for root under a private TMPDIR.
+	syscall.Umask(0o022)
+	tmp, err := os.MkdirTemp("", "rootfiles-cli-test")
+	if err != nil {
+		panic(err)
+	}
+	os.Setenv("TMPDIR", tmp)
+	configTrustRoot, configOwnerUID = tmp, uint32(os.Getuid())
 	os.Setenv("ROOTFILES_HOME_BASE", "/home")
 	// Config selection falls back to the last applied run; keep it off the host.
 	stateDir, err := os.MkdirTemp("", "rootfiles-cli-state")
@@ -23,5 +33,6 @@ func TestMain(m *testing.M) {
 	}
 	code := m.Run()
 	os.RemoveAll(stateDir)
+	os.RemoveAll(tmp)
 	os.Exit(code)
 }

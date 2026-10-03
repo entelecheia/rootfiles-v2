@@ -94,8 +94,12 @@ func Fallback(sysInfo *SystemInfo, homeBase string) *Config {
 	if homeBase != "" {
 		cfg.Users.HomeBase = homeBase
 	}
-	if !filepath.IsAbs(cfg.Users.HomeBase) {
-		cfg.Users.HomeBase = "" // a relative base is what failed validation
+	// Relative paths fail validation; keep them from resolving against the
+	// current directory.
+	for _, p := range []*string{&cfg.Users.HomeBase, &cfg.Modules.Docker.StorageDir, &cfg.Modules.Storage.DataDir} {
+		if !filepath.IsAbs(*p) {
+			*p = ""
+		}
 	}
 	return cfg
 }
