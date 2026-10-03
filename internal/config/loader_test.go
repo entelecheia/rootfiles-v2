@@ -415,6 +415,19 @@ func TestValidate_PasswordAuthUsers(t *testing.T) {
 	}
 }
 
+// TestMain keeps home-base detection off the host for every Load here.
+func TestMain(m *testing.M) {
+	dir, err := os.MkdirTemp("", "rootfiles-config-test")
+	if err != nil {
+		panic(err)
+	}
+	useraddDefaultsPath = filepath.Join(dir, "useradd")
+	metaRoot = filepath.Join(dir, "root")
+	code := m.Run()
+	os.RemoveAll(dir)
+	os.Exit(code)
+}
+
 // isolateHomeDetection points home-base detection at temp files instead of
 // the host's /etc/default/useradd and <base>/.rootfiles directories.
 // managed, when set, is a home base that already holds .rootfiles.
@@ -475,6 +488,7 @@ func TestDefaultHomeBase(t *testing.T) {
 
 func TestLoad_HomeBaseDetectionOnlyWhenUnset(t *testing.T) {
 	isolateHomeDetection(t, "", "")
+	t.Setenv("ROOTFILES_HOME_BASE", "")
 	sys := &SystemInfo{OS: "ubuntu", StorageLayout: []MountPoint{{Device: "/dev/sdb1", MountPath: "/data", FSType: "xfs"}}}
 
 	cfg, err := Load("minimal", "", sys)

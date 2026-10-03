@@ -65,13 +65,15 @@ func (m *UsersModule) Check(ctx context.Context, rc *RunContext) (*CheckResult, 
 	var changes []Change
 	cfg := rc.Config.Users
 
-	if cfg.HomeBase != "" && cfg.HomeBase != "/home" {
-		if !rc.Runner.FileExists(cfg.HomeBase) {
-			changes = append(changes, Change{
-				Description: fmt.Sprintf("Create custom home base directory %s", cfg.HomeBase),
-				Command:     fmt.Sprintf("mkdir -p %s", cfg.HomeBase),
-			})
-		}
+	if cfg.HomeBase != "" && cfg.HomeBase != "/home" && !rc.Runner.FileExists(cfg.HomeBase) {
+		changes = append(changes, Change{
+			Description: fmt.Sprintf("Create custom home base directory %s", cfg.HomeBase),
+			Command:     fmt.Sprintf("mkdir -p %s", cfg.HomeBase),
+		})
+	}
+	// The metadata directory also records a /home choice, which home-base
+	// detection would otherwise override on a host with a data drive.
+	if cfg.HomeBase != "" {
 		metaDir := filepath.Join(cfg.HomeBase, ".rootfiles")
 		if !rc.Runner.FileExists(metaDir) {
 			changes = append(changes, Change{
@@ -119,8 +121,8 @@ func (m *UsersModule) Apply(ctx context.Context, rc *RunContext) (*ApplyResult, 
 	var messages, warnings []string
 	changed := false
 
-	// Create custom home base
-	if cfg.HomeBase != "" && cfg.HomeBase != "/home" &&
+	// Create the home base and its metadata directory
+	if cfg.HomeBase != "" &&
 		(!rc.Runner.FileExists(cfg.HomeBase) || !isDir(filepath.Join(cfg.HomeBase, ".rootfiles"))) {
 		if err := rc.Runner.MkdirAll(cfg.HomeBase, 0755); err != nil {
 			return nil, fmt.Errorf("creating home base: %w", err)

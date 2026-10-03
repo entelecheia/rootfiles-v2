@@ -35,6 +35,31 @@ func TestUsersModule_CheckDefaultHomeBaseIsSatisfied(t *testing.T) {
 	}
 }
 
+// A /home choice is recorded with /home/.rootfiles, so home-base detection
+// does not move later runs to a data drive.
+func TestUsersModule_CheckRecordsHomeChoice(t *testing.T) {
+	oldSudoersDir := sudoersDir
+	sudoersDir = t.TempDir()
+	t.Cleanup(func() { sudoersDir = oldSudoersDir })
+	rc := newDryRunRC(t)
+	rc.Config.Users = config.UsersConfig{HomeBase: "/home"}
+	result, err := NewUsersModule().Check(context.Background(), rc)
+	if err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+	_, statErr := os.Stat("/home/.rootfiles") // read-only; the result depends on the host
+	want := statErr != nil
+	got := false
+	for _, c := range result.Changes {
+		if c.Command == "mkdir -p /home/.rootfiles" {
+			got = true
+		}
+	}
+	if got != want {
+		t.Errorf("metadata change for /home = %v, want %v (changes %+v)", got, want, result.Changes)
+	}
+}
+
 func TestUsersModule_ApplyCustomHomeBaseDryRun(t *testing.T) {
 	oldSudoersDir := sudoersDir
 	sudoersDir = t.TempDir()
