@@ -151,7 +151,8 @@ var homeFS = map[string]bool{"ext4": true, "xfs": true, "btrfs": true, "zfs": tr
 // defaultHomeBase picks users.home_base when a config leaves it unset. An
 // existing layout wins so a host is never silently re-homed: a custom HOME
 // in /etc/default/useradd, then users rootfiles already manages under
-// /home. Otherwise a separate local data drive gets <mount>/home.
+// /home. Otherwise a separate local data drive gets <mount>/home, on APT
+// hosts only: Rocky has no SELinux home labeling for paths outside /home.
 func defaultHomeBase(sys *SystemInfo) string {
 	if hb := useraddHome(); hb != "" {
 		return hb
@@ -159,7 +160,7 @@ func defaultHomeBase(sys *SystemInfo) string {
 	if _, err := os.Stat(homeMetaDir); err == nil {
 		return "/home"
 	}
-	if sys != nil {
+	if ResolveDistro(sys).PackageBackend == "apt" {
 		for _, mount := range dataDriveMounts {
 			for _, m := range sys.StorageLayout {
 				if m.MountPath == mount && homeFS[m.FSType] {

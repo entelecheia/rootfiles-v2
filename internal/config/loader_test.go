@@ -437,7 +437,7 @@ func isolateHomeDetection(t *testing.T, useradd string, managedUnderHome bool) {
 }
 
 func TestDefaultHomeBase(t *testing.T) {
-	mounts := func(m ...MountPoint) *SystemInfo { return &SystemInfo{StorageLayout: m} }
+	mounts := func(m ...MountPoint) *SystemInfo { return &SystemInfo{OS: "ubuntu", StorageLayout: m} }
 	data := MountPoint{Device: "/dev/sdb1", MountPath: "/data", FSType: "ext4"}
 	cases := []struct {
 		name    string
@@ -457,6 +457,9 @@ func TestDefaultHomeBase(t *testing.T) {
 		{"stock useradd HOME=/home ignored", mounts(data), "HOME=/home\n", false, "/data/home"},
 		{"commented useradd HOME ignored", mounts(data), "# HOME=/srv/home\n", false, "/data/home"},
 		{"users already managed under /home", mounts(data), "", true, "/home"},
+		{"dgx os data drive", &SystemInfo{OS: "dgx-os", StorageLayout: []MountPoint{data}}, "", false, "/data/home"},
+		{"rocky keeps /home", &SystemInfo{OS: "rocky", Version: "9.4", StorageLayout: []MountPoint{data}}, "HOME=/home\n", false, "/home"},
+		{"unsupported distro keeps /home", &SystemInfo{OS: "debian", StorageLayout: []MountPoint{data}}, "", false, "/home"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -470,7 +473,7 @@ func TestDefaultHomeBase(t *testing.T) {
 
 func TestLoad_HomeBaseDetectionOnlyWhenUnset(t *testing.T) {
 	isolateHomeDetection(t, "", false)
-	sys := &SystemInfo{StorageLayout: []MountPoint{{Device: "/dev/sdb1", MountPath: "/data", FSType: "xfs"}}}
+	sys := &SystemInfo{OS: "ubuntu", StorageLayout: []MountPoint{{Device: "/dev/sdb1", MountPath: "/data", FSType: "xfs"}}}
 
 	cfg, err := Load("minimal", "", sys)
 	if err != nil || cfg.Users.HomeBase != "/data/home" {
