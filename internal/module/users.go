@@ -66,9 +66,32 @@ func LoadUsersDB(rc *RunContext) (*UsersDB, error) {
 // useraddDefaultsFile holds useradd's default HOME; tests redirect it.
 var useraddDefaultsFile = "/etc/default/useradd"
 
+// homeBaseRoot is where the ownership walk of a custom home base starts and
+// homeBaseOwner the uid that must own it; tests stub both.
+var (
+	homeBaseRoot         = "/"
+	homeBaseOwner uint32 = 0
+)
+
+// checkHomeBase refuses a custom home base that a user other than root
+// could control, by the same rule as home-base detection: that user could
+// replace the homes created under it. /home is the distribution's own.
+func checkHomeBase(base string) error {
+	if base == "" || filepath.Clean(base) == "/home" {
+		return nil
+	}
+	if err := config.RootOnlyBase(homeBaseRoot, base, homeBaseOwner); err != nil {
+		return fmt.Errorf("refusing home base %s: %w; / and every existing directory down to the base must be owned by root and not writable by group or others", base, err)
+	}
+	return nil
+}
+
 func (m *UsersModule) Check(ctx context.Context, rc *RunContext) (*CheckResult, error) {
 	var changes []Change
 	cfg := rc.Config.Users
+	if err := checkHomeBase(cfg.HomeBase); err != nil {
+		return nil, err
+	}
 
 	if cfg.HomeBase != "" && cfg.HomeBase != "/home" {
 		if !rc.Runner.FileExists(cfg.HomeBase) {
@@ -123,6 +146,9 @@ func (m *UsersModule) Check(ctx context.Context, rc *RunContext) (*CheckResult, 
 
 func (m *UsersModule) Apply(ctx context.Context, rc *RunContext) (*ApplyResult, error) {
 	cfg := rc.Config.Users
+	if err := checkHomeBase(cfg.HomeBase); err != nil {
+		return nil, err
+	}
 	var messages, warnings []string
 	changed := false
 
@@ -335,6 +361,9 @@ func AddUser(ctx context.Context, rc *RunContext, username string, pubkeys []str
 	homeBase := cfg.HomeBase
 	if homeBase == "" {
 		homeBase = "/home"
+	}
+	if err := checkHomeBase(homeBase); err != nil {
+		return err
 	}
 	homeDir := filepath.Join(homeBase, username)
 	shell := cfg.DefaultShell
@@ -556,8 +585,12 @@ func RestoreUsers(ctx context.Context, rc *RunContext, backupPath string) error 
 		homeBase = "/home"
 	}
 
-	// Auto-detect backup path
+	// Auto-detect backup path. Its accounts, sudo rights and keys are
+	// trusted only from a base that root alone controls.
 	if backupPath == "" {
+		if err := checkHomeBase(homeBase); err != nil {
+			return err
+		}
 		backupPath = filepath.Join(homeBase, ".rootfiles", "users.json")
 	}
 
@@ -580,6 +613,11 @@ func RestoreUsers(ctx context.Context, rc *RunContext, backupPath string) error 
 		// Check if user already exists
 		if _, err := user.Lookup(u.Name); err == nil {
 			fmt.Printf("  User %s already exists, skipping\n", u.Name)
+			continue
+		}
+
+		if err := checkHomeBase(filepath.Dir(u.Home)); err != nil {
+			failed = append(failed, fmt.Sprintf("%s: %v", u.Name, err))
 			continue
 		}
 
@@ -668,6 +706,9 @@ func RehomeUser(ctx context.Context, rc *RunContext, username string, removeOld 
 	homeBase := cfg.HomeBase
 	if homeBase == "" {
 		return fmt.Errorf("home_base not configured")
+	}
+	if err := checkHomeBase(homeBase); err != nil {
+		return err
 	}
 
 	u, err := user.Lookup(username)

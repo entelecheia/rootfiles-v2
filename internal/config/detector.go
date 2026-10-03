@@ -259,25 +259,51 @@ func detectHomeBase(sys *SystemInfo) (string, error) {
 	return hb, nil
 }
 
-// rootOnlyBase reports whether only root controls base: its parent and, if
-// present, base itself are real directories owned by root that group and
-// others cannot write. Otherwise a user could pre-create the directory new
-// homes go under, for example on a world-writable scratch mount.
+// rootOnlyBase reports whether only root controls base under hostRoot.
 func rootOnlyBase(base string) bool {
-	if !rootOnlyDir(filepath.Join(hostRoot, filepath.Dir(base))) {
-		return false
-	}
-	_, err := os.Lstat(filepath.Join(hostRoot, base))
-	return os.IsNotExist(err) || rootOnlyDir(filepath.Join(hostRoot, base))
+	return RootOnlyBase(hostRoot, filepath.Join(hostRoot, base), rootUID) == nil
 }
 
-func rootOnlyDir(path string) bool {
-	fi, err := os.Lstat(path)
-	if err != nil || !fi.IsDir() || fi.Mode().Perm()&0o022 != 0 {
-		return false
+// RootOnlyBase returns why a user other than root (uid) could control
+// base: root or a directory between root and base, as far as they exist, is
+// a symlink, not a directory, owned by another uid, or writable by group or
+// others. That user could pre-create, rename or replace the directory new
+// homes go under, for example on a world-writable scratch mount. Missing
+// directories below the deepest existing one are created by root.
+func RootOnlyBase(root, base string, uid uint32) error {
+	root, base = filepath.Clean(root), filepath.Clean(base)
+	var dirs []string
+	for d := base; ; d = filepath.Dir(d) {
+		dirs = append(dirs, d)
+		if d == root {
+			break
+		}
+		if d == filepath.Dir(d) {
+			return fmt.Errorf("%s is not under %s", base, root)
+		}
 	}
-	st, ok := fi.Sys().(*syscall.Stat_t)
-	return ok && st.Uid == rootUID
+	for i := len(dirs) - 1; i >= 0; i-- {
+		dir := dirs[i]
+		fi, err := os.Lstat(dir)
+		if os.IsNotExist(err) && dir != root {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		st, ok := fi.Sys().(*syscall.Stat_t)
+		switch {
+		case fi.Mode()&os.ModeSymlink != 0:
+			return fmt.Errorf("%s is a symlink", dir)
+		case !fi.IsDir():
+			return fmt.Errorf("%s is not a directory", dir)
+		case !ok || st.Uid != uid:
+			return fmt.Errorf("%s is not owned by root", dir)
+		case fi.Mode().Perm()&0o022 != 0:
+			return fmt.Errorf("%s is writable by group or others", dir)
+		}
+	}
+	return nil
 }
 
 // UseraddHome returns the last HOME= value of an /etc/default/useradd
