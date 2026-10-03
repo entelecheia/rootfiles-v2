@@ -41,14 +41,15 @@ type ModuleOutcome struct {
 
 // Run describes one `rootfiles apply`.
 type Run struct {
-	Version    string          `json:"version"`
-	Profile    string          `json:"profile,omitempty"`
-	ConfigPath string          `json:"config_path,omitempty"`
-	StartedAt  time.Time       `json:"started_at"`
-	FinishedAt time.Time       `json:"finished_at"`
-	Success    bool            `json:"success"`
-	BackupID   string          `json:"backup_id,omitempty"`
-	Modules    []ModuleOutcome `json:"modules"`
+	ConfigSHA256 string          `json:"config_sha256,omitempty"`
+	Version      string          `json:"version"`
+	Profile      string          `json:"profile,omitempty"`
+	ConfigPath   string          `json:"config_path,omitempty"`
+	StartedAt    time.Time       `json:"started_at"`
+	FinishedAt   time.Time       `json:"finished_at"`
+	Success      bool            `json:"success"`
+	BackupID     string          `json:"backup_id,omitempty"`
+	Modules      []ModuleOutcome `json:"modules"`
 }
 
 func statePath() string   { return filepath.Join(Dir(), "state.json") }

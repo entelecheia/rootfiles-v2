@@ -23,7 +23,7 @@ func newConfigCmd() *cobra.Command {
 // loadForInspection resolves the target like check/status and applies CLI
 // flag overrides, so what is shown is exactly what apply would use.
 func loadForInspection(cmd *cobra.Command) (*config.Config, string, error) {
-	sys, _ := config.DetectSystem()
+	sys, _ := detectSystem()
 	if sys == nil {
 		sys = &config.SystemInfo{}
 	}
@@ -38,7 +38,21 @@ func loadForInspection(cmd *cobra.Command) (*config.Config, string, error) {
 	}
 	applyFlagOverrides(cmd, cfg)
 	applyAccountFlags(cmd, cfg)
-	return cfg, source, cfg.Validate()
+	if err := cfg.Validate(); err != nil {
+		return cfg, source, err
+	}
+	if sys.OS == "rocky" {
+		names := []string{}
+		for _, name := range []string{"locale", "system", "packages", "users", "ssh", "security", "docker", "nvidia", "gpu", "cloudflared", "storage", "network", "monitoring"} {
+			if cfg.IsModuleEnabled(name) {
+				names = append(names, name)
+			}
+		}
+		if err := config.ValidateCapabilities(cfg, sys, names); err != nil {
+			return cfg, source, err
+		}
+	}
+	return cfg, source, nil
 }
 
 func newConfigShowCmd() *cobra.Command {
@@ -116,7 +130,7 @@ func newConfigInitCmd() *cobra.Command {
 				data = append([]byte("# captured from this system by `rootfiles config init --from-system`\n"), data...)
 			} else {
 				if extends == "" {
-					sys, _ := config.DetectSystem()
+					sys, _ := detectSystem()
 					if sys == nil {
 						sys = &config.SystemInfo{}
 					}

@@ -48,6 +48,9 @@ func DetectSystem() (*SystemInfo, error) {
 
 // SuggestProfile returns a profile name based on detected system.
 func (s *SystemInfo) SuggestProfile() string {
+	if IsRocky(s) {
+		return "rocky"
+	}
 	if s.IsDGX {
 		return "dgx"
 	}

@@ -32,19 +32,29 @@ func runDoctor(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return err
 	}
-	sys, _ := config.DetectSystem()
+	sys, _ := detectSystem()
 	if sys == nil {
 		sys = &config.SystemInfo{}
 	}
 	profile, configPath := resolveTarget(cmd, sys)
-	cfg, err := config.Load(profile, configPath, sys)
-	if err != nil {
+	cfg, loadErr := config.Load(profile, configPath, sys)
+	if loadErr != nil {
 		cfg = &config.Config{System: sys}
 	}
 
 	runner := exec.NewRunner(true, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	rc := &module.RunContext{Config: cfg, Runner: runner, APT: exec.NewAPT(runner), DryRun: true, Yes: true}
+	rc := &module.RunContext{Config: cfg, Runner: runner, APT: statusPackageManager(runner, sys), DryRun: true, Yes: true}
 	findings := module.Doctor(cmd.Context(), rc)
+	if loadErr != nil {
+		findings = append(findings, module.Finding{Check: "configuration", Level: module.LevelFail, Detail: loadErr.Error()})
+	}
+	names := []string{}
+	for _, m := range module.NewRegistry().Resolve(cfg, nil) {
+		names = append(names, m.Name())
+	}
+	if err := config.ValidateCapabilities(cfg, sys, names); err != nil {
+		findings = append(findings, module.Finding{Check: "capabilities", Level: module.LevelSkip, Detail: err.Error()})
+	}
 
 	if last, err := state.Last(); err == nil && last != nil && !last.Success {
 		findings = append(findings, module.Finding{Check: "last apply", Level: module.LevelWarn,
@@ -77,7 +87,11 @@ func runDoctor(cmd *cobra.Command, _ []string) error {
 			fmt.Fprintf(out, "rootfiles_doctor_check_ok{check=%q} %d\n", f.Check, boolMetric(f.Level == module.LevelOK || f.Level == module.LevelSkip))
 		}
 	} else if format == "json" {
-		if err := writeJSON(out, map[string]any{"findings": findings, "failed": failed}); err != nil {
+		fingerprint, err := appliedFingerprint(cfg, profile, configPath)
+		if err != nil {
+			return err
+		}
+		if err := writeJSON(out, map[string]any{"findings": findings, "failed": failed, "applied_config_sha256": fingerprint, "version": buildVersion}); err != nil {
 			return err
 		}
 	} else {

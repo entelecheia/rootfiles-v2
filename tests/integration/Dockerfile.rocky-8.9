@@ -1,0 +1,35 @@
+FROM rockylinux/rockylinux:8.9
+
+ENV ROOTFILES_EXPECTED_ROCKY_RELEASE=8.9
+
+# Use the immutable Rocky vault for 8.9 so installing test prerequisites does
+# not silently upgrade this compatibility fixture to a later 8.x minor.
+RUN cat /etc/rocky-release >/tmp/rocky-release.before \
+    && rm -f /etc/yum.repos.d/*.repo \
+    && printf '%s\n' \
+    '[baseos]' 'name=Rocky Linux 8.9 - BaseOS' \
+    'baseurl=https://dl.rockylinux.org/vault/rocky/8.9/BaseOS/$basearch/os/' \
+    'enabled=1' 'gpgcheck=1' 'gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-rockyofficial' \
+    '[appstream]' 'name=Rocky Linux 8.9 - AppStream' \
+    'baseurl=https://dl.rockylinux.org/vault/rocky/8.9/AppStream/$basearch/os/' \
+    'enabled=1' 'gpgcheck=1' 'gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-rockyofficial' \
+    '[extras]' 'name=Rocky Linux 8.9 - Extras' \
+    'baseurl=https://dl.rockylinux.org/vault/rocky/8.9/extras/$basearch/os/' \
+    'enabled=1' 'gpgcheck=1' 'gpgkey=file:///etc/pki/rpm-gpg/RPM-GPG-KEY-rockyofficial' > /etc/yum.repos.d/rocky-vault.repo \
+    && dnf --disablerepo='*' --enablerepo=baseos,appstream,extras install -y \
+       sudo systemd openssh-server openssh-clients shadow-utils curl iproute \
+       tar gzip findutils hostname procps-ng util-linux \
+    && dnf clean all \
+    && test "$(cat /tmp/rocky-release.before)" = "$(cat /etc/rocky-release)" \
+    && test "$(rpm -q --qf '%{VERSION}' rocky-release | cut -d. -f1,2)" = 8.9 \
+    && cp /tmp/rocky-release.before /etc/rootfiles-rocky-release.before
+
+COPY rootfiles /usr/local/bin/rootfiles
+COPY scripts/install.sh /tests/install.sh
+COPY tests/run-rocky.sh /tests/run-rocky.sh
+RUN chmod 0755 /usr/local/bin/rootfiles /tests/install.sh /tests/run-rocky.sh \
+    && mkdir -p /tests
+
+STOPSIGNAL SIGRTMIN+3
+VOLUME ["/sys/fs/cgroup"]
+CMD ["/sbin/init"]

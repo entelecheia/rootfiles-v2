@@ -46,7 +46,7 @@ func runApply(cmd *cobra.Command, _ []string) error {
 	}
 
 	// Detect system
-	sysInfo, err := config.DetectSystem()
+	sysInfo, err := detectSystem()
 	if err != nil {
 		return fmt.Errorf("detecting system: %w", err)
 	}
@@ -71,7 +71,10 @@ func runApply(cmd *cobra.Command, _ []string) error {
 
 	// Setup runner
 	runner := newRunner(cmd, dryRun)
-	apt := exec.NewAPT(runner)
+	apt, err := exec.NewPackageManager(runner, sysInfo)
+	if err != nil {
+		return err
+	}
 
 	// Build module list
 	registry := module.NewRegistry()
@@ -105,6 +108,22 @@ func runApply(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
+	// Revalidate interactive edits and reject unsupported capabilities before mutation.
+	if err := cfg.Validate(); err != nil {
+		return err
+	}
+	names := make([]string, 0, len(modules))
+	for _, m := range modules {
+		names = append(names, m.Name())
+	}
+	if err := config.ValidateCapabilities(cfg, sysInfo, names); err != nil {
+		return err
+	}
+	fingerprint, err := cfg.Fingerprint()
+	if err != nil {
+		return err
+	}
+
 	// Execute modules
 	rc := &module.RunContext{
 		Config: cfg,
@@ -115,6 +134,9 @@ func runApply(cmd *cobra.Command, _ []string) error {
 		Force:  force,
 	}
 
+	if err := module.Preflight(ctx, modules, rc); err != nil {
+		return err
+	}
 	fmt.Println()
 	started := time.Now().UTC()
 	outcomes, runErr := module.RunAll(ctx, modules, rc)
@@ -123,13 +145,14 @@ func runApply(cmd *cobra.Command, _ []string) error {
 	}
 
 	run := state.Run{
-		Version:    buildVersion,
-		Profile:    profileName,
-		ConfigPath: configPath,
-		StartedAt:  started,
-		FinishedAt: time.Now().UTC(),
-		Success:    runErr == nil,
-		Modules:    outcomes,
+		ConfigSHA256: fingerprint,
+		Version:      buildVersion,
+		Profile:      profileName,
+		ConfigPath:   configPath,
+		StartedAt:    started,
+		FinishedAt:   time.Now().UTC(),
+		Success:      runErr == nil,
+		Modules:      outcomes,
 	}
 	if runner.Backup.Used() {
 		run.BackupID = runner.Backup.ID

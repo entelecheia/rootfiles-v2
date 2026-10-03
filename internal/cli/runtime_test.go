@@ -25,6 +25,9 @@ func TestMarkMutating(t *testing.T) {
 func TestPreflight(t *testing.T) {
 	t.Setenv("ROOTFILES_LOCK_FILE", filepath.Join(t.TempDir(), "lock"))
 	t.Setenv("ROOTFILES_LOG_FILE", filepath.Join(t.TempDir(), "audit.log"))
+	oldOS := nativeHostOS
+	nativeHostOS = "linux"
+	t.Cleanup(func() { nativeHostOS = oldOS })
 	old := geteuid
 	t.Cleanup(func() { geteuid = old; heldLock.Release(); heldLock = nil })
 
@@ -71,5 +74,21 @@ func TestScheduleUnits(t *testing.T) {
 	}
 	if tmr := scheduleTimer("hourly"); !strings.Contains(tmr, "OnCalendar=hourly") || !strings.Contains(tmr, "Persistent=true") {
 		t.Errorf("unexpected timer:\n%s", tmr)
+	}
+}
+
+func TestNativeMutationsRefuseNonLinuxBeforeLock(t *testing.T) {
+	oldOS, oldEUID := nativeHostOS, geteuid
+	nativeHostOS = "darwin"
+	geteuid = func() int { return 0 }
+	t.Cleanup(func() { nativeHostOS = oldOS; geteuid = oldEUID })
+	root := NewRootCmd("test", "abc")
+	cmd, _, _ := root.Find([]string{"update"})
+	if err := preflight(cmd, nil); err == nil || !strings.Contains(err.Error(), "require Linux") {
+		t.Fatalf("native update: %v", err)
+	}
+	fleetCmd, _, _ := root.Find([]string{"fleet", "update"})
+	if err := preflight(fleetCmd, nil); err != nil {
+		t.Fatalf("operator controller refused: %v", err)
 	}
 }

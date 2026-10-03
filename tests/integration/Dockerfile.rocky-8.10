@@ -1,0 +1,21 @@
+FROM rockylinux/rockylinux:8.10
+
+ENV ROOTFILES_EXPECTED_ROCKY_RELEASE=8.10
+
+RUN cat /etc/rocky-release >/tmp/rocky-release.before \
+    && dnf install -y sudo systemd openssh-server openssh-clients shadow-utils \
+       curl iproute tar gzip findutils hostname procps-ng util-linux \
+    && dnf clean all \
+    && test "$(cat /tmp/rocky-release.before)" = "$(cat /etc/rocky-release)" \
+    && test "$(rpm -q --qf '%{VERSION}' rocky-release | cut -d. -f1,2)" = 8.10 \
+    && cp /tmp/rocky-release.before /etc/rootfiles-rocky-release.before
+
+COPY rootfiles /usr/local/bin/rootfiles
+COPY scripts/install.sh /tests/install.sh
+COPY tests/run-rocky.sh /tests/run-rocky.sh
+RUN chmod 0755 /usr/local/bin/rootfiles /tests/install.sh /tests/run-rocky.sh \
+    && mkdir -p /tests
+
+STOPSIGNAL SIGRTMIN+3
+VOLUME ["/sys/fs/cgroup"]
+CMD ["/sbin/init"]

@@ -61,7 +61,7 @@ func LoadUsersDB(rc *RunContext) (*UsersDB, error) {
 	return &db, nil
 }
 
-func (m *UsersModule) Check(_ context.Context, rc *RunContext) (*CheckResult, error) {
+func (m *UsersModule) Check(ctx context.Context, rc *RunContext) (*CheckResult, error) {
 	var changes []Change
 	cfg := rc.Config.Users
 
@@ -93,10 +93,20 @@ func (m *UsersModule) Check(_ context.Context, rc *RunContext) (*CheckResult, er
 	}
 
 	for _, a := range rc.Config.Users.Accounts {
-		for _, d := range accountDrift(context.Background(), rc, a) {
+		drift, err := accountDrift(ctx, rc, a)
+		if err != nil {
+			return nil, err
+		}
+		for _, d := range drift {
 			changes = append(changes, Change{Description: d.desc, Command: d.cmd})
 		}
 	}
+
+	fleetChanges, err := checkFleetSudo(ctx, rc)
+	if err != nil {
+		return nil, err
+	}
+	changes = append(changes, fleetChanges...)
 
 	return &CheckResult{
 		Satisfied: len(changes) == 0,
@@ -106,7 +116,7 @@ func (m *UsersModule) Check(_ context.Context, rc *RunContext) (*CheckResult, er
 
 func (m *UsersModule) Apply(ctx context.Context, rc *RunContext) (*ApplyResult, error) {
 	cfg := rc.Config.Users
-	var messages []string
+	var messages, warnings []string
 	changed := false
 
 	// Create custom home base
@@ -162,36 +172,55 @@ func (m *UsersModule) Apply(ctx context.Context, rc *RunContext) (*ApplyResult, 
 		}
 	}
 
-	return &ApplyResult{Changed: changed, Messages: messages}, nil
+	fleetResult, err := applyFleetSudo(ctx, rc)
+	if err != nil {
+		return nil, err
+	}
+	if fleetResult.Changed {
+		changed = true
+	}
+	messages = append(messages, fleetResult.Messages...)
+	warnings = append(warnings, fleetResult.Warnings...)
+
+	return &ApplyResult{Changed: changed, Messages: messages, Warnings: warnings}, nil
 }
 
 type accountChange struct{ desc, cmd string }
 
 // accountGroups is default_groups ∪ the account's own groups.
 func accountGroups(rc *RunContext, a config.AccountConfig) []string {
-	return append(append([]string{}, rc.Config.Users.DefaultGroups...), a.Groups...)
+	groups := append(append([]string{}, rc.Config.Users.DefaultGroups...), a.Groups...)
+	return accountGroupsForSystem(rc.Config.System, groups)
 }
 
 // accountDrift lists what differs between a declared account and the
 // system. Groups that do not exist yet (e.g. docker before Docker is
 // installed) are not reported.
-func accountDrift(ctx context.Context, rc *RunContext, a config.AccountConfig) []accountChange {
+func accountDrift(ctx context.Context, rc *RunContext, a config.AccountConfig) ([]accountChange, error) {
+	groups := accountGroups(rc, a)
+	if err := requireNativeAdminGroup(rc.Config.System, groups); err != nil {
+		return nil, err
+	}
 	u, err := user.Lookup(a.Name)
 	if err != nil {
-		return []accountChange{{fmt.Sprintf("Create user %s", a.Name), "useradd " + a.Name}}
+		return []accountChange{{fmt.Sprintf("Create user %s", a.Name), "useradd " + a.Name}}, nil
 	}
 	var out []accountChange
 	if missing := missingKeys(filepath.Join(u.HomeDir, ".ssh", "authorized_keys"), a.SSHPubkeys); len(missing) > 0 {
 		out = append(out, accountChange{fmt.Sprintf("Add %d SSH key(s) for %s", len(missing), a.Name), "append ~/.ssh/authorized_keys"})
 	}
-	if missing := missingGroups(ctx, rc, a.Name, accountGroups(rc, a)); len(missing) > 0 {
+	if missing := missingGroups(ctx, rc, a.Name, groups); len(missing) > 0 {
 		out = append(out, accountChange{fmt.Sprintf("Add %s to groups %v", a.Name, missing), "usermod -aG " + strings.Join(missing, ",") + " " + a.Name})
 	}
-	return out
+	return out, nil
 }
 
 // convergeAccount creates the account or adds missing keys/groups.
 func convergeAccount(ctx context.Context, rc *RunContext, a config.AccountConfig) ([]string, error) {
+	groups := accountGroups(rc, a)
+	if err := requireNativeAdminGroup(rc.Config.System, groups); err != nil {
+		return nil, err
+	}
 	u, err := user.Lookup(a.Name)
 	if err != nil {
 		if err := AddUser(ctx, rc, a.Name, a.SSHPubkeys, a.Groups, false); err != nil {
@@ -212,7 +241,7 @@ func convergeAccount(ctx context.Context, rc *RunContext, a config.AccountConfig
 		}
 		msgs = append(msgs, fmt.Sprintf("added %d SSH key(s) for %s", len(missing), a.Name))
 	}
-	if missing := missingGroups(ctx, rc, a.Name, accountGroups(rc, a)); len(missing) > 0 {
+	if missing := missingGroups(ctx, rc, a.Name, groups); len(missing) > 0 {
 		if _, err := rc.Runner.Run(ctx, "usermod", "-aG", strings.Join(missing, ","), a.Name); err != nil {
 			return nil, fmt.Errorf("adding groups: %w", err)
 		}
@@ -309,7 +338,7 @@ func AddUser(ctx context.Context, rc *RunContext, username string, pubkeys []str
 	}
 
 	// Build group list (copy: never append into the config's slice)
-	groups := append(append([]string{}, cfg.DefaultGroups...), extraGroups...)
+	groups := accountGroups(rc, config.AccountConfig{Groups: extraGroups})
 	if noDocker {
 		var filtered []string
 		for _, g := range groups {
@@ -318,6 +347,9 @@ func AddUser(ctx context.Context, rc *RunContext, username string, pubkeys []str
 			}
 		}
 		groups = filtered
+	}
+	if err := requireNativeAdminGroup(rc.Config.System, groups); err != nil {
+		return err
 	}
 	groups, missing := existingGroups(groups)
 	for _, g := range missing {
@@ -579,7 +611,11 @@ func RestoreUsers(ctx context.Context, rc *RunContext, backupPath string) error 
 // restoreUserExtras re-applies groups, sudoers, ownership and SSH keys for
 // a user just recreated from a backup.
 func restoreUserExtras(ctx context.Context, rc *RunContext, u UserMeta, homeExists bool) error {
-	groups, missing := existingGroups(u.Groups)
+	groups := accountGroupsForSystem(rc.Config.System, u.Groups)
+	if err := requireNativeAdminGroup(rc.Config.System, groups); err != nil {
+		return err
+	}
+	groups, missing := existingGroups(groups)
 	for _, g := range missing {
 		fmt.Printf("  ⚠ %s: group %s does not exist, skipped\n", u.Name, g)
 	}
@@ -829,8 +865,12 @@ func AddUserToGroups(ctx context.Context, rc *RunContext, username string, group
 	if _, err := user.Lookup(username); err != nil {
 		return fmt.Errorf("user %s not found", username)
 	}
+	groups = accountGroupsForSystem(rc.Config.System, groups)
 	if len(groups) == 0 {
 		return fmt.Errorf("no groups specified")
+	}
+	if err := requireNativeAdminGroup(rc.Config.System, groups); err != nil {
+		return err
 	}
 	if _, err := rc.Runner.Run(ctx, "usermod", "-aG", strings.Join(groups, ","), username); err != nil {
 		return fmt.Errorf("adding %s to groups: %w", username, err)
@@ -844,8 +884,12 @@ func RemoveUserFromGroups(ctx context.Context, rc *RunContext, username string, 
 	if _, err := user.Lookup(username); err != nil {
 		return fmt.Errorf("user %s not found", username)
 	}
+	groups = accountGroupsForSystem(rc.Config.System, groups)
 	if len(groups) == 0 {
 		return fmt.Errorf("no groups specified")
+	}
+	if err := requireNativeAdminGroup(rc.Config.System, groups); err != nil {
+		return err
 	}
 	for _, group := range groups {
 		if _, err := rc.Runner.Run(ctx, "gpasswd", "-d", username, group); err != nil {

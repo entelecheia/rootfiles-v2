@@ -64,7 +64,33 @@ type MonitoringConfig struct {
 	// NodeExporter installs prometheus-node-exporter; rootfiles' scheduled
 	// report also publishes rootfiles_* metrics through its textfile
 	// collector.
-	NodeExporter bool `yaml:"node_exporter"`
+	NodeExporter      bool                `yaml:"node_exporter"`
+	DCGMExporter      bool                `yaml:"dcgm_exporter"`
+	NodeExporterPort  int                 `yaml:"node_exporter_port,omitempty"`
+	DCGMExporterPort  int                 `yaml:"dcgm_exporter_port,omitempty"`
+	ListenAddress     string              `yaml:"listen_address,omitempty"`
+	AllowFrom         []string            `yaml:"allow_from,omitempty"`
+	PerimeterFirewall bool                `yaml:"perimeter_firewall"`
+	DCGMExporterImage string              `yaml:"dcgm_exporter_image,omitempty"`
+	Hub               MonitoringHubConfig `yaml:"hub"`
+}
+
+// MonitoringHubConfig declares the opt-in central monitoring stack.
+type MonitoringHubConfig struct {
+	Enabled                  bool   `yaml:"enabled"`
+	DataDir                  string `yaml:"data_dir,omitempty"`
+	Retention                string `yaml:"retention,omitempty"`
+	TargetsFile              string `yaml:"targets_file,omitempty"`
+	AlertReceiverFile        string `yaml:"alert_receiver_file,omitempty"`
+	ListenAddress            string `yaml:"listen_address,omitempty"`
+	GrafanaPort              int    `yaml:"grafana_port,omitempty"`
+	PrometheusPort           int    `yaml:"prometheus_port,omitempty"`
+	AlertmanagerPort         int    `yaml:"alertmanager_port,omitempty"`
+	PrometheusImage          string `yaml:"prometheus_image,omitempty"`
+	AlertmanagerImage        string `yaml:"alertmanager_image,omitempty"`
+	GrafanaImage             string `yaml:"grafana_image,omitempty"`
+	GrafanaAdminPasswordFile string `yaml:"grafana_admin_password_file,omitempty"`
+	TelegramBotTokenFile     string `yaml:"telegram_bot_token_file,omitempty"`
 }
 
 type ModuleToggle struct {
@@ -120,10 +146,11 @@ type NetworkConfig struct {
 }
 
 type UsersConfig struct {
-	HomeBase      string   `yaml:"home_base"`
-	DefaultShell  string   `yaml:"default_shell"`
-	DefaultGroups []string `yaml:"default_groups"`
-	SudoNopasswd  bool     `yaml:"sudo_nopasswd"`
+	FleetSudoUsers []string `yaml:"fleet_sudo_users,omitempty"`
+	HomeBase       string   `yaml:"home_base"`
+	DefaultShell   string   `yaml:"default_shell"`
+	DefaultGroups  []string `yaml:"default_groups"`
+	SudoNopasswd   bool     `yaml:"sudo_nopasswd"`
 	// Accounts are converged by the users module: created if missing,
 	// missing SSH keys and group memberships added. Never removed.
 	Accounts []AccountConfig `yaml:"accounts,omitempty"`

@@ -1,0 +1,95 @@
+package config
+
+import (
+	"net/netip"
+	"path/filepath"
+	"regexp"
+	"strings"
+)
+
+var monitoringImage = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9./:_@-]*$`)
+var prometheusRetention = regexp.MustCompile(`^[1-9][0-9]*(ms|s|m|h|d|w|y)$`)
+
+func (c *Config) validateMonitoring(add func(string, ...any)) {
+	m := c.Modules.Monitoring
+	port := func(name string, p int) {
+		if p < 1 || p > 65535 {
+			add("modules.monitoring.%s: port out of range", name)
+		}
+	}
+	ip := func(name, value string) {
+		if value != "" {
+			if _, err := netip.ParseAddr(value); err != nil {
+				add("modules.monitoring.%s: invalid IP address", name)
+			}
+		}
+	}
+	path := func(name, value string) {
+		if value != "" && (!filepath.IsAbs(value) || strings.ContainsAny(value, "\r\n\x00")) {
+			add("modules.monitoring.%s: invalid absolute path", name)
+		}
+	}
+	image := func(name, value string) {
+		if !monitoringImage.MatchString(value) || (!strings.Contains(value, "@sha256:") && !strings.Contains(filepath.Base(value), ":")) || strings.HasSuffix(value, ":latest") {
+			add("modules.monitoring.%s: pinned image reference required", name)
+		}
+	}
+	port("node_exporter_port", m.NodePort())
+	port("dcgm_exporter_port", m.DCGMPort())
+	if m.NodeExporter && m.DCGMExporter && m.NodePort() == m.DCGMPort() {
+		add("modules.monitoring: exporter ports must differ")
+	}
+	ip("listen_address", m.ListenAddress)
+	for _, cidr := range m.AllowFrom {
+		if _, err := netip.ParsePrefix(cidr); err != nil {
+			add("modules.monitoring.allow_from: invalid CIDR")
+		}
+	}
+	if m.DCGMExporter {
+		image("dcgm_exporter_image", m.ExporterImage())
+	}
+	if m.Hub.Enabled {
+		h := m.Hub.WithDefaults()
+		ip("hub.listen_address", h.ListenAddress)
+		port("hub.grafana_port", h.GrafanaPort)
+		port("hub.prometheus_port", h.PrometheusPort)
+		port("hub.alertmanager_port", h.AlertmanagerPort)
+		ports := map[int]bool{}
+		for _, p := range []int{h.GrafanaPort, h.PrometheusPort, h.AlertmanagerPort} {
+			if ports[p] {
+				add("modules.monitoring.hub: ports must differ")
+			}
+			ports[p] = true
+		}
+		if m.NodeExporter && ports[m.NodePort()] || m.DCGMExporter && ports[m.DCGMPort()] {
+			add("modules.monitoring: hub and exporter ports must differ")
+		}
+		path("hub.data_dir", h.DataDir)
+		if err := ValidateMonitoringDiscoveryPath(h.TargetsFile, h.DataDir, MonitoringDiscoveryDir,
+			h.AlertReceiverFile, h.TelegramBotTokenFile, h.GrafanaAdminPasswordFile, c.Modules.Cloudflared.TunnelTokenFile); err != nil {
+			add("modules.monitoring.hub: %v", err)
+		}
+		path("hub.alert_receiver_file", h.AlertReceiverFile)
+		path("hub.grafana_admin_password_file", h.GrafanaAdminPasswordFile)
+		path("hub.telegram_bot_token_file", h.TelegramBotTokenFile)
+		if filepath.Clean(h.DataDir) == "/" {
+			add("modules.monitoring.hub.data_dir: refusing filesystem root")
+		}
+		if !prometheusRetention.MatchString(h.Retention) {
+			add("modules.monitoring.hub.retention: invalid duration")
+		}
+		image("hub.prometheus_image", h.PrometheusImage)
+		image("hub.alertmanager_image", h.AlertmanagerImage)
+		image("hub.grafana_image", h.GrafanaImage)
+	}
+	seen := map[string]bool{}
+	if len(c.Users.FleetSudoUsers) > 0 && !c.Modules.Users.Enabled {
+		add("users.fleet_sudo_users: users module must be enabled")
+	}
+	for _, user := range c.Users.FleetSudoUsers {
+		if !validAccountName.MatchString(user) || len(user) > 32 || seen[user] {
+			add("users.fleet_sudo_users: invalid or duplicate account")
+		}
+		seen[user] = true
+	}
+}

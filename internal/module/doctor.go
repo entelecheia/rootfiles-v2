@@ -3,6 +3,7 @@ package module
 import (
 	"context"
 	"fmt"
+	"net"
 	"os"
 	"strings"
 	"syscall"
@@ -44,7 +45,57 @@ func Doctor(ctx context.Context, rc *RunContext) []Finding {
 	out = append(out, doctorTimeSync(ctx, rc))
 	out = append(out, doctorGPU(ctx, rc)...)
 	out = append(out, doctorFailedUnits(ctx, rc))
+	out = append(out, doctorExporterExposure(ctx, rc)...)
 	return out
+}
+
+func doctorExporterExposure(ctx context.Context, rc *RunContext) []Finding {
+	cfg := rc.Config.Modules.Monitoring
+	if !cfg.NodeExporter && !cfg.DCGMExporter {
+		return nil
+	}
+	address := cfg.ListenAddress
+	ports := exporterPorts(cfg)
+	if address != "" && isPrivateListenAddress(address) {
+		return []Finding{{Check: "exporter exposure", Level: LevelOK, Detail: "exporters listen on a private address"}}
+	}
+	covered := cfg.PerimeterFirewall
+	if !covered {
+		fw, present := queryUFW(ctx, rc)
+		if present && fw.Active {
+			covered = true
+			for _, p := range ports {
+				if !ufwRestrictedPortRuleExists(ctx, rc, p) {
+					covered = false
+					break
+				}
+			}
+		}
+	}
+	if covered {
+		return []Finding{{Check: "exporter exposure", Level: LevelOK, Detail: "exporter exposure is covered by a firewall"}}
+	}
+	listener := "all interfaces"
+	if address != "" {
+		listener = address
+	}
+	return []Finding{{Check: "exporter exposure", Level: LevelWarn,
+		Detail: fmt.Sprintf("exporter listener %s is not covered by a host or perimeter firewall", listener),
+		Hint:   "set a private listen_address, configure modules.monitoring.allow_from with an active UFW firewall, or set perimeter_firewall: true"}}
+}
+
+func isPrivateListenAddress(address string) bool {
+	ip := net.ParseIP(address)
+	if ip == nil {
+		return false
+	}
+	if ip.IsLoopback() || ip.IsLinkLocalUnicast() {
+		return true
+	}
+	if v4 := ip.To4(); v4 != nil {
+		return v4[0] == 10 || (v4[0] == 172 && v4[1] >= 16 && v4[1] <= 31) || (v4[0] == 192 && v4[1] == 168)
+	}
+	return ip.IsPrivate()
 }
 
 func doctorSSH(ctx context.Context, rc *RunContext) []Finding {
