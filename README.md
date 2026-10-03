@@ -67,7 +67,7 @@ In interactive mode, `apply` presents each configurable setting (SSH, firewall, 
 
 `apply` is designed to be safe to re-run on a live server:
 
-- **No SSH lockout** — password auth is only disabled when at least one account can log in with a key (declared accounts count) and no other account would be left with only a password; enabling UFW always admits the SSH port; `sshd -t` validates the config
+- **No SSH lockout** — password auth is only disabled when at least one account can log in with a key (declared accounts count while the `users` module is in the same run and has not failed) and no other account would be left with only a password; enabling UFW always admits the SSH port; `sshd -t` validates the config
   - Accounts that still log in with passwords are listed by `check` and `doctor`. Give them keys, or keep password login for them while keys are rolled out with `ssh.password_auth_users: [alice, bob]` (a `Match User` block in the drop-in) and a failing change is reverted; a port change on socket-activated Ubuntu restarts `ssh.socket`. `--force` overrides the key check.
 - **No data loss** — existing directories are never `rm -rf`'d (a populated path blocks a symlink instead), `daemon.json` is merged key by key, `user rehome` keeps the old home as a backup.
 - **Backups & rollback** — every file a run overwrites or removes is saved under `/var/lib/rootfiles/backups/<id>`; `rootfiles rollback <id>` restores it.
