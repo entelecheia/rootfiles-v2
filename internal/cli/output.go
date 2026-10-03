@@ -2,8 +2,10 @@ package cli
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -131,7 +133,16 @@ func resolveRunTarget(cmd *cobra.Command, sys *config.SystemInfo, logger *slog.L
 		if err == nil {
 			return "", snap
 		}
-		logger.Warn("not reusing the last applied config; pass --config or --profile to choose", "config", snap, "err", err)
+		// A non-root user cannot read the root-only copy; that is expected.
+		log := logger.Warn
+		if errors.Is(err, fs.ErrPermission) {
+			log = logger.Debug
+		}
+		log("not reusing the last applied config; pass --config or --profile to choose", "config", snap, "err", err)
+		// Fall back as before the copy existed: minimal, with the home base
+		// detected from what apply wrote (HOME= in /etc/default/useradd).
+		// A suggested profile such as dgx would pin another home base.
+		return "minimal", ""
 	}
 	if last != nil && last.Profile != "" {
 		return last.Profile, ""

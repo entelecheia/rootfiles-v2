@@ -161,16 +161,17 @@ func runApply(cmd *cobra.Command, _ []string) error {
 	if err := state.Record(run); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: recording apply state: %v\n", err)
 	}
-	if runErr == nil {
-		if err := saveAppliedConfig(cfg, configPath); err != nil {
-			fmt.Fprintf(os.Stderr, "warning: saving the applied config: %v\n", err)
-		}
+	// Keep the copy in step with the recorded run, failed or not, as check
+	// follows the recorded run; an outdated copy must not outlive a failed save.
+	if err := saveAppliedConfig(cfg, configPath); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: saving the applied config: %v\n", err)
+		_ = state.SaveAppliedConfig(nil)
 	}
 	auditf(cmd, "apply finished", "profile", profileName, "success", runErr == nil, "backup", run.BackupID)
 	return runErr
 }
 
-// saveAppliedConfig keeps the resolved config of a successful --config apply
+// saveAppliedConfig keeps the resolved config of a recorded --config apply
 // for the subcommands to reuse (resolveRunTarget). Root writes it into the
 // root-owned state directory, fully resolved (no extends) and without an
 // inline tunnel token. A profile apply removes it.

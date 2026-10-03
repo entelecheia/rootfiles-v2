@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -335,5 +336,27 @@ func TestStatus_ConfigLoadErrorHomeBase(t *testing.T) {
 	chdir(t, filepath.Dir(base))
 	if r := status(t, "--home-base", filepath.Base(base)); r.Users.HomeBase != "" || r.Users.Managed != 0 {
 		t.Errorf("relative --home-base: got users=%+v", r.Users)
+	}
+}
+
+// Without a usable kept copy after a config apply, subcommands fall back to
+// minimal plus detection, as before the copy existed, not to a suggested
+// profile such as dgx that pins another home base.
+func TestResolveRunTarget_FallbackAfterConfigApply(t *testing.T) {
+	t.Setenv("ROOTFILES_STATE_DIR", t.TempDir())
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	sub, _, err := NewRootCmd("test", "abc").Find([]string{"user", "add"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dgx := &config.SystemInfo{IsDGX: true}
+	if p, c := resolveRunTarget(sub, dgx, logger); p != "dgx" || c != "" {
+		t.Errorf("never applied: got %q %q, want the suggested dgx", p, c)
+	}
+	if err := state.Record(state.Run{ConfigPath: "/etc/rootfiles/site.yaml", Success: true}); err != nil {
+		t.Fatal(err)
+	}
+	if p, c := resolveRunTarget(sub, dgx, logger); p != "minimal" || c != "" {
+		t.Errorf("config apply without a kept copy: got %q %q, want minimal", p, c)
 	}
 }
