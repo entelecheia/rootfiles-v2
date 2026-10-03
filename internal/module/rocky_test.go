@@ -198,6 +198,22 @@ func TestRockyFirewallAllowsSSHKnownInactiveAndExistingAllowance(t *testing.T) {
 			t.Fatalf("known inactive firewalld returned allowed=%t err=%v", allowed, err)
 		}
 	})
+	t.Run("known inactive on stderr", func(t *testing.T) {
+		dir := t.TempDir()
+		writeRockyFirewallFake(t, dir, "#!/bin/sh\necho 'not running' >&2\nexit 252\n")
+		allowed, err := rockyFirewallAllowsSSH(context.Background(), newDryRunRC(t), 2222)
+		if err != nil || !allowed {
+			t.Fatalf("known inactive stderr returned allowed=%t err=%v", allowed, err)
+		}
+	})
+	t.Run("contradictory inactive output", func(t *testing.T) {
+		dir := t.TempDir()
+		writeRockyFirewallFake(t, dir, "#!/bin/sh\necho running\necho 'not running' >&2\nexit 252\n")
+		allowed, err := rockyFirewallAllowsSSH(context.Background(), newDryRunRC(t), 2222)
+		if err == nil || allowed {
+			t.Fatalf("contradictory firewall state accepted: allowed=%t err=%v", allowed, err)
+		}
+	})
 	t.Run("active zone allows requested port", func(t *testing.T) {
 		dir := t.TempDir()
 		script := "#!/bin/sh\ncase \"$1:$2:$3\" in\n--state::) echo running;;\n--get-active-zones::) echo 'public (default, active)';;\n--zone:public:--query-port) echo yes;;\nesac\n"
