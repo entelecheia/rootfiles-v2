@@ -492,6 +492,7 @@ func TestDefaultHomeBase(t *testing.T) {
 		{"rocky keeps /home", &SystemInfo{OS: "rocky", Version: "9.4", StorageLayout: []MountPoint{data}}, "", "", "/home"},
 		{"useradd HOME cleaned", mounts(data), "HOME=/srv/home/\n", "", "/srv/home"},
 		{"relative useradd HOME ignored", mounts(data), "HOME=home\n", "", "/data/home"},
+		{"indented HOME ignored like useradd", mounts(data), "  HOME=/srv/home\n", "", "/data/home"},
 		{"unsupported distro keeps /home", &SystemInfo{OS: "debian", StorageLayout: []MountPoint{data}}, "", "", "/home"},
 	}
 	for _, tc := range cases {

@@ -87,11 +87,12 @@ func (m *UsersModule) Check(ctx context.Context, rc *RunContext) (*CheckResult, 
 	// Check /etc/default/useradd HOME setting. /home is written too: it is
 	// how home-base detection keeps a /home choice on a host with a data drive.
 	if cfg.HomeBase != "" {
+		want := filepath.Clean(cfg.HomeBase)
 		data, _ := rc.Runner.ReadFile(useraddDefaultsFile)
-		if config.UseraddHome(data) != cfg.HomeBase {
+		if config.UseraddHome(data) != want {
 			changes = append(changes, Change{
-				Description: fmt.Sprintf("Set default useradd HOME to %s", cfg.HomeBase),
-				Command:     fmt.Sprintf("update HOME=%s in %s", cfg.HomeBase, useraddDefaultsFile),
+				Description: fmt.Sprintf("Set default useradd HOME to %s", want),
+				Command:     fmt.Sprintf("update HOME=%s in %s", want, useraddDefaultsFile),
 			})
 		}
 	}
@@ -138,22 +139,23 @@ func (m *UsersModule) Apply(ctx context.Context, rc *RunContext) (*ApplyResult, 
 
 	// Update /etc/default/useradd
 	if cfg.HomeBase != "" {
+		want := filepath.Clean(cfg.HomeBase)
 		data, _ := rc.Runner.ReadFile(useraddDefaultsFile)
-		if config.UseraddHome(data) != cfg.HomeBase {
+		if config.UseraddHome(data) != want {
 			// Replace or append HOME= line
 			lines := strings.Split(string(data), "\n")
 			var newLines []string
 			found := false
 			for _, line := range lines {
 				if strings.HasPrefix(line, "HOME=") {
-					newLines = append(newLines, "HOME="+cfg.HomeBase)
+					newLines = append(newLines, "HOME="+want)
 					found = true
 				} else {
 					newLines = append(newLines, line)
 				}
 			}
 			if !found {
-				newLines = append(newLines, "HOME="+cfg.HomeBase)
+				newLines = append(newLines, "HOME="+want)
 			}
 			content := strings.Join(newLines, "\n")
 			if err := rc.Runner.WriteFile(useraddDefaultsFile, []byte(content), 0644); err != nil {

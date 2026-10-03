@@ -204,12 +204,13 @@ func rootOnlyDir(path string) bool {
 	return ok && st.Uid == rootUID
 }
 
-// UseraddHome returns the last uncommented HOME= value of an
-// /etc/default/useradd file, cleaned, or "" when it is unset or relative.
+// UseraddHome returns the last HOME= value of an /etc/default/useradd
+// file, cleaned, or "" when it is unset or relative. Like useradd, it only
+// reads lines that start with HOME=.
 func UseraddHome(data []byte) string {
 	hb := ""
 	for _, line := range strings.Split(string(data), "\n") {
-		if v, ok := strings.CutPrefix(strings.TrimSpace(line), "HOME="); ok {
+		if v, ok := strings.CutPrefix(line, "HOME="); ok {
 			hb = strings.TrimSpace(v)
 		}
 	}

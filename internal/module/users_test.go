@@ -58,6 +58,7 @@ func TestUsersModule_CheckSyncsUseraddHome(t *testing.T) {
 		{"stale data drive", "HOME=/data/home\n", "/home", true},
 		{"prefix is not a match", "HOME=/raid/home2\n", "/raid/home", true},
 		{"in sync", "HOME=/raid/home\n", "/raid/home", false},
+		{"trailing slash in config", "HOME=/raid/home\n", "/raid/home/", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -73,7 +74,7 @@ func TestUsersModule_CheckSyncsUseraddHome(t *testing.T) {
 			}
 			got := false
 			for _, c := range result.Changes {
-				if c.Command == "update HOME="+tc.homeBase+" in "+path {
+				if strings.HasPrefix(c.Command, "update HOME=") && strings.HasSuffix(c.Command, " in "+path) {
 					got = true
 				}
 			}
@@ -114,6 +115,34 @@ func TestUsersModule_ApplyWritesHomeToUseradd(t *testing.T) {
 	}
 	if !result.Satisfied {
 		t.Errorf("Check after Apply not satisfied: %+v", result.Changes)
+	}
+}
+
+// A home base written with a trailing slash still converges.
+func TestUsersModule_ApplySettlesUncleanHomeBase(t *testing.T) {
+	oldSudoersDir := sudoersDir
+	sudoersDir = t.TempDir()
+	t.Cleanup(func() { sudoersDir = oldSudoersDir })
+	useraddFixture(t, "# HOME=/home\n")
+	rc := newDryRunRC(t)
+	rc.DryRun = false
+	rc.Runner = exec.NewRunner(false, rc.Runner.Logger)
+	rc.Config.Users = config.UsersConfig{HomeBase: t.TempDir() + "/"}
+	for i, wantChanged := range []bool{true, false} {
+		result, err := NewUsersModule().Apply(context.Background(), rc)
+		if err != nil {
+			t.Fatalf("Apply %d: %v", i, err)
+		}
+		if result.Changed != wantChanged {
+			t.Errorf("Apply %d changed = %v, want %v (%v)", i, result.Changed, wantChanged, result.Messages)
+		}
+	}
+	check, err := NewUsersModule().Check(context.Background(), rc)
+	if err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+	if !check.Satisfied {
+		t.Errorf("Check after Apply not satisfied: %+v", check.Changes)
 	}
 }
 
