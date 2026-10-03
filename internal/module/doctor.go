@@ -158,10 +158,10 @@ func doctorDisks(rc *RunContext) []Finding {
 		}
 		var fi syscall.Stat_t
 		if syscall.Stat(p, &fi) == nil {
-			if seenDev[fi.Dev] {
+			if seenDev[uint64(fi.Dev)] {
 				continue
 			}
-			seenDev[fi.Dev] = true
+			seenDev[uint64(fi.Dev)] = true
 		}
 		used := float64(st.Blocks-st.Bfree) / float64(st.Blocks-st.Bfree+st.Bavail) * 100
 		free := float64(st.Bavail) * float64(st.Bsize) / (1 << 30)
