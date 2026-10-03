@@ -174,7 +174,9 @@ extends: %s
 #     allowed_ports: [22, 443]    # the SSH port is always allowed
 #   cloudflared:
 #     enabled: true
-#     # tunnel_token: prefer ROOTFILES_TUNNEL_TOKEN in the environment
+#     # tunnel_token: prefer ROOTFILES_TUNNEL_TOKEN in the environment,
+#     # or a root-owned 0600 file:
+#     # tunnel_token_file: /etc/rootfiles/tunnel-token
 `, extends)
 	return b.String()
 }

@@ -93,9 +93,12 @@ type DockerConfig struct {
 }
 
 type CloudflaredConfig struct {
-	Enabled        bool                 `yaml:"enabled"`
-	TunnelToken    string               `yaml:"tunnel_token,omitempty"`
-	PrivateNetwork PrivateNetworkConfig `yaml:"private_network,omitempty"`
+	Enabled     bool   `yaml:"enabled"`
+	TunnelToken string `yaml:"tunnel_token,omitempty"`
+	// TunnelTokenFile names a root-owned, mode 0600 file holding the token,
+	// read at check/apply time so the token never sits in a site config.
+	TunnelTokenFile string               `yaml:"tunnel_token_file,omitempty"`
+	PrivateNetwork  PrivateNetworkConfig `yaml:"private_network,omitempty"`
 }
 
 type PrivateNetworkConfig struct {

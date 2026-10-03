@@ -468,6 +468,15 @@ rootfiles gpu mig status
 sudo rootfiles tunnel setup "$TOKEN" --vlan-address "172.16.229.32/32"
 ```
 
+On a shared host, keep the token out of command lines and site configs: put it in a root-owned file with mode `0600` and point the site config at it. `check` and `apply` read the file on the server, refuse it when it is group/other readable or not owned by root, and `config show` prints only the path. `--tunnel-token` and `ROOTFILES_TUNNEL_TOKEN` still override the file; a config file may set `tunnel_token` or `tunnel_token_file`, not both.
+
+```yaml
+modules:
+  cloudflared:
+    enabled: true
+    tunnel_token_file: /etc/rootfiles/tunnel-token   # root:root 0600
+```
+
 ```bash
 sudo rootfiles tunnel status
 ```

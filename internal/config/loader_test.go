@@ -365,3 +365,34 @@ func TestIsModuleEnabled(t *testing.T) {
 		t.Error("gpu should not be enabled when gpu_allocation is not enabled")
 	}
 }
+
+func TestLoad_TunnelTokenFile(t *testing.T) {
+	dir := t.TempDir()
+	both := writeFile(t, dir, "both.yaml", "extends: minimal\nmodules:\n  cloudflared:\n    enabled: true\n    tunnel_token: inline\n    tunnel_token_file: /etc/rootfiles/tunnel-token\n")
+	if _, err := Load("", both, nil); err == nil || !strings.Contains(err.Error(), "not both") {
+		t.Errorf("tunnel_token with tunnel_token_file: want 'not both' error, got %v", err)
+	}
+
+	rel := writeFile(t, dir, "rel.yaml", "extends: minimal\nmodules:\n  cloudflared:\n    enabled: true\n    tunnel_token_file: tunnel-token\n")
+	if _, err := Load("", rel, nil); err == nil || !strings.Contains(err.Error(), "tunnel_token_file") {
+		t.Errorf("relative tunnel_token_file: want path error, got %v", err)
+	}
+
+	// The file is read at check/apply time, so a path that only exists on
+	// the server still validates on an operator laptop.
+	ok := writeFile(t, dir, "ok.yaml", "extends: minimal\nmodules:\n  cloudflared:\n    enabled: true\n    tunnel_token_file: /nonexistent/rootfiles/tunnel-token\n")
+	cfg, err := Load("", ok, nil)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Modules.Cloudflared.TunnelTokenFile != "/nonexistent/rootfiles/tunnel-token" || cfg.Modules.Cloudflared.TunnelToken != "" {
+		t.Errorf("unexpected cloudflared config %+v", cfg.Modules.Cloudflared)
+	}
+
+	// ROOTFILES_TUNNEL_TOKEN may still override a file-based config.
+	t.Setenv("ROOTFILES_TUNNEL_TOKEN", "from-env")
+	cfg, err = Load("", ok, nil)
+	if err != nil || cfg.Modules.Cloudflared.TunnelToken != "from-env" {
+		t.Errorf("env override with tunnel_token_file: token=%q err=%v", cfg.Modules.Cloudflared.TunnelToken, err)
+	}
+}

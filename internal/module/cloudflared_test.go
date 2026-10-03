@@ -111,3 +111,91 @@ func TestInstallTunnelService_RejectsBadToken(t *testing.T) {
 		t.Error("token with newline must be rejected")
 	}
 }
+
+// tokenFile writes a token file owned by the test user and points the
+// required owner at that user.
+func tokenFile(t *testing.T, content string, perm os.FileMode) string {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "tunnel-token")
+	if err := os.WriteFile(p, []byte(content), perm); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(p, perm); err != nil {
+		t.Fatal(err)
+	}
+	saved := tunnelTokenFileUID
+	tunnelTokenFileUID = uint32(os.Getuid())
+	t.Cleanup(func() { tunnelTokenFileUID = saved })
+	return p
+}
+
+func TestCloudflared_TokenFileInstallsService(t *testing.T) {
+	fakeCloudflaredPaths(t)
+	fakeBin(t, "systemctl", "ip")
+	path := tokenFile(t, "tok-file\n", 0600)
+
+	rc := newRealRC(t)
+	rc.Config.Modules.Cloudflared = config.CloudflaredConfig{Enabled: true, TunnelTokenFile: path}
+	m := NewCloudflaredModule()
+
+	check, err := m.Check(context.Background(), rc)
+	if err != nil || check.Satisfied {
+		t.Fatalf("Check = %+v, %v; want pending tunnel service", check, err)
+	}
+	if _, err := m.Apply(context.Background(), rc); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	env, _ := os.ReadFile(cloudflaredEnvPath)
+	if string(env) != "TUNNEL_TOKEN=tok-file\n" {
+		t.Errorf("env file = %q, want trimmed token from file", env)
+	}
+	if check, err := m.Check(context.Background(), rc); err != nil || !check.Satisfied {
+		t.Errorf("after Apply Check = %+v, %v; want satisfied", check, err)
+	}
+}
+
+func TestCloudflared_TokenFileRejected(t *testing.T) {
+	fakeCloudflaredPaths(t)
+	cases := map[string]func(t *testing.T) string{
+		"group readable": func(t *testing.T) string { return tokenFile(t, "tok", 0640) },
+		"empty":          func(t *testing.T) string { return tokenFile(t, " \n", 0600) },
+		"missing":        func(t *testing.T) string { return filepath.Join(t.TempDir(), "absent") },
+		"wrong owner": func(t *testing.T) string {
+			p := tokenFile(t, "tok", 0600)
+			tunnelTokenFileUID = uint32(os.Getuid()) + 1
+			return p
+		},
+	}
+	for name, mk := range cases {
+		t.Run(name, func(t *testing.T) {
+			rc := newRealRC(t)
+			rc.Config.Modules.Cloudflared = config.CloudflaredConfig{Enabled: true, TunnelTokenFile: mk(t)}
+			m := NewCloudflaredModule()
+			if _, err := m.Check(context.Background(), rc); err == nil {
+				t.Error("Check accepted a bad tunnel_token_file")
+			}
+			if _, err := m.Apply(context.Background(), rc); err == nil {
+				t.Error("Apply accepted a bad tunnel_token_file")
+			}
+			if _, err := os.Stat(cloudflaredEnvPath); err == nil {
+				t.Error("env file written from a rejected token file")
+			}
+		})
+	}
+}
+
+func TestCloudflared_ExplicitTokenOverridesFile(t *testing.T) {
+	fakeCloudflaredPaths(t)
+	fakeBin(t, "systemctl", "ip")
+	// A world-readable file is never opened when an explicit token is set.
+	path := tokenFile(t, "tok-file", 0644)
+
+	rc := newRealRC(t)
+	rc.Config.Modules.Cloudflared = config.CloudflaredConfig{Enabled: true, TunnelToken: "tok-flag", TunnelTokenFile: path}
+	if _, err := NewCloudflaredModule().Apply(context.Background(), rc); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	if env, _ := os.ReadFile(cloudflaredEnvPath); string(env) != "TUNNEL_TOKEN=tok-flag\n" {
+		t.Errorf("env file = %q, want the explicit token", env)
+	}
+}

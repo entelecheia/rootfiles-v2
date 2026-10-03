@@ -265,9 +265,13 @@ func configureInteractive(cfg *config.Config, yes, dryRun bool) error {
 	// --- Cloudflared ---
 	if cfg.IsModuleEnabled("cloudflared") {
 		fmt.Println("\n--- Cloudflared ---")
-		cfg.Modules.Cloudflared.TunnelToken, err = ui.Input("Tunnel token (empty to skip)", cfg.Modules.Cloudflared.TunnelToken, false)
-		if err != nil {
-			return err
+		if f := cfg.Modules.Cloudflared.TunnelTokenFile; f != "" && cfg.Modules.Cloudflared.TunnelToken == "" {
+			fmt.Printf("  Tunnel token: read from %s\n", f)
+		} else {
+			cfg.Modules.Cloudflared.TunnelToken, err = ui.Input("Tunnel token (empty to skip)", cfg.Modules.Cloudflared.TunnelToken, false)
+			if err != nil {
+				return err
+			}
 		}
 		cfg.Modules.Cloudflared.PrivateNetwork.Enabled, err = ui.ConfirmDefault("Enable VLAN private network?", cfg.Modules.Cloudflared.PrivateNetwork.Enabled, false)
 		if err != nil {
@@ -324,6 +328,9 @@ func configureInteractive(cfg *config.Config, yes, dryRun bool) error {
 		token := cfg.Modules.Cloudflared.TunnelToken
 		if token != "" && len(token) > 8 {
 			token = token[:8] + "..."
+		}
+		if token == "" && cfg.Modules.Cloudflared.TunnelTokenFile != "" {
+			token = "file:" + cfg.Modules.Cloudflared.TunnelTokenFile
 		}
 		fmt.Printf("  Cloudflared: token=%s, vlan=%v", token, cfg.Modules.Cloudflared.PrivateNetwork.Enabled)
 		if cfg.Modules.Cloudflared.PrivateNetwork.Enabled {
