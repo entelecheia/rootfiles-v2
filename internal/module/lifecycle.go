@@ -334,7 +334,7 @@ type AuditFinding struct {
 // missing on the system (restore candidates after an OS reinstall), UID
 // drift, and accounts under home_base that rootfiles does not track.
 func AuditUsers(ctx context.Context, rc *RunContext) ([]AuditFinding, error) {
-	warnUntrustedMetadata(rc)
+	WarnUntrustedMetadata(rc)
 	db, err := LoadUsersDB(rc)
 	if err != nil {
 		return nil, err

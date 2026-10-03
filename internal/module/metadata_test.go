@@ -39,6 +39,30 @@ var untrustedMetaBases = []struct {
 		}
 		return base
 	}, "is a symlink"},
+	{"group-writable users.json", func(t *testing.T, parent string) string {
+		base := writeMeta(t, filepath.Join(parent, "home"))
+		mustChmod(t, filepath.Join(base, ".rootfiles", "users.json"), 0o664)
+		return base
+	}, "writable by group or others"},
+	{"symlink planted inside .rootfiles", func(t *testing.T, parent string) string {
+		base := writeMeta(t, filepath.Join(parent, "home"))
+		if err := os.Symlink(filepath.Join(t.TempDir(), "x"), filepath.Join(base, ".rootfiles", "gpu-allocations.json.tmp")); err != nil {
+			t.Fatal(err)
+		}
+		return base
+	}, "is a symlink"},
+	{"group-writable legacy flat file", func(t *testing.T, parent string) string {
+		base := filepath.Join(parent, "home")
+		if err := os.Mkdir(base, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		db, _ := json.Marshal(UsersDB{Users: []UserMeta{{Name: "mallory"}}})
+		if err := os.WriteFile(filepath.Join(base, ".rootfiles"), db, 0o666); err != nil {
+			t.Fatal(err)
+		}
+		mustChmod(t, filepath.Join(base, ".rootfiles"), 0o666)
+		return base
+	}, "writable by group or others"},
 }
 
 func writeMeta(t *testing.T, base string) string {
@@ -81,6 +105,8 @@ func TestMetadataCommandsRefuseUntrustedBase(t *testing.T) {
 				"user add":    AddUser(ctx, rc, name, nil, nil, true),
 				"restore all": RestoreUsers(ctx, rc, ""),
 			}
+			_, errs["users Check"] = NewUsersModule().Check(ctx, rc)
+			_, errs["storage Check"] = NewStorageModule().Check(ctx, rc)
 			_, errs["gpu Check"] = NewGPUModule().Check(ctx, rc)
 			_, errs["gpu Apply"] = NewGPUModule().Apply(ctx, rc)
 			for what, err := range errs {
