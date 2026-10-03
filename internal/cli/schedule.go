@@ -78,7 +78,7 @@ func newScheduleCmd() *cobra.Command {
 			if resolved, err := filepath.EvalSymlinks(bin); err == nil {
 				bin = resolved
 			}
-			rc, err := buildRunContext(cmd)
+			rc, err := buildConfigFreeRunContext(cmd)
 			if err != nil {
 				return err
 			}
@@ -110,7 +110,7 @@ func newScheduleCmd() *cobra.Command {
 		Use:   "disable",
 		Short: "Stop and remove the report timer",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			rc, err := buildRunContext(cmd)
+			rc, err := buildConfigFreeRunContext(cmd)
 			if err != nil {
 				return err
 			}

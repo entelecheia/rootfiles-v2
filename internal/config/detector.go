@@ -7,6 +7,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -32,6 +33,7 @@ type MountPoint struct {
 	Device    string `json:"device"`
 	MountPath string `json:"mount_path"`
 	FSType    string `json:"fs_type"`
+	Options   string `json:"options,omitempty"`
 }
 
 // DetectSystem probes the current system and returns SystemInfo.
@@ -161,8 +163,8 @@ var homeFS = map[string]bool{"ext4": true, "xfs": true, "btrfs": true, "zfs": tr
 // existing layout wins so a host is never silently re-homed: an uncommented
 // HOME= in /etc/default/useradd (the users module writes it on apply, /home
 // included), then a base where rootfiles already manages users. Otherwise a
-// separate local data drive gets <mount>/home, on APT hosts only: Rocky has
-// no SELinux home labeling for paths outside /home.
+// separate read-write local data drive gets <mount>/home, on APT hosts only:
+// Rocky has no SELinux home labeling for paths outside /home.
 func defaultHomeBase(sys *SystemInfo) string {
 	data, _ := os.ReadFile(useraddDefaultsPath)
 	if hb := UseraddHome(data); hb != "" {
@@ -175,8 +177,12 @@ func defaultHomeBase(sys *SystemInfo) string {
 	}
 	if ResolveDistro(sys).PackageBackend == "apt" {
 		for _, mount := range dataDriveMounts {
-			fsType, homeType := lastMountFS(sys, mount), lastMountFS(sys, mount+"/home")
-			if homeFS[fsType] && (homeType == "" || homeFS[homeType]) && rootOnlyBase(mount+"/home") {
+			m, home := lastMount(sys, mount), lastMount(sys, mount+"/home")
+			homes := mount // the visible mount that holds the homes
+			if home != nil {
+				homes = mount + "/home"
+			}
+			if homeMount(m) && (home == nil || homeMount(home)) && onSeparateDevice(homes) && rootOnlyBase(mount+"/home") {
 				return mount + "/home"
 			}
 		}
@@ -184,16 +190,46 @@ func defaultHomeBase(sys *SystemInfo) string {
 	return "/home"
 }
 
-// lastMountFS returns the filesystem type of the visible (last) mount at
-// path, or "" when nothing is mounted there.
-func lastMountFS(sys *SystemInfo, path string) string {
-	fsType := ""
-	for _, m := range sys.StorageLayout {
-		if m.MountPath == path {
-			fsType = m.FSType
+// lastMount returns the visible (last) mount at path, or nil when nothing
+// is mounted there.
+func lastMount(sys *SystemInfo, path string) *MountPoint {
+	var last *MountPoint
+	for i := range sys.StorageLayout {
+		if sys.StorageLayout[i].MountPath == path {
+			last = &sys.StorageLayout[i]
 		}
 	}
-	return fsType
+	return last
+}
+
+// homeMount reports whether m is a read-write filesystem trusted to hold
+// home directories. useradd fails on a read-only mount.
+func homeMount(m *MountPoint) bool {
+	return m != nil && homeFS[m.FSType] && !slices.Contains(strings.Split(m.Options, ","), "ro")
+}
+
+// onSeparateDevice reports whether path is on a different device than /.
+// A bind mount of the root filesystem reports the root's filesystem type
+// but is not a data drive.
+func onSeparateDevice(path string) bool {
+	dev, ok := deviceOf(path)
+	rootDev, rootOK := deviceOf("/")
+	return ok && rootOK && dev != rootDev
+}
+
+// deviceOf returns the st_dev of path under hostRoot; tests stub it.
+var deviceOf = statDevice
+
+func statDevice(path string) (uint64, bool) {
+	fi, err := os.Stat(filepath.Join(hostRoot, path))
+	if err != nil {
+		return 0, false
+	}
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	if !ok {
+		return 0, false
+	}
+	return uint64(st.Dev), true
 }
 
 // ErrAmbiguousHomeBase means detection found rootfiles metadata under a
@@ -286,8 +322,11 @@ func UseraddHome(data []byte) string {
 	return filepath.Clean(hb)
 }
 
+// procMountsPath is read by detectStorage; tests redirect it.
+var procMountsPath = "/proc/mounts"
+
 func detectStorage(info *SystemInfo) {
-	data, err := os.ReadFile("/proc/mounts")
+	data, err := os.ReadFile(procMountsPath)
 	if err != nil {
 		return
 	}
@@ -300,11 +339,15 @@ func detectStorage(info *SystemInfo) {
 		mountPath := fields[1]
 		for _, prefix := range interesting {
 			if strings.HasPrefix(mountPath, prefix) {
-				info.StorageLayout = append(info.StorageLayout, MountPoint{
+				mp := MountPoint{
 					Device:    fields[0],
 					MountPath: mountPath,
 					FSType:    fields[2],
-				})
+				}
+				if len(fields) > 3 {
+					mp.Options = fields[3]
+				}
+				info.StorageLayout = append(info.StorageLayout, mp)
 				break
 			}
 		}
