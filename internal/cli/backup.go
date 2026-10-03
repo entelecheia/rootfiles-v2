@@ -6,12 +6,32 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
 
 	"github.com/entelecheia/rootfiles-v2/internal/config"
 	"github.com/entelecheia/rootfiles-v2/internal/module"
+)
+
+// What `backup` archives and where the config snapshot comes from; tests
+// point the paths at fixtures and stub the snapshot.
+var (
+	rootSSHDir          = "/root/.ssh"
+	usrLocalBinDir      = "/usr/local/bin"
+	snapshotCurrent     = config.SnapshotCurrent
+	etcBackupCandidates = []string{
+		"/etc/ssh/sshd_config.d/",
+		"/etc/docker/daemon.json",
+		"/etc/systemd/network/",
+		"/etc/ufw/",
+		"/etc/fstab",
+		"/etc/netplan/",
+		"/etc/default/locale",
+		"/etc/timezone",
+		"/etc/default/useradd",
+	}
 )
 
 func newBackupCmd() *cobra.Command {
@@ -34,7 +54,14 @@ func newBackupCmd() *cobra.Command {
 			dirName := fmt.Sprintf("rootfiles-backup-%s-%s", hostname, time.Now().Format("20060102"))
 			backupDir := filepath.Join(outputBase, dirName)
 
-			if err := os.MkdirAll(backupDir, 0755); err != nil {
+			// The backup holds private keys and /etc configs, so it stays
+			// root-only: refuse a directory a user other than root could
+			// control, and create it 0700 through the runner so a dry run
+			// writes nothing.
+			if err := config.RootOnlyBase(configTrustRoot, backupDir, configOwnerUID); err != nil {
+				return fmt.Errorf("refusing backup directory: %w", err)
+			}
+			if err := rc.Runner.MkdirAll(backupDir, 0700); err != nil {
 				return fmt.Errorf("creating backup directory: %w", err)
 			}
 			fmt.Printf("Backup directory: %s\n\n", backupDir)
@@ -43,7 +70,7 @@ func newBackupCmd() *cobra.Command {
 
 			// 1. system-info.json
 			fmt.Print("  system-info.json ... ")
-			if err := backupSystemInfo(backupDir, hostname); err != nil {
+			if err := backupSystemInfo(rc, backupDir, hostname); err != nil {
 				errors = append(errors, fmt.Sprintf("system-info: %v", err))
 				fmt.Println("FAIL")
 			} else {
@@ -110,7 +137,7 @@ func newBackupCmd() *cobra.Command {
 
 			// 8. config-snapshot.yaml
 			fmt.Print("  config-snapshot.yaml ... ")
-			if err := backupConfigSnapshot(backupDir); err != nil {
+			if err := backupConfigSnapshot(rc, backupDir); err != nil {
 				errors = append(errors, fmt.Sprintf("config-snapshot: %v", err))
 				fmt.Println("FAIL")
 			} else {
@@ -137,8 +164,8 @@ func newBackupCmd() *cobra.Command {
 }
 
 // backupSystemInfo writes system detection results + hostname.
-func backupSystemInfo(backupDir, hostname string) error {
-	sysInfo, err := config.DetectSystem()
+func backupSystemInfo(rc *module.RunContext, backupDir, hostname string) error {
+	sysInfo, err := detectSystem()
 	if err != nil {
 		return err
 	}
@@ -153,7 +180,7 @@ func backupSystemInfo(backupDir, hostname string) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(backupDir, "system-info.json"), data, 0644)
+	return rc.Runner.WriteFile(filepath.Join(backupDir, "system-info.json"), data, 0600)
 }
 
 // backupUsersJSON backs up user metadata (managed + system users).
@@ -164,21 +191,9 @@ func backupUsersJSON(rc *module.RunContext, backupDir string) error {
 
 // backupEtcConfig creates a tar.gz of key /etc/ config files.
 func backupEtcConfig(ctx context.Context, rc *module.RunContext, backupDir string) error {
-	outPath := filepath.Join(backupDir, "etc-config.tar.gz")
 	// Collect paths that exist
-	candidates := []string{
-		"/etc/ssh/sshd_config.d/",
-		"/etc/docker/daemon.json",
-		"/etc/systemd/network/",
-		"/etc/ufw/",
-		"/etc/fstab",
-		"/etc/netplan/",
-		"/etc/default/locale",
-		"/etc/timezone",
-		"/etc/default/useradd",
-	}
 	var existing []string
-	for _, p := range candidates {
+	for _, p := range etcBackupCandidates {
 		if _, err := os.Stat(p); err == nil {
 			existing = append(existing, p)
 		}
@@ -186,9 +201,7 @@ func backupEtcConfig(ctx context.Context, rc *module.RunContext, backupDir strin
 	if len(existing) == 0 {
 		return fmt.Errorf("no /etc/ config files found")
 	}
-	args := append([]string{"czf", outPath}, existing...)
-	_, err := rc.Runner.Run(ctx, "tar", args...)
-	return err
+	return backupTar(ctx, rc, filepath.Join(backupDir, "etc-config.tar.gz"), existing...)
 }
 
 // backupCrontab saves root's crontab.
@@ -200,26 +213,34 @@ func backupCrontab(ctx context.Context, rc *module.RunContext, backupDir string)
 	if result.Stdout == "" {
 		return fmt.Errorf("empty crontab")
 	}
-	return os.WriteFile(filepath.Join(backupDir, "crontab-root.txt"), []byte(result.Stdout), 0644)
+	return rc.Runner.WriteFile(filepath.Join(backupDir, "crontab-root.txt"), []byte(result.Stdout), 0600)
 }
 
 // backupRootSSH archives /root/.ssh/.
 func backupRootSSH(ctx context.Context, rc *module.RunContext, backupDir string) error {
-	if _, err := os.Stat("/root/.ssh"); err != nil {
-		return fmt.Errorf("/root/.ssh not found")
+	if _, err := os.Stat(rootSSHDir); err != nil {
+		return fmt.Errorf("%s not found", rootSSHDir)
 	}
-	outPath := filepath.Join(backupDir, "root-ssh.tar.gz")
-	_, err := rc.Runner.Run(ctx, "tar", "czf", outPath, "/root/.ssh/")
-	return err
+	return backupTar(ctx, rc, filepath.Join(backupDir, "root-ssh.tar.gz"), rootSSHDir)
 }
 
 // backupUsrLocalBin archives /usr/local/bin/.
 func backupUsrLocalBin(ctx context.Context, rc *module.RunContext, backupDir string) error {
-	if _, err := os.Stat("/usr/local/bin"); err != nil {
-		return fmt.Errorf("/usr/local/bin not found")
+	if _, err := os.Stat(usrLocalBinDir); err != nil {
+		return fmt.Errorf("%s not found", usrLocalBinDir)
 	}
-	outPath := filepath.Join(backupDir, "usr-local-bin.tar.gz")
-	_, err := rc.Runner.Run(ctx, "tar", "czf", outPath, "/usr/local/bin/")
+	return backupTar(ctx, rc, filepath.Join(backupDir, "usr-local-bin.tar.gz"), usrLocalBinDir)
+}
+
+// backupTar creates an archive under umask 077 so local users cannot read
+// it whatever the process umask is; RunShell keeps it dry-run aware.
+func backupTar(ctx context.Context, rc *module.RunContext, outPath string, paths ...string) error {
+	parts := make([]string, 0, len(paths)+2)
+	parts = append(parts, "tar czf", shellQuoteCLI(outPath))
+	for _, p := range paths {
+		parts = append(parts, shellQuoteCLI(p))
+	}
+	_, err := rc.Runner.RunShell(ctx, "umask 077 && "+strings.Join(parts, " "))
 	return err
 }
 
@@ -229,19 +250,21 @@ func backupDockerImages(ctx context.Context, rc *module.RunContext, backupDir st
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(backupDir, "docker-images.txt"), []byte(result.Stdout), 0644)
+	return rc.Runner.WriteFile(filepath.Join(backupDir, "docker-images.txt"), []byte(result.Stdout), 0600)
 }
 
 // backupConfigSnapshot generates a rootfiles YAML config from current system state.
-func backupConfigSnapshot(backupDir string) error {
-	cfg, err := config.SnapshotCurrent()
+func backupConfigSnapshot(rc *module.RunContext, backupDir string) error {
+	cfg, err := snapshotCurrent()
 	if err != nil {
 		return err
 	}
+	// As in apply's kept copy, the inline tunnel token stays out of the file.
+	cfg.Modules.Cloudflared.TunnelToken = ""
 	data, err := config.MarshalYAML(cfg)
 	if err != nil {
 		return err
 	}
 	header := "# rootfiles config snapshot — generated by `rootfiles backup`\n# Use with: rootfiles apply --config <this-file> [--dry-run]\n\n"
-	return os.WriteFile(filepath.Join(backupDir, "config-snapshot.yaml"), []byte(header+string(data)), 0644)
+	return rc.Runner.WriteFile(filepath.Join(backupDir, "config-snapshot.yaml"), []byte(header+string(data)), 0600)
 }

@@ -565,7 +565,7 @@ func BackupUsers(rc *RunContext, outputPath string) error {
 		outputPath = fmt.Sprintf("rootfiles-users-%s-%s.json", hostname, time.Now().Format("20060102"))
 	}
 
-	if err := os.WriteFile(outputPath, data, 0600); err != nil {
+	if err := rc.Runner.WriteFile(outputPath, data, 0600); err != nil {
 		return fmt.Errorf("writing backup: %w", err)
 	}
 
