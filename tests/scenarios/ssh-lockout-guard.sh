@@ -53,12 +53,19 @@ EOF
 rootfiles apply --config /tmp/site-pw.yaml --module ssh --yes 2>&1 || true
 assert_file_contains "$CONF" "PasswordAuthentication no"
 assert_file_contains "$CONF" "Match User pwuser"
+# The CI image has no sshd; install it so the effective config is checked
+# by sshd itself (Match scoping, drop-in Include) rather than by grep.
+if ! command -v sshd >/dev/null 2>&1; then
+    apt-get update -qq >/dev/null && apt-get install -y -qq openssh-server >/dev/null
+fi
 mkdir -p /run/sshd
-if sshd -T -C user=pwuser,host=ci,addr=10.0.0.1 | grep -qx "passwordauthentication yes" \
-   && sshd -T -C user=opsuser,host=ci,addr=10.0.0.1 | grep -qx "passwordauthentication no"; then
+ssh-keygen -A >/dev/null
+pw_eff=$(sshd -T -C user=pwuser,host=ci,addr=10.0.0.1 | grep '^passwordauthentication ' || true)
+ops_eff=$(sshd -T -C user=opsuser,host=ci,addr=10.0.0.1 | grep '^passwordauthentication ' || true)
+if [ "$pw_eff" = "passwordauthentication yes" ] && [ "$ops_eff" = "passwordauthentication no" ]; then
     pass "password login kept for pwuser only"
 else
-    fail "effective sshd config does not scope the exception to pwuser"
+    fail "effective sshd config does not scope the exception to pwuser (pwuser: '$pw_eff', opsuser: '$ops_eff')"
 fi
 
 # Step 3: enabling UFW always admits the SSH port, even with no allowed_ports
