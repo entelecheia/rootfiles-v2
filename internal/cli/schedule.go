@@ -78,7 +78,10 @@ func newScheduleCmd() *cobra.Command {
 			if resolved, err := filepath.EvalSymlinks(bin); err == nil {
 				bin = resolved
 			}
-			rc := buildRunContext(cmd)
+			rc, err := buildRunContext(cmd)
+			if err != nil {
+				return err
+			}
 			if err := rc.Runner.MkdirAll(state.Dir(), 0755); err != nil {
 				return err
 			}
@@ -107,7 +110,10 @@ func newScheduleCmd() *cobra.Command {
 		Use:   "disable",
 		Short: "Stop and remove the report timer",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			rc := buildRunContext(cmd)
+			rc, err := buildRunContext(cmd)
+			if err != nil {
+				return err
+			}
 			_, _ = rc.Runner.Run(cmd.Context(), "systemctl", "disable", "--now", scheduleName+".timer")
 			for _, ext := range []string{".timer", ".service"} {
 				if err := rc.Runner.Remove(filepath.Join(scheduleUnitDir, scheduleName+ext)); err != nil && !os.IsNotExist(err) {

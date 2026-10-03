@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -540,6 +541,72 @@ func TestDefaultHomeBase_UntrustedBases(t *testing.T) {
 				t.Errorf("defaultHomeBase = %q, want /home", got)
 			}
 		})
+	}
+}
+
+// AC4b: metadata under another base stops detection instead of guessing.
+func TestLoad_AmbiguousHomeBase(t *testing.T) {
+	sys := &SystemInfo{OS: "dgx-os"}
+	writeMeta := func(t *testing.T, root, base, name string) {
+		t.Helper()
+		dir := filepath.Join(root, base, ".rootfiles")
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			t.Fatal(err)
+		}
+		chmod(t, filepath.Join(root, base), 0755)
+		chmod(t, dir, 0755)
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("{}"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, name := range []string{"users.json", "gpu-allocations.json"} {
+		t.Run(name, func(t *testing.T) {
+			root := isolateHomeDetection(t, "HOME=/raid/home\n", "")
+			t.Setenv("ROOTFILES_HOME_BASE", "")
+			writeMeta(t, root, "/home", name)
+			_, err := Load("minimal", "", sys)
+			if !errors.Is(err, ErrAmbiguousHomeBase) || !strings.Contains(err.Error(), "/home/.rootfiles/"+name) {
+				t.Fatalf("Load error = %v, want ambiguous home base naming %s", err, name)
+			}
+			cfg, err := LoadWithHomeBase("minimal", "", sys, "/raid/home")
+			if err != nil || cfg.Users.HomeBase != "/raid/home" {
+				t.Errorf("--home-base: got %v, err=%v", cfg, err)
+			}
+			t.Setenv("ROOTFILES_HOME_BASE", "/home")
+			if cfg, err = Load("minimal", "", sys); err != nil || cfg.Users.HomeBase != "/home" {
+				t.Errorf("env override: got %v, err=%v", cfg, err)
+			}
+		})
+	}
+	t.Run("metadata only under the detected base", func(t *testing.T) {
+		root := isolateHomeDetection(t, "HOME=/raid/home\n", "")
+		t.Setenv("ROOTFILES_HOME_BASE", "")
+		mkdirMode(t, filepath.Join(root, "raid", "home"), 0755)
+		writeMeta(t, root, "/raid/home", "users.json")
+		if cfg, err := Load("minimal", "", sys); err != nil || cfg.Users.HomeBase != "/raid/home" {
+			t.Errorf("got %v, err=%v", cfg, err)
+		}
+	})
+	t.Run("untrusted base ignored", func(t *testing.T) {
+		root := isolateHomeDetection(t, "", "")
+		t.Setenv("ROOTFILES_HOME_BASE", "")
+		writeMeta(t, root, "/data/home", "users.json")
+		chmod(t, filepath.Join(root, "data"), 0o1777)
+		if cfg, err := Load("minimal", "", sys); err != nil || cfg.Users.HomeBase != "/home" {
+			t.Errorf("got %v, err=%v", cfg, err)
+		}
+	})
+}
+
+func TestDefaultHomeBase_LastMountEntryWins(t *testing.T) {
+	isolateHomeDetection(t, "", "")
+	local := MountPoint{Device: "/dev/sdb1", MountPath: "/data", FSType: "ext4"}
+	nfs := MountPoint{Device: "nas:/x", MountPath: "/data", FSType: "nfs4"}
+	if got := defaultHomeBase(&SystemInfo{OS: "ubuntu", StorageLayout: []MountPoint{local, nfs}}); got != "/home" {
+		t.Errorf("local disk under NFS: got %q, want /home", got)
+	}
+	if got := defaultHomeBase(&SystemInfo{OS: "ubuntu", StorageLayout: []MountPoint{nfs, local}}); got != "/data/home" {
+		t.Errorf("NFS under local disk: got %q, want /data/home", got)
 	}
 }
 

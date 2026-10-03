@@ -1,6 +1,8 @@
 package config
 
 import (
+	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -173,14 +175,41 @@ func defaultHomeBase(sys *SystemInfo) string {
 	}
 	if ResolveDistro(sys).PackageBackend == "apt" {
 		for _, mount := range dataDriveMounts {
+			// The last /proc/mounts entry for a path is the visible one.
+			fsType := ""
 			for _, m := range sys.StorageLayout {
-				if m.MountPath == mount && homeFS[m.FSType] && rootOnlyBase(mount+"/home") {
-					return mount + "/home"
+				if m.MountPath == mount {
+					fsType = m.FSType
 				}
+			}
+			if homeFS[fsType] && rootOnlyBase(mount+"/home") {
+				return mount + "/home"
 			}
 		}
 	}
 	return "/home"
+}
+
+// ErrAmbiguousHomeBase means detection found rootfiles metadata under a
+// base other than the one it picked.
+var ErrAmbiguousHomeBase = errors.New("ambiguous home base")
+
+// detectHomeBase is defaultHomeBase, refusing to guess when another
+// root-controlled base already holds rootfiles user or GPU metadata.
+func detectHomeBase(sys *SystemInfo) (string, error) {
+	hb := defaultHomeBase(sys)
+	for _, other := range managedHomeBases {
+		if other == hb || !rootOnlyBase(other) {
+			continue
+		}
+		for _, f := range []string{"users.json", "gpu-allocations.json"} {
+			path := filepath.Join(other, ".rootfiles", f)
+			if _, err := os.Lstat(filepath.Join(hostRoot, path)); err == nil {
+				return "", fmt.Errorf("users.home_base: %w: detected %s, but %s exists; set users.home_base, ROOTFILES_HOME_BASE or --home-base", ErrAmbiguousHomeBase, hb, path)
+			}
+		}
+	}
+	return hb, nil
 }
 
 // rootOnlyBase reports whether only root controls base: its parent and, if
@@ -211,7 +240,7 @@ func UseraddHome(data []byte) string {
 	hb := ""
 	for _, line := range strings.Split(string(data), "\n") {
 		if v, ok := strings.CutPrefix(line, "HOME="); ok {
-			hb = strings.TrimSpace(v)
+			hb = strings.TrimSuffix(v, "\r")
 		}
 	}
 	if !filepath.IsAbs(hb) {

@@ -40,6 +40,12 @@ func LoadSite(path string) (*Config, error) {
 // Load resolves a profile by name (or custom path, "-" for stdin), applies
 // env overrides, validates the result and attaches system info.
 func Load(profileName, customPath string, sysInfo *SystemInfo) (*Config, error) {
+	return LoadWithHomeBase(profileName, customPath, sysInfo, "")
+}
+
+// LoadWithHomeBase is Load with a --home-base override. It is applied
+// before home-base detection, so it also settles an ambiguous host.
+func LoadWithHomeBase(profileName, customPath string, sysInfo *SystemInfo, homeBase string) (*Config, error) {
 	var cfg *Config
 	var err error
 
@@ -61,8 +67,15 @@ func Load(profileName, customPath string, sysInfo *SystemInfo) (*Config, error) 
 		return nil, fmt.Errorf("modules.cloudflared: set tunnel_token or tunnel_token_file, not both")
 	}
 	applyEnvOverrides(cfg)
+	if homeBase != "" {
+		cfg.Users.HomeBase = homeBase
+	}
 	if cfg.Users.HomeBase == "" {
-		cfg.Users.HomeBase = defaultHomeBase(sysInfo)
+		hb, err := detectHomeBase(sysInfo)
+		if err != nil {
+			return nil, err
+		}
+		cfg.Users.HomeBase = hb
 	}
 	if err := cfg.Validate(); err != nil {
 		return nil, err

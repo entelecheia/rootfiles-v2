@@ -24,7 +24,10 @@ func newBackupCmd() *cobra.Command {
 			skipDocker, _ := cmd.Flags().GetBool("skip-docker")
 			skipEtc, _ := cmd.Flags().GetBool("skip-etc")
 
-			rc := buildRunContext(cmd)
+			rc, err := buildRunContext(cmd)
+			if err != nil {
+				return err
+			}
 			ctx := cmd.Context()
 
 			hostname, _ := os.Hostname()

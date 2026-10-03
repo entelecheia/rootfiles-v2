@@ -40,7 +40,10 @@ func TestBuildRunContext_DefaultsToMinimalProfile(t *testing.T) {
 		t.Fatalf("find tunnel status: %v", err)
 	}
 	// Set required flag values to their defaults.
-	rc := buildRunContext(sub)
+	rc, err := buildRunContext(sub)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if rc == nil {
 		t.Fatal("buildRunContext returned nil")
 	}
