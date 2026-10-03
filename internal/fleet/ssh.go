@@ -139,6 +139,19 @@ func statusSystem(res Result) (*config.SystemInfo, bool) {
 	return report.System, true
 }
 
+// ambiguousHomeBaseStatus reports a remote status whose config error is a
+// home base the host refused to guess. Site configs always set home_base,
+// so a rollout settles it.
+func ambiguousHomeBaseStatus(res Result) bool {
+	if res.Command != "status" || res.ExitCode != 0 || len(res.Remote) == 0 {
+		return false
+	}
+	var report struct {
+		Ambiguous bool `json:"home_base_ambiguous"`
+	}
+	return json.Unmarshal(res.Remote, &report) == nil && report.Ambiguous
+}
+
 func unverifiedStatus(res Result) bool {
 	return res.Command == "status" && res.State == "error" && res.ExitCode == 0 && strings.Contains(res.Reason, "inventory configuration is unverified")
 }

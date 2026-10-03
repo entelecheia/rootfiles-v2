@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -140,12 +141,15 @@ func renderProfileSection(out io.Writer, active, flagProfile string, sys *config
 }
 
 type statusReport struct {
-	Version             string                   `json:"version,omitempty"`
-	System              *config.SystemInfo       `json:"system"`
-	Hostname            string                   `json:"hostname"`
-	Profile             string                   `json:"profile,omitempty"`
-	ConfigPath          string                   `json:"config_path,omitempty"`
-	ConfigErr           string                   `json:"config_error,omitempty"`
+	Version    string             `json:"version,omitempty"`
+	System     *config.SystemInfo `json:"system"`
+	Hostname   string             `json:"hostname"`
+	Profile    string             `json:"profile,omitempty"`
+	ConfigPath string             `json:"config_path,omitempty"`
+	ConfigErr  string             `json:"config_error,omitempty"`
+	// HomeBaseAmbiguous marks a config error that only an explicit
+	// home_base settles; fleet rollouts carry one in every site config.
+	HomeBaseAmbiguous   bool                     `json:"home_base_ambiguous,omitempty"`
 	ModuleCheckError    string                   `json:"module_check_error,omitempty"`
 	AppliedConfigSHA256 string                   `json:"applied_config_sha256,omitempty"`
 	LastApply           *state.Run               `json:"last_apply"`
@@ -173,6 +177,7 @@ func collectStatus(ctx context.Context, rc *module.RunContext, sys *config.Syste
 	r.Hostname, _ = os.Hostname()
 	if cfgErr != nil {
 		r.ConfigErr = cfgErr.Error()
+		r.HomeBaseAmbiguous = errors.Is(cfgErr, config.ErrAmbiguousHomeBase)
 	} else if fingerprint, err := appliedFingerprint(rc.Config, profile, configPath); err == nil {
 		r.AppliedConfigSHA256 = fingerprint
 	}

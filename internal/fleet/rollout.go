@@ -39,7 +39,7 @@ func Apply(ctx context.Context, runner SSHRunner, hosts []NamedHost, dry bool) [
 			return Result{Host: h.Name, Command: "apply", State: "error", Reason: "host has no site config", ExitCode: 1}
 		}
 		status := runner.ReadOnly(ctx, h, "status")
-		if status.ExitCode != 0 || (status.State != "ok" && status.State != "drift" && !unverifiedStatus(status)) {
+		if status.ExitCode != 0 || (status.State != "ok" && status.State != "drift" && !unverifiedStatus(status) && !ambiguousHomeBaseStatus(status)) {
 			status.Command = "apply"
 			return status
 		}

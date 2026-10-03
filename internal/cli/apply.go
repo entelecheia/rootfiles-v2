@@ -187,10 +187,9 @@ func homeBaseFlag(cmd *cobra.Command) string {
 	return v
 }
 
+// applyFlagOverrides applies the remaining CLI flags; --home-base is applied
+// by config.LoadWithHomeBase before home-base detection.
 func applyFlagOverrides(cmd *cobra.Command, cfg *config.Config) {
-	if v, _ := cmd.Flags().GetString("home-base"); v != "" {
-		cfg.Users.HomeBase = v
-	}
 	if v, _ := cmd.Flags().GetString("tunnel-token"); v != "" {
 		cfg.Modules.Cloudflared.TunnelToken = v
 	}

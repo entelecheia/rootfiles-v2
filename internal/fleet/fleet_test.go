@@ -137,6 +137,36 @@ func TestUnverifiedStatusCanProceedOnlyWithRemoteSystemEvidence(t *testing.T) {
 	}
 }
 
+// AC4c: an ambiguous native home base does not block a rollout whose site
+// config sets home_base; any other config error still does.
+func TestApplyProceedsOnAmbiguousHomeBaseStatus(t *testing.T) {
+	callsFile := filepath.Join(t.TempDir(), "calls")
+	run := func(status string) []Result {
+		t.Helper()
+		bin := writeFakeSSH(t, "#!/bin/sh\n"+
+			"printf '%s\\n' \"$7\" >> "+shellQuote(callsFile)+"\n"+
+			"case \"$7\" in\n"+
+			"  *\"status -o json\"*) printf '%s\\n' "+shellQuote(status)+" ;;\n"+
+			"  *) echo applied ;;\n"+
+			"esac\n")
+		hosts := []NamedHost{{Name: "n1", Host: Host{SSH: "n1", EffectiveConfig: []byte("users:\n  home_base: /home\n")}, Sudo: "none"}}
+		return Apply(context.Background(), SSHRunner{Binary: bin}, hosts, true)
+	}
+	system := `"system":{"os":"ubuntu","version":"24.04"}`
+	got := run(`{"config_error":"users.home_base: ambiguous home base: detected /raid/home, but /home/.rootfiles/users.json exists","home_base_ambiguous":true,` + system + `}`)
+	if len(got) != 1 || got[0].State != "ok" {
+		t.Fatalf("ambiguous home base blocked the rollout: %#v", got)
+	}
+	calls, _ := os.ReadFile(callsFile)
+	if !strings.Contains(string(calls), "apply --yes --dry-run --config -") {
+		t.Fatalf("apply was not attempted: %q", calls)
+	}
+	got = run(`{"config_error":"invalid YAML",` + system + `}`)
+	if len(got) != 1 || got[0].State != "error" || !strings.Contains(got[0].Reason, "invalid YAML") {
+		t.Fatalf("other config errors must still block: %#v", got)
+	}
+}
+
 func TestInspectStatusHealth(t *testing.T) {
 	for _, tc := range []struct{ name, payload, wantState, wantReason string }{
 		{"config error", `{"config_error":"bad config","system":{"os":"ubuntu"}}`, "error", "remote config error"},
