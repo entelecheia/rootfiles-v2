@@ -392,26 +392,52 @@ func TestResolveRunTarget_FallbackAfterConfigApply(t *testing.T) {
 	}
 }
 
-// Rolling back the last recorded run drops its kept copy; rolling back an
-// older backup keeps it.
+// Any rollback drops the kept copy.
 func TestForgetRolledBackRun(t *testing.T) {
 	t.Setenv("ROOTFILES_STATE_DIR", t.TempDir())
-	if err := state.Record(state.Run{BackupID: "20261004-000002", Success: true}); err != nil {
-		t.Fatal(err)
-	}
 	if err := state.SaveAppliedConfig([]byte("users: {}\n")); err != nil {
 		t.Fatal(err)
 	}
-	if err := forgetRolledBackRun("20261004-000001"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(state.AppliedConfigPath()); err != nil {
-		t.Errorf("rolling back an older backup removed the copy: %v", err)
-	}
-	if err := forgetRolledBackRun("20261004-000002"); err != nil {
+	if err := forgetRolledBackRun(); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := os.Stat(state.AppliedConfigPath()); !os.IsNotExist(err) {
-		t.Errorf("rolling back the last run kept its copy: %v", err)
+		t.Errorf("rollback kept the copy: %v", err)
+	}
+}
+
+// A non-root user cannot read the root-only copy: read-only commands fall
+// back quietly, but a mutating one (a dry run, since it is not root) warns
+// that its preview is not the applied config.
+func TestResolveRunTarget_WarnsMutatingPreview(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads a 0000 file")
+	}
+	t.Setenv("ROOTFILES_STATE_DIR", t.TempDir())
+	cfg := &config.Config{}
+	print, _ := cfg.Fingerprint()
+	if err := state.Record(state.Run{ConfigPath: "/etc/rootfiles/site.yaml", ConfigSHA256: print, Success: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := saveAppliedConfig(cfg); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(state.AppliedConfigPath(), 0o000); err != nil {
+		t.Fatal(err)
+	}
+	root := NewRootCmd("test", "abc")
+	for _, tc := range []struct {
+		path []string
+		warn bool
+	}{{[]string{"user", "add"}, true}, {[]string{"user", "list"}, false}} {
+		sub, _, err := root.Find(tc.path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var log bytes.Buffer
+		resolveRunTarget(sub, slog.New(slog.NewTextHandler(&log, nil)))
+		if got := strings.Contains(log.String(), "not reusing"); got != tc.warn {
+			t.Errorf("%v: warned = %v, want %v (%q)", tc.path, got, tc.warn, log.String())
+		}
 	}
 }

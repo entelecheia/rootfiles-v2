@@ -138,12 +138,14 @@ func resolveRunTarget(cmd *cobra.Command, logger *slog.Logger) (profile, configP
 		if err == nil {
 			return "", snap
 		}
-		// A non-root user cannot read the root-only copy; that is expected.
+		// A non-root user cannot read the root-only copy; that is expected for
+		// read-only commands, but a dry run of a mutating one would preview
+		// another config than the real run, so it is warned about.
 		log := logger.Warn
-		if errors.Is(err, fs.ErrPermission) {
+		if errors.Is(err, fs.ErrPermission) && cmd.Annotations[annotMutates] != "true" {
 			log = logger.Debug
 		}
-		log("not reusing the last applied config; pass --config or --profile to choose", "config", snap, "err", err)
+		log("not reusing the last applied config; pass --config or --profile to choose, or run as root", "config", snap, "err", err)
 	}
 	// As before the copy existed: the home base is detected from what apply
 	// wrote (HOME= in /etc/default/useradd).
