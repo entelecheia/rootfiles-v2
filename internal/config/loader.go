@@ -26,6 +26,11 @@ func LoadSite(path string) (*Config, error) {
 	if cf := cfg.Modules.Cloudflared; cf.TunnelToken != "" && cf.TunnelTokenFile != "" {
 		return nil, fmt.Errorf("modules.cloudflared: set tunnel_token or tunnel_token_file, not both")
 	}
+	// The controller fingerprints site configs without seeing the host, so
+	// a host-detected home base would always read as drift.
+	if cfg.Users.HomeBase == "" {
+		return nil, fmt.Errorf("users.home_base: site configs must set it explicitly")
+	}
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
@@ -56,6 +61,9 @@ func Load(profileName, customPath string, sysInfo *SystemInfo) (*Config, error) 
 		return nil, fmt.Errorf("modules.cloudflared: set tunnel_token or tunnel_token_file, not both")
 	}
 	applyEnvOverrides(cfg)
+	if cfg.Users.HomeBase == "" {
+		cfg.Users.HomeBase = defaultHomeBase(sysInfo)
+	}
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}

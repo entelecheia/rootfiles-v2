@@ -56,9 +56,9 @@ func TestResolveProfile_Minimal(t *testing.T) {
 	if !cfg.Modules.Cloudflared.Enabled {
 		t.Error("cloudflared module should be enabled in minimal")
 	}
-	// Users config
-	if cfg.Users.HomeBase != "/home" {
-		t.Errorf("home_base = %q, want /home", cfg.Users.HomeBase)
+	// Users config: home_base is left unset so Load can detect a data drive
+	if cfg.Users.HomeBase != "" {
+		t.Errorf("home_base = %q, want unset", cfg.Users.HomeBase)
 	}
 	if cfg.Users.DefaultShell != "/usr/bin/zsh" {
 		t.Errorf("default_shell = %q, want /usr/bin/zsh", cfg.Users.DefaultShell)
@@ -115,8 +115,8 @@ func TestResolveProfile_GPUServer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if cfg.Users.HomeBase != "/data/home" {
-		t.Errorf("home_base = %q, want /data/home", cfg.Users.HomeBase)
+	if cfg.Users.HomeBase != "" {
+		t.Errorf("home_base = %q, want unset", cfg.Users.HomeBase)
 	}
 	if !cfg.Modules.Docker.Enabled {
 		t.Error("docker should be enabled")
@@ -412,5 +412,91 @@ func TestValidate_PasswordAuthUsers(t *testing.T) {
 	ok := &Config{SSH: SSHConfig{DisablePasswordAuth: true, PasswordAuthUsers: []string{"bob", "carol.k"}}}
 	if err := ok.Validate(); err != nil {
 		t.Errorf("valid exception list rejected: %v", err)
+	}
+}
+
+// isolateHomeDetection points home-base detection at temp files instead of
+// the host's /etc/default/useradd and /home/.rootfiles.
+func isolateHomeDetection(t *testing.T, useradd string, managedUnderHome bool) {
+	t.Helper()
+	dir := t.TempDir()
+	oldUseradd, oldMeta := useraddDefaultsPath, homeMetaDir
+	t.Cleanup(func() { useraddDefaultsPath, homeMetaDir = oldUseradd, oldMeta })
+	useraddDefaultsPath = filepath.Join(dir, "useradd")
+	homeMetaDir = filepath.Join(dir, "home-rootfiles")
+	if useradd != "" {
+		if err := os.WriteFile(useraddDefaultsPath, []byte(useradd), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if managedUnderHome {
+		if err := os.Mkdir(homeMetaDir, 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestDefaultHomeBase(t *testing.T) {
+	mounts := func(m ...MountPoint) *SystemInfo { return &SystemInfo{StorageLayout: m} }
+	data := MountPoint{Device: "/dev/sdb1", MountPath: "/data", FSType: "ext4"}
+	cases := []struct {
+		name    string
+		sys     *SystemInfo
+		useradd string
+		managed bool
+		want    string
+	}{
+		{"no system info", nil, "", false, "/home"},
+		{"no data drive", mounts(), "", false, "/home"},
+		{"data drive", mounts(data), "", false, "/data/home"},
+		{"raid preferred over data", mounts(data, MountPoint{"/dev/md0", "/raid", "xfs"}), "", false, "/raid/home"},
+		{"network filesystem skipped", mounts(MountPoint{"nas:/x", "/data", "nfs4"}), "", false, "/home"},
+		{"ephemeral /mnt skipped", mounts(MountPoint{"/dev/sdb1", "/mnt", "ext4"}), "", false, "/home"},
+		{"nested mount skipped", mounts(MountPoint{"/dev/sdb1", "/data/ssd", "ext4"}), "", false, "/home"},
+		{"custom useradd HOME kept", mounts(data), "SHELL=/bin/sh\nHOME=/srv/home\n", false, "/srv/home"},
+		{"stock useradd HOME=/home ignored", mounts(data), "HOME=/home\n", false, "/data/home"},
+		{"commented useradd HOME ignored", mounts(data), "# HOME=/srv/home\n", false, "/data/home"},
+		{"users already managed under /home", mounts(data), "", true, "/home"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			isolateHomeDetection(t, tc.useradd, tc.managed)
+			if got := defaultHomeBase(tc.sys); got != tc.want {
+				t.Errorf("defaultHomeBase = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestLoad_HomeBaseDetectionOnlyWhenUnset(t *testing.T) {
+	isolateHomeDetection(t, "", false)
+	sys := &SystemInfo{StorageLayout: []MountPoint{{Device: "/dev/sdb1", MountPath: "/data", FSType: "xfs"}}}
+
+	cfg, err := Load("minimal", "", sys)
+	if err != nil || cfg.Users.HomeBase != "/data/home" {
+		t.Fatalf("unset home_base: got %q, err=%v; want /data/home", cfg.Users.HomeBase, err)
+	}
+
+	explicit := filepath.Join(t.TempDir(), "site.yaml")
+	if err := os.WriteFile(explicit, []byte("extends: minimal\nusers:\n  home_base: /home\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if cfg, err = Load("", explicit, sys); err != nil || cfg.Users.HomeBase != "/home" {
+		t.Errorf("explicit home_base: got %q, err=%v; want /home", cfg.Users.HomeBase, err)
+	}
+
+	t.Setenv("ROOTFILES_HOME_BASE", "/env/home")
+	if cfg, err = Load("minimal", "", sys); err != nil || cfg.Users.HomeBase != "/env/home" {
+		t.Errorf("env override: got %q, err=%v; want /env/home", cfg.Users.HomeBase, err)
+	}
+}
+
+func TestLoadSite_RequiresExplicitHomeBase(t *testing.T) {
+	site := filepath.Join(t.TempDir(), "site.yaml")
+	if err := os.WriteFile(site, []byte("extends: minimal\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadSite(site); err == nil || !strings.Contains(err.Error(), "users.home_base") {
+		t.Errorf("site config without home_base: want users.home_base error, got %v", err)
 	}
 }

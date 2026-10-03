@@ -135,6 +135,60 @@ func detectMemory(info *SystemInfo) {
 	}
 }
 
+// Paths consulted when users.home_base is unset; tests redirect them.
+var (
+	useraddDefaultsPath = "/etc/default/useradd"
+	homeMetaDir         = "/home/.rootfiles"
+)
+
+// dataDriveMounts are tried in order. /mnt is excluded: cloud VMs mount
+// ephemeral scratch disks there.
+var dataDriveMounts = []string{"/raid", "/data", "/nvme"}
+
+// homeFS lists local filesystems trusted to hold home directories.
+var homeFS = map[string]bool{"ext4": true, "xfs": true, "btrfs": true, "zfs": true}
+
+// defaultHomeBase picks users.home_base when a config leaves it unset. An
+// existing layout wins so a host is never silently re-homed: a custom HOME
+// in /etc/default/useradd, then users rootfiles already manages under
+// /home. Otherwise a separate local data drive gets <mount>/home.
+func defaultHomeBase(sys *SystemInfo) string {
+	if hb := useraddHome(); hb != "" {
+		return hb
+	}
+	if _, err := os.Stat(homeMetaDir); err == nil {
+		return "/home"
+	}
+	if sys != nil {
+		for _, mount := range dataDriveMounts {
+			for _, m := range sys.StorageLayout {
+				if m.MountPath == mount && homeFS[m.FSType] {
+					return mount + "/home"
+				}
+			}
+		}
+	}
+	return "/home"
+}
+
+// useraddHome returns a non-default HOME from /etc/default/useradd, or "".
+func useraddHome() string {
+	data, err := os.ReadFile(useraddDefaultsPath)
+	if err != nil {
+		return ""
+	}
+	hb := ""
+	for _, line := range strings.Split(string(data), "\n") {
+		if v, ok := strings.CutPrefix(strings.TrimSpace(line), "HOME="); ok {
+			hb = strings.TrimSpace(v)
+		}
+	}
+	if hb == "/home" {
+		return ""
+	}
+	return hb
+}
+
 func detectStorage(info *SystemInfo) {
 	data, err := os.ReadFile("/proc/mounts")
 	if err != nil {

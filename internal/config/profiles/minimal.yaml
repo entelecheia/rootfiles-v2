@@ -20,7 +20,6 @@ packages_extra:
   - fail2ban
 
 users:
-  home_base: /home
   default_shell: /usr/bin/zsh
   default_groups:
     - sudo
