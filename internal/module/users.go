@@ -143,7 +143,10 @@ func (m *UsersModule) Apply(ctx context.Context, rc *RunContext) (*ApplyResult, 
 		data, _ := rc.Runner.ReadFile(useraddDefaultsFile)
 		if config.UseraddHome(data) != want {
 			// Replace or append HOME= line
-			lines := strings.Split(string(data), "\n")
+			var lines []string
+			if trimmed := strings.TrimRight(string(data), "\n"); trimmed != "" {
+				lines = strings.Split(trimmed, "\n")
+			}
 			var newLines []string
 			found := false
 			for _, line := range lines {
@@ -157,7 +160,7 @@ func (m *UsersModule) Apply(ctx context.Context, rc *RunContext) (*ApplyResult, 
 			if !found {
 				newLines = append(newLines, "HOME="+want)
 			}
-			content := strings.Join(newLines, "\n")
+			content := strings.Join(newLines, "\n") + "\n"
 			if err := rc.Runner.WriteFile(useraddDefaultsFile, []byte(content), 0644); err != nil {
 				return nil, fmt.Errorf("writing %s: %w", useraddDefaultsFile, err)
 			}

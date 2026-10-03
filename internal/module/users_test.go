@@ -106,8 +106,8 @@ func TestUsersModule_ApplyWritesHomeToUseradd(t *testing.T) {
 	if got := config.UseraddHome(data); got != "/home" {
 		t.Errorf("useradd HOME = %q, want /home:\n%s", got, data)
 	}
-	if !strings.Contains(string(data), "SHELL=/bin/sh") || !strings.Contains(string(data), "# HOME=/home") {
-		t.Errorf("other useradd lines not preserved:\n%s", data)
+	if want := "SHELL=/bin/sh\n# HOME=/home\nHOME=/home\n"; string(data) != want {
+		t.Errorf("useradd = %q, want %q", data, want)
 	}
 	result, err := NewUsersModule().Check(context.Background(), rc)
 	if err != nil {
@@ -123,11 +123,12 @@ func TestUsersModule_ApplySettlesUncleanHomeBase(t *testing.T) {
 	oldSudoersDir := sudoersDir
 	sudoersDir = t.TempDir()
 	t.Cleanup(func() { sudoersDir = oldSudoersDir })
-	useraddFixture(t, "# HOME=/home\n")
+	path := useraddFixture(t, "# HOME=/home\n")
 	rc := newDryRunRC(t)
 	rc.DryRun = false
 	rc.Runner = exec.NewRunner(false, rc.Runner.Logger)
-	rc.Config.Users = config.UsersConfig{HomeBase: t.TempDir() + "/"}
+	base := t.TempDir()
+	rc.Config.Users = config.UsersConfig{HomeBase: base + "/"}
 	for i, wantChanged := range []bool{true, false} {
 		result, err := NewUsersModule().Apply(context.Background(), rc)
 		if err != nil {
@@ -143,6 +144,13 @@ func TestUsersModule_ApplySettlesUncleanHomeBase(t *testing.T) {
 	}
 	if !check.Satisfied {
 		t.Errorf("Check after Apply not satisfied: %+v", check.Changes)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "# HOME=/home\nHOME=" + base + "\n"; string(data) != want {
+		t.Errorf("useradd = %q, want %q", data, want)
 	}
 }
 

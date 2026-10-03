@@ -508,7 +508,7 @@ All flags can be set via environment variables for unattended operation:
 |----------|-------------|---------|
 | `ROOTFILES_PROFILE` | Profile name | `minimal` |
 | `ROOTFILES_YES` | Skip all prompts | `false` |
-| `ROOTFILES_HOME_BASE` | Custom home directory | data drive `<mount>/home`, else `/home` |
+| `ROOTFILES_HOME_BASE` | Custom home directory | detected (see [User management](#user-management)) |
 | `ROOTFILES_USER` | Username to create | — |
 | `ROOTFILES_TUNNEL_TOKEN` | Cloudflare tunnel token | — |
 | `ROOTFILES_VLAN_ADDRESS` | VLAN private IP | — |
