@@ -394,7 +394,8 @@ func TestLoad_TunnelTokenFile(t *testing.T) {
 	cfg, err = Load("", ok, nil)
 	if err != nil || cfg.Modules.Cloudflared.TunnelToken != "from-env" {
 		t.Errorf("env override with tunnel_token_file: token=%q err=%v", cfg.Modules.Cloudflared.TunnelToken, err)
-||||||| parent of 6ada776 (feat(ssh): report password-only accounts and allow per-user password exceptions (#6))
+	}
+}
 
 func TestValidate_PasswordAuthUsers(t *testing.T) {
 	cases := map[string][]string{
