@@ -48,7 +48,7 @@ func noHostCommands(t *testing.T) {
 	t.Setenv("PATH", t.TempDir())
 }
 
-func TestBuildRunContext_DefaultsToMinimalProfile(t *testing.T) {
+func TestBuildRunContext_LoadsWithoutFlags(t *testing.T) {
 	noHostCommands(t)
 	// Build a root command so buildRunContext can resolve persistent flags.
 	root := NewRootCmd("test", "abc")
@@ -191,6 +191,28 @@ func TestBuildRunContext_ConfigSelection(t *testing.T) {
 	if rc, err := runContextFor(t, buildRunContext, userAdd); err != nil || rc.Config.Users.HomeBase != "/srv/home" {
 		t.Errorf("last applied config: got %+v, err=%v", rc, err)
 	}
+	// A relative recorded path is not resolved against the current directory.
+	other := t.TempDir()
+	writeFile(t, filepath.Join(other, "site.yaml"), "extends: minimal\nusers:\n  home_base: /srv/other\n")
+	chdir(t, other)
+	if err := state.Record(state.Run{ConfigPath: "site.yaml", Success: true}); err != nil {
+		t.Fatal(err)
+	}
+	if rc, err := runContextFor(t, buildRunContext, userAdd); err == nil && rc.Config.Users.HomeBase == "/srv/other" {
+		t.Error("relative recorded config path was resolved against the current directory")
+	}
+}
+
+func chdir(t *testing.T, dir string) {
+	t.Helper()
+	old, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chdir(old) })
 }
 
 // #36 AC1, AC3: the config-free fallback keeps env overrides and --home-base.
@@ -240,5 +262,10 @@ func TestStatus_ConfigLoadErrorHomeBase(t *testing.T) {
 	}
 	if r := status(t, "--home-base", base); r.Users.HomeBase != base || r.Users.Managed != 1 {
 		t.Errorf("--home-base: got users=%+v", r.Users)
+	}
+	// A relative home base is what failed validation; it is not read either.
+	chdir(t, filepath.Dir(base))
+	if r := status(t, "--home-base", filepath.Base(base)); r.Users.HomeBase != "" || r.Users.Managed != 0 {
+		t.Errorf("relative --home-base: got users=%+v", r.Users)
 	}
 }

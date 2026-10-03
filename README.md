@@ -226,7 +226,7 @@ Unified at-a-glance view — system info, active profile, module satisfaction, G
 rootfiles status
 ```
 
-Without flags, `status`, `check` and the `user`, `gpu`, `tunnel`, `schedule` and `backup` subcommands use the profile/config last applied on this host (falling back to detection); `--profile` and `--config` override it. `user`, `gpu`, `backup` and the tunnel commands that read tunnel settings stop on a config load error; `tunnel status`, `restart`, `update` and `schedule` continue with env overrides and `--home-base` only. When the config does not load and no home base is given, `status` skips the user and GPU databases instead of reading them under `/home`. `-o json` is available. Evaluate against a specific profile without applying anything:
+Without flags, `status`, `check` and the `user`, `gpu`, `tunnel`, `schedule` and `backup` subcommands use the profile/config last applied on this host (falling back to detection); `--profile` and `--config` override it. `apply` records `--config` as an absolute path, and a recorded relative path (from older versions) is ignored rather than resolved against the current directory. `user`, `gpu`, `backup` and the tunnel commands that read tunnel settings stop on a config load error; `tunnel status`, `restart`, `update` and `schedule` continue with env overrides and `--home-base` only. When the config does not load and no absolute home base is given, `status` skips the user and GPU databases instead of reading them under `/home`; `doctor` uses the same fallback. `-o json` is available. Evaluate against a specific profile without applying anything:
 
 ```bash
 rootfiles status --profile dgx

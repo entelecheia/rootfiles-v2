@@ -148,7 +148,7 @@ func runApply(cmd *cobra.Command, _ []string) error {
 		ConfigSHA256: fingerprint,
 		Version:      buildVersion,
 		Profile:      profileName,
-		ConfigPath:   configPath,
+		ConfigPath:   recordedConfigPath(configPath),
 		StartedAt:    started,
 		FinishedAt:   time.Now().UTC(),
 		Success:      runErr == nil,

@@ -193,8 +193,8 @@ func buildRunContext(cmd *cobra.Command) (*module.RunContext, error) {
 }
 
 // buildConfigFreeRunContext is buildRunContext for commands that need no
-// profile config, such as `tunnel status`: a load error is logged and an
-// empty config is used.
+// profile config, such as `tunnel status`: a load error is logged and
+// config.Fallback is used.
 func buildConfigFreeRunContext(cmd *cobra.Command) (*module.RunContext, error) {
 	return loadRunContext(cmd, true)
 }
@@ -213,7 +213,7 @@ func loadRunContext(cmd *cobra.Command, tolerateLoadErr bool) (*module.RunContex
 	if sysErr != nil {
 		logger.Warn("system detection failed, using defaults", "err", sysErr)
 	}
-	// Pick the config as apply and check do: flags, env, the last applied
+	// Pick the config as check and status do: flags, env, the last applied
 	// config or profile, then system detection's suggestion.
 	profileName, configPath := resolveTarget(cmd, sysInfo)
 	cfg, cfgErr := config.LoadWithHomeBase(profileName, configPath, sysInfo, homeBaseFlag(cmd))

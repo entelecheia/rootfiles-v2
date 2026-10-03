@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 
 	"github.com/spf13/cobra"
 
@@ -83,7 +84,9 @@ func resolveTarget(cmd *cobra.Command, sys *config.SystemInfo) (profile, configP
 		return profile, configPath
 	}
 	if last, err := state.Last(); err == nil && last != nil {
-		if last.ConfigPath != "" && last.ConfigPath != "-" {
+		// Only an absolute recorded path names the applied file; a relative
+		// one would resolve against the current directory.
+		if filepath.IsAbs(last.ConfigPath) {
 			if _, err := os.Stat(last.ConfigPath); err == nil {
 				return "", last.ConfigPath
 			}

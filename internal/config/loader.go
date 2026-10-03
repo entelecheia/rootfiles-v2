@@ -94,6 +94,9 @@ func Fallback(sysInfo *SystemInfo, homeBase string) *Config {
 	if homeBase != "" {
 		cfg.Users.HomeBase = homeBase
 	}
+	if !filepath.IsAbs(cfg.Users.HomeBase) {
+		cfg.Users.HomeBase = "" // a relative base is what failed validation
+	}
 	return cfg
 }
 

@@ -16,6 +16,7 @@ func TestMain(m *testing.M) {
 		panic(err)
 	}
 	os.Setenv("ROOTFILES_STATE_DIR", stateDir)
+	os.Setenv("ROOTFILES_LOG_FILE", stateDir+"/audit.log")
 	for _, k := range []string{"ROOTFILES_PROFILE", "ROOTFILES_TIMEZONE", "ROOTFILES_TUNNEL_TOKEN",
 		"ROOTFILES_VLAN_ADDRESS", "ROOTFILES_VLAN_INTERFACE", "ROOTFILES_DOCKER_ROOT", "ROOTFILES_DATA_DIR"} {
 		os.Unsetenv(k)

@@ -39,7 +39,7 @@ func runDoctor(cmd *cobra.Command, _ []string) error {
 	profile, configPath := resolveTarget(cmd, sys)
 	cfg, loadErr := config.LoadWithHomeBase(profile, configPath, sys, homeBaseFlag(cmd))
 	if loadErr != nil {
-		cfg = &config.Config{System: sys}
+		cfg = config.Fallback(sys, homeBaseFlag(cmd))
 	}
 
 	runner := exec.NewRunner(true, slog.New(slog.NewTextHandler(io.Discard, nil)))
