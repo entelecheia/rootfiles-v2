@@ -3,7 +3,7 @@
 [![Test](https://github.com/entelecheia/rootfiles-v2/actions/workflows/test.yaml/badge.svg)](https://github.com/entelecheia/rootfiles-v2/actions/workflows/test.yaml)
 [![Release](https://img.shields.io/github/v/release/entelecheia/rootfiles-v2)](https://github.com/entelecheia/rootfiles-v2/releases/latest)
 
-Server bootstrapping tool for Ubuntu and NVIDIA DGX OS. Single binary, declarative profiles, root-level system configuration.
+Server bootstrapping for Ubuntu, NVIDIA DGX OS and Rocky Linux core profiles. Single binary, declarative host configuration, and an SSH fleet controller for Linux and macOS.
 
 ## What it does
 
@@ -12,7 +12,7 @@ Server bootstrapping tool for Ubuntu and NVIDIA DGX OS. Single binary, declarati
 ```
 rootfiles-v2 (root)              →  dotfiles-v2 (user)
 ━━━━━━━━━━━━━━━━━━━━━━           ━━━━━━━━━━━━━━━━━━━━
-System packages (apt)             User dotfiles (chezmoi)
+System packages (APT/DNF)             User dotfiles (chezmoi)
 User accounts (/raid/home/)       Shell (zsh, starship, oh-my-zsh)
 SSH server hardening              Dev tools (fnm, uv, pipx)
 Docker + NVIDIA toolkit           Homebrew packages
@@ -112,7 +112,7 @@ rootfiles config show --config site.yaml               # fully merged result (to
 sudo rootfiles apply --config site.yaml
 ```
 
-`--config -` reads the config from stdin, which is handy for fleets: `ssh gpu01 sudo rootfiles apply --yes --config - < site.yaml` (rootfiles itself stays single-host; drive many hosts from Ansible or a shell loop).
+`--config -` reads fully resolved configuration from stdin. For multiple hosts, use the `rootfiles fleet` controller below; it resolves inventory configs before streaming and preserves applied provenance.
 
 ## Modules
 
@@ -567,3 +567,161 @@ Every push and pull request runs:
 ## License
 
 MIT
+
+## Fleet controller
+
+The fleet controller reads an operator-owned inventory file. Start with [`docs/fleet.example.yaml`](docs/fleet.example.yaml), copy it outside the repository, and edit the SSH aliases, scrape addresses, groups, and site config paths. Site config paths are relative to the inventory and are fully validated before the controller opens SSH connections.
+
+```sh
+rootfiles fleet status --inventory ~/.config/rootfiles/fleet.yaml --all
+rootfiles fleet check --inventory ~/.config/rootfiles/fleet.yaml --group gpu -o json
+rootfiles fleet doctor --inventory ~/.config/rootfiles/fleet.yaml --host gpu01
+rootfiles fleet apply --inventory ~/.config/rootfiles/fleet.yaml --host gpu01 --yes --dry-run
+rootfiles fleet update --inventory ~/.config/rootfiles/fleet.yaml --group gpu --version v1.2.3 --yes --timeout 25m
+```
+
+Read-only reports and rollout preflight checks use a 45-second SSH deadline. Mutating fleet commands allow 15 minutes per host by default; set `--timeout` to another positive duration up to 24 hours when package or image work needs longer. The deadline covers one host's remote command, not the entire rollout.
+
+Read-only commands use bounded parallel SSH and never prompt for a sudo password. Rollouts require an explicit host, group, or `--all` selection plus `--yes`; they run serially and stop after the first failure. Try one host as a canary before widening a rollout. A timeout or cancellation can leave the current host partially changed or its remote process still running, while later hosts remain skipped. Inspect that host with `fleet status`, `fleet check`, and the rootfiles lock state before retrying.
+
+## Host exporters
+
+```yaml
+modules:
+  monitoring:
+    enabled: true
+    node_exporter: true
+    dcgm_exporter: true
+    node_exporter_port: 9100
+    dcgm_exporter_port: 9400
+    # For hosts validated against newer drivers, pin a compatible image:
+    # dcgm_exporter_image: nvcr.io/nvidia/k8s/dcgm-exporter:4.6.1-4.8.4-distroless
+    listen_address: 10.0.0.11
+    allow_from:
+      - 10.0.0.5/32
+    perimeter_firewall: false
+```
+
+DCGM exporter requires an already working NVIDIA GPU, driver, Docker daemon, and NVIDIA container runtime. If UFW is active, `allow_from` only applies when its incoming default is deny/reject and there are no broader allow rules for either exporter port. rootfiles reports conflicts and leaves existing firewall rules unchanged. It does not enable UFW.
+
+The default DCGM image is pinned to `nvcr.io/nvidia/k8s/dcgm-exporter:3.3.8-3.6.0` for the fleet's older R535 driver baseline. Blackwell and newer driver combinations have not been qualified with that old DCGM release. Select a pinned `dcgm_exporter_image` only after checking NVIDIA's supported GPU, driver, and paired DCGM/exporter versions and validating the endpoint on that host. NVIDIA documents that driver 580.126.16 requires DCGM 4.3.x or newer, so the default image must not be assumed compatible with R580 hosts. The suggested 4.6.1-4.8.4 distroless override needs real GPU validation before rollout.
+
+The managed collector file selects only temperature, utilization, framebuffer used/free, XID, and volatile double-bit ECC fields shared by the legacy and newer image versions. ECC series may be absent on GPUs or configurations that do not expose ECC counters. The DCGM 3.3.8 XID gauge reports the last observed XID and may stay stale after recovery.
+
+## Monitoring hub
+
+The opt-in monitoring hub runs Prometheus, Alertmanager and Grafana on one Docker host. It reads scrape targets from Prometheus file discovery; `rootfiles fleet targets --push <hub>` replaces that target file atomically, and Prometheus reloads it from the mounted discovery directory without restarting the containers.
+
+The discovery directory must contain only the configured targets file. Check and Apply refuse other entries before mounting the directory, including credentials, symlinks, subdirectories and temporary staging files. A check that overlaps an atomic target push can be retried after the rename completes.
+
+Hub web ports bind to `127.0.0.1` by default. For remote Grafana access, route a Cloudflare Tunnel to `http://127.0.0.1:<grafana_port>` and apply the access policy in Cloudflare. The hub does not open a public port. Prometheus, Alertmanager and Grafana use the pinned profile images. The generated administrator password is stored in a root-only file; no default password is used.
+
+The hub stores persistent data below `data_dir`. Existing data directories must be real root-owned directories with root read/write/execute permission; rootfiles refuses directories that do not meet this requirement and leaves existing ownership and contents untouched.
+
+Enable the hub on the selected host:
+
+```yaml
+modules:
+  docker:
+    enabled: true
+  monitoring:
+    enabled: true
+    node_exporter: true
+    hub:
+      enabled: true
+      data_dir: /data/monitoring
+      retention: 30d
+      targets_file: /etc/rootfiles/monitoring/discovery/targets.json
+      alert_receiver_file: /etc/rootfiles/monitoring/receiver.yaml
+      telegram_bot_token_file: /etc/rootfiles/monitoring/telegram-bot-token
+      listen_address: 127.0.0.1
+      grafana_port: 3000
+      prometheus_port: 9090
+      alertmanager_port: 9093
+```
+
+`alert_receiver_file` is a complete Alertmanager configuration. For a Telegram receiver, point `bot_token_file` at the fixed container path shown below; rootfiles mounts the configured host token file there. The receiver file, token file and any configured Grafana password file must be regular files owned by root with mode `0600`.
+
+```yaml
+route:
+  receiver: operations
+receivers:
+  - name: operations
+    telegram_configs:
+      - bot_token_file: /run/secrets/telegram-bot-token
+        chat_id: 123456789
+```
+
+Configure exporter hosts with the addresses reachable from the hub and the appropriate node/DCGM exporters. Inventory group labels are published as `group_<name>=true`, alongside `host` and `exporter=node|dcgm`. Prometheus also adds `instance=<address>:<port>`; use the inventory `host` label to identify a machine because the DCGM container's own `Hostname` label may be its container hostname.
+
+```yaml
+defaults:
+  sudo: nopasswd
+hosts:
+  monitor01:
+    ssh: monitor01
+    address: 10.0.0.5
+    groups: [monitoring]
+    config: sites/monitor01.yaml
+  gpu01:
+    ssh: gpu01
+    address: 10.0.0.11
+    groups: [gpu, dgx]
+    config: sites/gpu01.yaml
+```
+
+For an exporter host with existing Docker and NVIDIA runtime, enable only monitoring and bind the exporters to its private address and allow the hub address through the host firewall. If a perimeter firewall already restricts the segment, set `perimeter_firewall: true` instead of adding host firewall rules.
+
+```yaml
+modules:
+  docker:
+    enabled: true
+  nvidia:
+    enabled: true
+  monitoring:
+    enabled: true
+    node_exporter: true
+    dcgm_exporter: true
+    listen_address: 10.0.0.11
+    allow_from:
+      - 10.0.0.5/32
+```
+
+Apply the hub and exporters, enable periodic host reports, then publish the targets:
+
+```bash
+sudo rootfiles check --config sites/monitor01.yaml
+sudo rootfiles apply --yes --config sites/monitor01.yaml
+sudo rootfiles schedule enable --on-calendar hourly
+rootfiles fleet targets --inventory fleet.yaml --push monitor01 --yes
+```
+
+Check service and endpoint health on the hub:
+
+```bash
+sudo systemctl is-active rootfiles-monitoring-hub.service
+sudo docker compose -f /etc/rootfiles/monitoring/compose.yaml ps --format json
+curl -fsS http://127.0.0.1:9090/-/ready
+curl -fsS http://127.0.0.1:9090/api/v1/targets
+curl -fsS http://127.0.0.1:9093/-/ready
+curl -fsS http://127.0.0.1:3000/api/health
+```
+
+Confirm that host reports reach Prometheus and that warnings are distinct from doctor failures:
+
+```bash
+sudo rootfiles check -o prometheus | rg '^rootfiles_(module_satisfied|check_timestamp_seconds)'
+sudo rootfiles doctor -o prometheus | rg '^rootfiles_doctor_findings'
+```
+
+The doctor alert counts only `rootfiles_doctor_findings{level="fail"}`. Warnings do not fire it. The stale-report alert checks each inventory `host` label and fires when a node exporter is up but its timestamp metric is missing, or when the most recent report is older than 48 hours. This accommodates the default daily timer and its randomized delay; use a daily or more frequent schedule for this alert expectation.
+
+The hub checks target reachability, node filesystem use, rootfiles drift and failed doctor findings, stale reports, and DCGM XID, ECC and temperature metrics. The default temperature alert is above 85 C for 10 minutes. This is an alert threshold, not a GPU operating limit; tune it to the vendor thresholds for each model. The managed DCGM collector enables `DCGM_FI_DEV_ECC_DBE_VOL_TOTAL`; the pinned exporter otherwise comments out ECC collection. Its `DCGM_FI_DEV_XID_ERRORS` metric reports the last XID code and may remain stale after recovery.
+
+## Rocky Linux support
+
+The native Rocky profile covers 8.9, 8.10 and 9.x with RPM/DNF package queries and installation, native locale configuration, timezone, host basics, accounts/wheel, sshd and security-only DNF automatic updates with chronyd. Existing accounts retain passwords, keys, homes and unrelated groups. The installer verifies a privileged command path without replacing unrelated files.
+
+The Rocky capability gate refuses Docker, NVIDIA/GPU allocation, Cloudflare, storage, firewall/network and monitoring modules until those paths are qualified on RPM-family systems. `system.apt_mirror` and EPEL-dependent fail2ban are also gated. This is a core-profile support boundary; it does not claim Ubuntu profile parity or compatibility with other RHEL derivatives. Use `--profile rocky`, or adapt an existing restricted site configuration explicitly. Security-only updates require usable repository advisory metadata; missing metadata is reported instead of treated as successful protection.
+
+The gate runs before application, including dry-run. Backup/rollback restores managed files; it does not uninstall packages, reverse service effects or move user data. Verify actual SSH access after any change before ending the administrative session.

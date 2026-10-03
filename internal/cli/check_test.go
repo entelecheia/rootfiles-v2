@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"github.com/entelecheia/rootfiles-v2/internal/config"
 	"testing"
 )
 
@@ -23,6 +24,9 @@ func TestNewCheckCmd_Basics(t *testing.T) {
 }
 
 func TestCheck_JSONOutputAndExitCode(t *testing.T) {
+	previous := detectSystem
+	detectSystem = func() (*config.SystemInfo, error) { return &config.SystemInfo{OS: "ubuntu", Version: "22.04"}, nil }
+	t.Cleanup(func() { detectSystem = previous })
 	t.Setenv("ROOTFILES_STATE_DIR", t.TempDir())
 	root := NewRootCmd("test", "abc")
 	var buf bytes.Buffer

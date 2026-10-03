@@ -25,7 +25,7 @@ func NewRootCmd(version, commit string) *cobra.Command {
 	root.PersistentFlags().Bool("yes", false, "Unattended mode (skip all prompts)")
 	root.PersistentFlags().Bool("dry-run", false, "Show what would be done without executing")
 	root.PersistentFlags().Bool("force", false, "Override safety guards (e.g. SSH lockout protection)")
-	root.PersistentFlags().String("profile", "", "Profile name (base, minimal, dgx, gpu-server, full)")
+	root.PersistentFlags().String("profile", "", "Profile name (base, minimal, dgx, gpu-server, full, rocky)")
 	root.PersistentFlags().StringSlice("module", nil, "Run specific modules only")
 	root.PersistentFlags().String("config", "", "Path to custom config YAML")
 
@@ -48,6 +48,7 @@ func NewRootCmd(version, commit string) *cobra.Command {
 	root.AddCommand(newConfigCmd())
 	root.AddCommand(newDoctorCmd())
 	root.AddCommand(newScheduleCmd())
+	root.AddCommand(newFleetCmd())
 
 	markMutating(root)
 	return root

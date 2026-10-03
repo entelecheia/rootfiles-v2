@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+
+	"github.com/entelecheia/rootfiles-v2/internal/config"
 )
 
 // Account helpers shared by user add/restore/passwd.
@@ -17,9 +19,53 @@ import (
 // anything else keeps usernames safe to embed in sudoers lines and paths.
 var validUsername = regexp.MustCompile(`^[a-z_][a-z0-9_.-]*[$]?$`)
 
+// lookupAccountGroup is replaceable in tests so distro-native administrator
+// group handling can be checked without consulting or changing the host.
+var lookupAccountGroup = user.LookupGroup
+
 func checkUsername(name string) error {
 	if len(name) == 0 || len(name) > 32 || !validUsername.MatchString(name) {
 		return fmt.Errorf("invalid username %q (lowercase letters, digits, '_', '-', '.')", name)
+	}
+	return nil
+}
+
+// accountGroupsForSystem maps the conventional sudo group to the platform's
+// native administrator group while retaining every other requested group.
+// Membership changes are additive; this never removes existing groups.
+func accountGroupsForSystem(system *config.SystemInfo, groups []string) []string {
+	adminGroup := config.AdminGroup(system)
+	seen := make(map[string]bool, len(groups))
+	result := make([]string, 0, len(groups))
+	for _, group := range groups {
+		if group == "sudo" && adminGroup != "sudo" {
+			group = adminGroup
+		}
+		if group == "" || seen[group] {
+			continue
+		}
+		seen[group] = true
+		result = append(result, group)
+	}
+	return result
+}
+
+// requireNativeAdminGroup fails rather than silently creating an account that
+// lacks the administrator group requested through the conventional "sudo" name.
+func requireNativeAdminGroup(system *config.SystemInfo, groups []string) error {
+	adminGroup := config.AdminGroup(system)
+	requested := false
+	for _, group := range groups {
+		if group == "sudo" || group == adminGroup {
+			requested = true
+			break
+		}
+	}
+	if !requested {
+		return nil
+	}
+	if _, err := lookupAccountGroup(adminGroup); err != nil {
+		return fmt.Errorf("native administrator group %q is unavailable: %w", adminGroup, err)
 	}
 	return nil
 }
@@ -68,7 +114,7 @@ func existingGroups(groups []string) (present, missing []string) {
 			continue
 		}
 		seen[g] = true
-		if _, err := user.LookupGroup(g); err == nil {
+		if _, err := lookupAccountGroup(g); err == nil {
 			present = append(present, g)
 		} else {
 			missing = append(missing, g)

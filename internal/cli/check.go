@@ -38,7 +38,7 @@ func runCheck(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
-	sysInfo, err := config.DetectSystem()
+	sysInfo, err := detectSystem()
 	if err != nil {
 		return fmt.Errorf("detecting system: %w", err)
 	}
@@ -58,10 +58,20 @@ func runCheck(cmd *cobra.Command, _ []string) error {
 		Level: slog.LevelWarn,
 	}))
 	runner := exec.NewRunner(true, logger) // always dry-run for check
-	apt := exec.NewAPT(runner)
+	apt, err := exec.NewPackageManager(runner, sysInfo)
+	if err != nil {
+		return err
+	}
 
 	registry := module.NewRegistry()
 	modules := registry.Resolve(cfg, moduleFilter)
+	names := make([]string, 0, len(modules))
+	for _, m := range modules {
+		names = append(names, m.Name())
+	}
+	if err := config.ValidateCapabilities(cfg, sysInfo, names); err != nil {
+		return err
+	}
 
 	rc := &module.RunContext{
 		Config: cfg,
@@ -108,6 +118,11 @@ func runCheck(cmd *cobra.Command, _ []string) error {
 		fmt.Fprintf(out, "rootfiles_check_timestamp_seconds %d\n", time.Now().Unix())
 	} else if format == "json" {
 		report := checkReport{Profile: profileName, ConfigPath: configPath, Satisfied: allOK}
+		report.Version = buildVersion
+		report.AppliedConfigSHA256, err = appliedFingerprint(cfg, profileName, configPath)
+		if err != nil {
+			return err
+		}
 		for _, m := range modules {
 			mr := checkModule{Name: m.Name(), Satisfied: true, Changes: []module.Change{}}
 			if r := results[m.Name()]; r != nil {
@@ -138,10 +153,12 @@ type checkModule struct {
 }
 
 type checkReport struct {
-	Profile    string        `json:"profile,omitempty"`
-	ConfigPath string        `json:"config_path,omitempty"`
-	Satisfied  bool          `json:"satisfied"`
-	Modules    []checkModule `json:"modules"`
+	Version             string        `json:"version,omitempty"`
+	Profile             string        `json:"profile,omitempty"`
+	ConfigPath          string        `json:"config_path,omitempty"`
+	AppliedConfigSHA256 string        `json:"applied_config_sha256,omitempty"`
+	Satisfied           bool          `json:"satisfied"`
+	Modules             []checkModule `json:"modules"`
 }
 
 func renderCheckText(out io.Writer, profileName, configPath string, modules []module.Module, results map[string]*module.CheckResult, satisfied int, verbose bool) {

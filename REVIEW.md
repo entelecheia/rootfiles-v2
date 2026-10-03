@@ -26,8 +26,9 @@ Run these passes and tag every finding with its pass:
   vars and stubbing commands with `fakeBin`.
 - `Check()` has no side effects, and `Apply()` acts only on what `Check()` reports, stays
   idempotent, and returns `Changed` only for real work.
-- A new mutating command is added to `mutatingCommands` in `internal/cli/runtime.go` so it gets
-  the root and lock preflight.
+- A new native-host mutating command is added to `mutatingCommands` in `internal/cli/runtime.go` so it gets
+  the root and lock preflight. Fleet controller rollouts stay unprivileged on the operator machine,
+  enforce explicit selection/confirmation, and invoke remote native mutations with their own lock.
 - Secrets such as the tunnel token and user passwords stay out of the command lines rootfiles
   spawns, its logs, and `config show` output (README: the token is masked and kept in a root-only
   env file; passwords reach `chpasswd` on stdin). The CLI itself still accepts them as input

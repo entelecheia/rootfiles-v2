@@ -1,0 +1,24 @@
+# Copy this file outside the repository and edit it for your fleet.
+# Host config paths are resolved relative to this inventory.
+defaults:
+  sudo: nopasswd
+  parallel: 2
+
+hosts:
+  gpu01:
+    ssh: gpu01
+    address: 192.0.2.11
+    groups: [gpu, dgx]
+    config: site-configs/gpu01.yaml
+
+  storage01:
+    ssh: storage01
+    address: 192.0.2.21
+    groups: [storage]
+    config: site-configs/storage01.yaml
+
+  workstation01:
+    ssh: workstation01
+    address: 192.0.2.31
+    groups: [gpu, workstation]
+    sudo: root # SSH connects directly as root; no sudo prefix is used.

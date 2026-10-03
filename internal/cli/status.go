@@ -43,7 +43,7 @@ func runStatus(cmd *cobra.Command, _ []string) error {
 		profileName = os.Getenv("ROOTFILES_PROFILE")
 	}
 
-	sysInfo, _ := config.DetectSystem()
+	sysInfo, _ := detectSystem()
 	if sysInfo == nil {
 		sysInfo = &config.SystemInfo{}
 	}
@@ -61,7 +61,7 @@ func runStatus(cmd *cobra.Command, _ []string) error {
 	rc := &module.RunContext{
 		Config: cfg,
 		Runner: runner,
-		APT:    execpkg.NewAPT(runner),
+		APT:    statusPackageManager(runner, sysInfo),
 		DryRun: true,
 		Yes:    true,
 	}
@@ -140,16 +140,19 @@ func renderProfileSection(out io.Writer, active, flagProfile string, sys *config
 }
 
 type statusReport struct {
-	System     *config.SystemInfo       `json:"system"`
-	Hostname   string                   `json:"hostname"`
-	Profile    string                   `json:"profile,omitempty"`
-	ConfigPath string                   `json:"config_path,omitempty"`
-	ConfigErr  string                   `json:"config_error,omitempty"`
-	LastApply  *state.Run               `json:"last_apply"`
-	Modules    []checkModule            `json:"modules"`
-	GPU        *module.GPUAllocationsDB `json:"gpu,omitempty"`
-	Tunnel     statusTunnel             `json:"tunnel"`
-	Users      statusUsers              `json:"users"`
+	Version             string                   `json:"version,omitempty"`
+	System              *config.SystemInfo       `json:"system"`
+	Hostname            string                   `json:"hostname"`
+	Profile             string                   `json:"profile,omitempty"`
+	ConfigPath          string                   `json:"config_path,omitempty"`
+	ConfigErr           string                   `json:"config_error,omitempty"`
+	ModuleCheckError    string                   `json:"module_check_error,omitempty"`
+	AppliedConfigSHA256 string                   `json:"applied_config_sha256,omitempty"`
+	LastApply           *state.Run               `json:"last_apply"`
+	Modules             []checkModule            `json:"modules"`
+	GPU                 *module.GPUAllocationsDB `json:"gpu,omitempty"`
+	Tunnel              statusTunnel             `json:"tunnel"`
+	Users               statusUsers              `json:"users"`
 }
 
 type statusTunnel struct {
@@ -166,13 +169,22 @@ type statusUsers struct {
 
 func collectStatus(ctx context.Context, rc *module.RunContext, sys *config.SystemInfo, profile, configPath string, cfgErr error, last *state.Run) statusReport {
 	r := statusReport{System: sys, Profile: profile, ConfigPath: configPath, LastApply: last, Modules: []checkModule{}}
+	r.Version = buildVersion
 	r.Hostname, _ = os.Hostname()
 	if cfgErr != nil {
 		r.ConfigErr = cfgErr.Error()
+	} else if fingerprint, err := appliedFingerprint(rc.Config, profile, configPath); err == nil {
+		r.AppliedConfigSHA256 = fingerprint
 	}
 
 	modules := module.NewRegistry().Resolve(rc.Config, nil)
-	if results, err := module.CheckAll(ctx, modules, rc); err == nil {
+	names := make([]string, 0, len(modules))
+	for _, m := range modules {
+		names = append(names, m.Name())
+	}
+	if err := config.ValidateCapabilities(rc.Config, sys, names); err != nil {
+		r.ModuleCheckError = err.Error()
+	} else if results, err := module.CheckAll(ctx, modules, rc); err == nil {
 		for _, m := range modules {
 			cm := checkModule{Name: m.Name(), Satisfied: true, Changes: []module.Change{}}
 			if res := results[m.Name()]; res != nil {
@@ -183,6 +195,8 @@ func collectStatus(ctx context.Context, rc *module.RunContext, sys *config.Syste
 			}
 			r.Modules = append(r.Modules, cm)
 		}
+	} else {
+		r.ModuleCheckError = err.Error()
 	}
 
 	if db, err := module.LoadGPUDB(rc); err == nil && db != nil && (db.TotalGPUs > 0 || len(db.Allocations) > 0) {

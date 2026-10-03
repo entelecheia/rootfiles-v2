@@ -23,7 +23,7 @@ type Module interface {
 type RunContext struct {
 	Config *config.Config
 	Runner *exec.Runner
-	APT    *exec.APT
+	APT    exec.PackageManager
 	DryRun bool
 	Yes    bool // unattended mode
 	// Force bypasses safety guards that would otherwise refuse a change

@@ -31,6 +31,14 @@ on:
       - ".github/workflows/**"
       - ".goreleaser.yaml"
 
+concurrency:
+  group: rootfiles-test-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  GOMAXPROCS: "2"
+  GOFLAGS: "-p=1"
+
 jobs:
   lint:
     runs-on: ubuntu-latest
@@ -88,7 +96,12 @@ jobs:
         with:
           go-version: "stable"
       - name: Run unit tests
-        run: go test ./... -race -count=1 -coverprofile=coverage.out
+        run: ROOTFILES_MONITORING_SCENARIO_DIR="$PWD/hub-fixtures" go test ./... -race -count=1 -coverprofile=coverage.out
+      - uses: actions/upload-artifact@v4
+        with:
+          name: monitoring-hub-fixtures
+          path: hub-fixtures
+          include-hidden-files: true
       - name: Coverage summary
         run: |
           echo "::group::Per-function coverage"
@@ -102,7 +115,7 @@ jobs:
           name: coverage-report
           path: coverage.out
       - name: Build binary
-        run: go build -o bin/rootfiles ./cmd/rootfiles/
+        run: CGO_ENABLED=0 go build -o bin/rootfiles ./cmd/rootfiles/
       - name: Verify CLI help
         run: ./bin/rootfiles --help
       - uses: actions/upload-artifact@v4
@@ -116,6 +129,7 @@ jobs:
     timeout-minutes: 30
     strategy:
       fail-fast: false
+      max-parallel: 2
       matrix:
         include:
           # Ubuntu 22.04 × profiles
@@ -145,11 +159,12 @@ jobs:
             profile: full
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/download-artifact@v4
         with:
-          go-version: "stable"
-      - name: Build binary
-        run: go build -o rootfiles ./cmd/rootfiles/
+          name: rootfiles-binary
+          path: .
+      - name: Make binary executable
+        run: chmod +x rootfiles
       - name: Build test image
         run: docker build -t rootfiles-test:${{ matrix.os }} -f tests/integration/Dockerfile.${{ matrix.os }} .
       - name: Run integration test
@@ -170,6 +185,7 @@ jobs:
     timeout-minutes: 20
     strategy:
       fail-fast: false
+      max-parallel: 2
       matrix:
         module: [locale, system, packages, ssh, users, security, cloudflared, storage, network, gpu]
         os: [ubuntu-22.04, ubuntu-24.04]
@@ -184,11 +200,12 @@ jobs:
             os: dgx-22.04
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/download-artifact@v4
         with:
-          go-version: "stable"
-      - name: Build binary
-        run: go build -o rootfiles ./cmd/rootfiles/
+          name: rootfiles-binary
+          path: .
+      - name: Make binary executable
+        run: chmod +x rootfiles
       - name: Build test image
         run: docker build -t rootfiles-test:${{ matrix.os }} -f tests/integration/Dockerfile.${{ matrix.os }} .
       - name: Test single module
@@ -206,6 +223,7 @@ jobs:
     timeout-minutes: 20
     strategy:
       fail-fast: false
+      max-parallel: 2
       matrix:
         scenario:
           - dry-run-all-profiles
@@ -224,11 +242,12 @@ jobs:
           - user-quota
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/download-artifact@v4
         with:
-          go-version: "stable"
-      - name: Build binary
-        run: go build -o rootfiles ./cmd/rootfiles/
+          name: rootfiles-binary
+          path: .
+      - name: Make binary executable
+        run: chmod +x rootfiles
       - name: Build test image
         run: docker build -t rootfiles-test:dgx-22.04 -f tests/integration/Dockerfile.dgx-22.04 .
       - name: Load quota kernel modules
@@ -247,3 +266,59 @@ jobs:
             -e ROOTFILES_YES=true \
             rootfiles-test:dgx-22.04 \
             /tests/scenarios/${{ matrix.scenario }}.sh
+
+  fleet-scenario:
+    needs: unit
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: rootfiles-binary
+          path: .
+      - name: Verify fleet against two SSH containers
+        run: |
+          chmod +x rootfiles
+          ROOTFILES_TEST_BINARY="$PWD/rootfiles" bash tests/scenarios/fleet.sh
+
+  rocky:
+    needs: unit
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        os: [rocky-8.9, rocky-8.10, rocky-9]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: rootfiles-binary
+          path: .
+      - name: Build pinned Rocky fixture
+        run: |
+          chmod +x rootfiles
+          docker build -t rootfiles-test:${{ matrix.os }} -f tests/integration/Dockerfile.${{ matrix.os }} .
+      - name: Verify native Rocky core profile, SSH and installer
+        run: bash tests/run-rocky.sh rootfiles-test:${{ matrix.os }}
+
+  monitoring-hub:
+    needs: unit
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: rootfiles-binary
+          path: .
+      - uses: actions/download-artifact@v4
+        with:
+          name: monitoring-hub-fixtures
+          path: hub-fixtures
+      - name: Validate generated hub configs, targets and alert delivery
+        run: |
+          chmod +x rootfiles
+          bash tests/scenarios/monitoring-hub.sh "$PWD/hub-fixtures"

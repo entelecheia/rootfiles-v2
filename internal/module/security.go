@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"github.com/entelecheia/rootfiles-v2/internal/config"
 )
 
 // SecurityModule applies the baseline beyond sshd: automatic security
@@ -90,6 +92,18 @@ func timeSyncPackage(rc *RunContext) (pkg, unit string) {
 func (m *SecurityModule) packages(rc *RunContext) []string {
 	cfg := rc.Config.Modules.Security
 	var pkgs []string
+	if config.IsRocky(rc.Config.System) {
+		if cfg.UnattendedUpgrades {
+			pkgs = append(pkgs, "dnf-automatic")
+		}
+		if cfg.TimeSync {
+			pkgs = append(pkgs, "chrony")
+		}
+		if cfg.Fail2ban {
+			pkgs = append(pkgs, "fail2ban", "python3-systemd")
+		}
+		return pkgs
+	}
 	if cfg.UnattendedUpgrades {
 		pkgs = append(pkgs, "unattended-upgrades")
 	}
@@ -104,6 +118,9 @@ func (m *SecurityModule) packages(rc *RunContext) []string {
 }
 
 func (m *SecurityModule) Check(ctx context.Context, rc *RunContext) (*CheckResult, error) {
+	if config.IsRocky(rc.Config.System) {
+		return rockySecurityCheck(ctx, rc)
+	}
 	cfg := rc.Config.Modules.Security
 	var changes []Change
 
@@ -125,6 +142,9 @@ func (m *SecurityModule) Check(ctx context.Context, rc *RunContext) (*CheckResul
 }
 
 func (m *SecurityModule) Apply(ctx context.Context, rc *RunContext) (*ApplyResult, error) {
+	if config.IsRocky(rc.Config.System) {
+		return rockySecurityApply(ctx, rc)
+	}
 	cfg := rc.Config.Modules.Security
 	var messages, warnings []string
 	changed := false

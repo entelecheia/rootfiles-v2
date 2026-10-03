@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"runtime"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -15,6 +16,8 @@ import (
 
 // Shared runtime plumbing for mutating commands: root/lock preflight,
 // audit logging and per-run file backups.
+
+var nativeHostOS = runtime.GOOS
 
 const annotMutates = "rootfiles/mutates"
 
@@ -69,6 +72,9 @@ func requireRootAndLock(cmd *cobra.Command) error {
 	if geteuid() != 0 {
 		return fmt.Errorf("'%s' changes the system and must run as root (try: sudo %s ...)",
 			cmd.CommandPath(), cmd.CommandPath())
+	}
+	if nativeHostOS != "linux" {
+		return fmt.Errorf("native host mutations require Linux; use the fleet controller on %s", nativeHostOS)
 	}
 	lock, err := state.Acquire()
 	if err != nil {

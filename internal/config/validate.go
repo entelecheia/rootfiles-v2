@@ -21,6 +21,7 @@ var (
 func (c *Config) Validate() error {
 	var errs []error
 	add := func(format string, args ...any) { errs = append(errs, fmt.Errorf(format, args...)) }
+	c.validateMonitoring(add)
 
 	checkPort := func(field string, p int) {
 		if p < 0 || p > 65535 {

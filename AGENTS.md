@@ -1,6 +1,6 @@
 # rootfiles-v2
 
-Go-based server bootstrapping tool for Ubuntu and NVIDIA DGX OS.
+Go-based server bootstrapping for Ubuntu, NVIDIA DGX OS and the documented Rocky core matrix, with an unprivileged operator-side SSH fleet controller.
 
 ## Build & Test
 
@@ -12,10 +12,10 @@ make test         # go test ./... -race
 ## Architecture
 
 - `cmd/rootfiles/` — entry point
-- `internal/cli/` — cobra commands (apply, backup, check, config, doctor, gpu, rollback, schedule, status, tunnel, update, user); `update` keeps `upgrade` as an alias. `runtime.go` holds the root/lock preflight (mutating commands are listed in `mutatingCommands`), audit logger and `newRunner`
+- `internal/cli/` — cobra commands (apply, backup, check, config, doctor, gpu, rollback, schedule, status, tunnel, update, user); `update` keeps `upgrade` as an alias. `fleet` is the operator-side controller; `runtime.go` holds the native-host root/lock preflight (native mutating commands are listed in `mutatingCommands`), audit logger and `newRunner`
 - `internal/config/` — config structs, YAML profile loader (profiles merged as YAML trees, strict keys), `Validate()`, system detector
 - `internal/module/` — Module interface + 13 implementations (locale, system, packages, users, ssh, security, docker, nvidia, gpu, cloudflared, storage, network, monitoring), plus `doctor.go`
-- `internal/exec/` — shell runner (dry-run aware; `Runner.Backup` preserves files before WriteFile/Remove/Rename/Symlink), APT wrapper
+- `internal/exec/` — shell runner (dry-run aware; `Runner.Backup` preserves files before WriteFile/Remove/Rename/Symlink), APT and RPM/DNF package-manager backends
 - `internal/state/` — `/var/lib/rootfiles/state.json` + history, global flock
 - `internal/ui/` — interactive prompts (Charm huh) + shared output styling: `styles.go` (lipgloss palette), `markers.go` (✓ ✗ → ⚠), `format.go` (WriteHeader/Section/KV/Hint/Bullet). lipgloss auto-detects TTY and honours `NO_COLOR`; all status-style reports must go through these helpers.
 
@@ -48,3 +48,12 @@ type Module interface {
 - File writes/removals go through `rc.Runner` (never `os.*` directly) so dry-run and backups apply; never `rm -rf` user data
 - `Check()` and `Apply()` must agree: Apply only acts on what Check reports and returns `Changed` only for real work; non-fatal problems go in `ApplyResult.Warnings`
 - Tests must not touch the host: override package-level path vars and stub commands on PATH (`fakeBin`) instead of calling real systemctl/apt
+- Discovery directory mounts must contain only the configured targets file. Validate real root-owned ancestors and directory contents before launch to prevent sibling-secret exposure.
+- Verify installed firewall state and port allowances before changing SSH ports; unknown state blocks the change.
+
+## Fleet and distro boundaries
+
+- Fleet commands run as the operator and inherit OpenSSH host-key verification. They do not take the local native-host root lock; remote native mutations retain their own root/lock preflight. Explicit selection and confirmation guard controller rollouts, and their results are written to the controller audit log.
+- A successful native apply records the effective configuration digest. Read-only reports must not claim applied provenance for legacy, failed, changed or unrelated targets.
+- Check uses cached, read-only package queries. Metadata refresh and package transactions belong to Apply, through the runner; unavailable required advisory sources must not be reported as working protection.
+- Rocky support is per module, as documented in docs/rocky-support.md. Reject unsupported requested capabilities before host configuration changes; do not infer support for another RPM distribution from Rocky support.

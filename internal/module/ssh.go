@@ -2,7 +2,9 @@ package module
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"os"
 	"strconv"
 	"strings"
 
@@ -16,10 +18,40 @@ func (m *SSHModule) Name() string { return "ssh" }
 
 // sshdDropInPath is overridable in tests.
 var sshdDropInPath = "/etc/ssh/sshd_config.d/00-rootfiles.conf"
+var sshdPrivilegeSeparationDir = "/run/sshd"
 
-func (m *SSHModule) Check(_ context.Context, rc *RunContext) (*CheckResult, error) {
+func (m *SSHModule) Check(ctx context.Context, rc *RunContext) (*CheckResult, error) {
 	var changes []Change
 	cfg := rc.Config.SSH
+	if config.IsRocky(rc.Config.System) {
+		_, _, _, includeChanged, err := rockySSHDMainState(rc)
+		if err != nil {
+			return nil, err
+		}
+		if includeChanged {
+			desc := "Enable Rocky sshd_config.d managed drop-ins"
+			if err := m.lockoutGuard(rc); err != nil {
+				desc += fmt.Sprintf(" (blocked: %v)", err)
+			}
+			changes = append(changes, Change{Description: desc, Command: "add Include " + sshdConfigDir + "/*.conf to " + sshdConfigPath})
+		}
+		if cfg.Port > 0 {
+			allowed, err := rockyFirewallAllowsSSH(ctx, rc, cfg.Port)
+			if err != nil {
+				return nil, err
+			}
+			if !allowed {
+				return nil, fmt.Errorf("firewall policy does not allow SSH port %d; add the port through the host firewall change process before changing sshd", cfg.Port)
+			}
+			labeled, err := rockySSHSELinuxPortLabeled(ctx, rc, cfg.Port)
+			if err != nil {
+				return nil, err
+			}
+			if !labeled {
+				changes = append(changes, Change{Description: fmt.Sprintf("Label TCP port %d for sshd in SELinux", cfg.Port), Command: fmt.Sprintf("semanage port -a -t ssh_port_t -p tcp %d", cfg.Port)})
+			}
+		}
+	}
 
 	desired := m.buildConfig(cfg)
 	existing, _ := rc.Runner.ReadFile(sshdDropInPath)
@@ -43,24 +75,124 @@ func (m *SSHModule) Check(_ context.Context, rc *RunContext) (*CheckResult, erro
 
 func (m *SSHModule) Apply(ctx context.Context, rc *RunContext) (*ApplyResult, error) {
 	cfg := rc.Config.SSH
+	var originalMain, updatedMain []byte
+	var originalMainMode os.FileMode
+	mainIncludeChanged := false
+	if config.IsRocky(rc.Config.System) {
+		var err error
+		originalMain, updatedMain, originalMainMode, mainIncludeChanged, err = rockySSHDMainState(rc)
+		if err != nil {
+			return nil, err
+		}
+		if cfg.Port > 0 {
+			allowed, err := rockyFirewallAllowsSSH(ctx, rc, cfg.Port)
+			if err != nil {
+				return nil, err
+			}
+			if !allowed {
+				return nil, fmt.Errorf("firewalld is active and does not allow SSH port %d; add the port through the host firewall change process before changing sshd", cfg.Port)
+			}
+		}
+	}
 	content := m.buildConfig(cfg)
 
 	existing, readErr := rc.Runner.ReadFile(sshdDropInPath)
-	if readErr == nil && strings.TrimSpace(string(existing)) == strings.TrimSpace(content) {
-		return &ApplyResult{Changed: false}, nil
+	if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
+		return nil, fmt.Errorf("reading sshd drop-in %s: %w", sshdDropInPath, readErr)
 	}
-
-	if err := m.lockoutGuard(rc); err != nil {
-		if !rc.Force {
-			return nil, fmt.Errorf("%w (re-run with --force to override)", err)
+	configChanged := readErr != nil || strings.TrimSpace(string(existing)) != strings.TrimSpace(content) || mainIncludeChanged
+	if configChanged {
+		if err := m.lockoutGuard(rc); err != nil {
+			if !rc.Force {
+				return nil, fmt.Errorf("%w (re-run with --force to override)", err)
+			}
+			fmt.Printf("  ⚠ ssh: %v — continuing because of --force\n", err)
 		}
-		fmt.Printf("  ⚠ ssh: %v — continuing because of --force\n", err)
 	}
 
 	var messages []string
+	rockyPortAdded := false
+	if config.IsRocky(rc.Config.System) && cfg.Port > 0 {
+		added, err := ensureRockySSHSELinuxPort(ctx, rc, cfg.Port)
+		if err != nil {
+			return nil, err
+		}
+		rockyPortAdded = added
+		if added {
+			messages = append(messages, fmt.Sprintf("SELinux TCP port %d labeled for sshd", cfg.Port))
+		}
+	}
+	rollbackRockyPort := func() error {
+		if rockyPortAdded {
+			if _, err := rc.Runner.Run(ctx, "semanage", "port", "-d", "-p", "tcp", strconv.Itoa(cfg.Port)); err != nil {
+				return fmt.Errorf("removing temporary SELinux SSH port label %d: %w", cfg.Port, err)
+			}
+			rockyPortAdded = false
+		}
+		return nil
+	}
+	if !configChanged {
+		return &ApplyResult{Changed: rockyPortAdded, Messages: messages}, nil
+	}
+
+	var oldDropMode os.FileMode
+	if readErr == nil {
+		info, err := os.Lstat(sshdDropInPath)
+		if err != nil {
+			cause := fmt.Errorf("inspecting existing sshd drop-in: %w", err)
+			if rollbackErr := rollbackRockyPort(); rollbackErr != nil {
+				cause = fmt.Errorf("%w; SSH port rollback failed: %v", cause, rollbackErr)
+			}
+			return nil, cause
+		}
+		if !info.Mode().IsRegular() {
+			cause := fmt.Errorf("existing sshd drop-in %s is not a regular file; refusing to overwrite it", sshdDropInPath)
+			if rollbackErr := rollbackRockyPort(); rollbackErr != nil {
+				cause = fmt.Errorf("%w; SSH port rollback failed: %v", cause, rollbackErr)
+			}
+			return nil, cause
+		}
+		oldDropMode = info.Mode().Perm()
+	}
+	mainWriteAttempted := false
+	dropWriteAttempted := false
+	rollbackConfigs := func() error {
+		var rollbackErrs []error
+		if mainWriteAttempted {
+			if err := rc.Runner.WriteFile(sshdConfigPath, originalMain, originalMainMode); err != nil {
+				rollbackErrs = append(rollbackErrs, fmt.Errorf("restoring %s: %w", sshdConfigPath, err))
+			}
+			mainWriteAttempted = false
+		}
+		if dropWriteAttempted {
+			if readErr == nil {
+				if err := rc.Runner.WriteFile(sshdDropInPath, existing, oldDropMode); err != nil {
+					rollbackErrs = append(rollbackErrs, fmt.Errorf("restoring %s: %w", sshdDropInPath, err))
+				}
+			} else if err := rc.Runner.Remove(sshdDropInPath); err != nil && !os.IsNotExist(err) {
+				rollbackErrs = append(rollbackErrs, fmt.Errorf("removing %s: %w", sshdDropInPath, err))
+			}
+			dropWriteAttempted = false
+		}
+		return errors.Join(rollbackErrs...)
+	}
+	rollbackAfterFailure := func(cause error) error {
+		rollbackErr := errors.Join(rollbackConfigs(), rollbackRockyPort())
+		if rollbackErr != nil {
+			return fmt.Errorf("%w; SSH configuration rollback failed: %v", cause, rollbackErr)
+		}
+		return cause
+	}
+
+	if mainIncludeChanged {
+		mainWriteAttempted = true
+		if err := rc.Runner.WriteFile(sshdConfigPath, updatedMain, originalMainMode); err != nil {
+			return nil, fmt.Errorf("adding managed sshd drop-in include: %w", rollbackAfterFailure(err))
+		}
+	}
 
 	// Admit a new SSH port through an active firewall before sshd moves to it.
-	if cfg.Port > 0 {
+	if cfg.Port > 0 && !config.IsRocky(rc.Config.System) {
 		if st, ok := queryUFW(ctx, rc); ok && st.Active && !st.Allowed[cfg.Port] {
 			if _, err := rc.Runner.Run(ctx, "ufw", "allow", strconv.Itoa(cfg.Port)+"/tcp"); err != nil {
 				return nil, fmt.Errorf("allowing ssh port %d in ufw: %w", cfg.Port, err)
@@ -69,26 +201,24 @@ func (m *SSHModule) Apply(ctx context.Context, rc *RunContext) (*ApplyResult, er
 		}
 	}
 
-	if err := rc.Runner.MkdirAll("/etc/ssh/sshd_config.d", 0755); err != nil {
-		return nil, fmt.Errorf("creating sshd_config.d: %w", err)
-	}
-	if err := rc.Runner.WriteFile(sshdDropInPath, []byte(content), 0644); err != nil {
-		return nil, fmt.Errorf("writing sshd config: %w", err)
+	if configChanged && (readErr != nil || strings.TrimSpace(string(existing)) != strings.TrimSpace(content)) {
+		if err := rc.Runner.MkdirAll(sshdConfigDir, 0755); err != nil {
+			return nil, fmt.Errorf("creating %s: %w", sshdConfigDir, rollbackAfterFailure(err))
+		}
+		dropWriteAttempted = true
+		if err := rc.Runner.WriteFile(sshdDropInPath, []byte(content), 0644); err != nil {
+			return nil, fmt.Errorf("writing sshd config: %w", rollbackAfterFailure(err))
+		}
 	}
 
 	// Validate the full merged configuration; restore the previous drop-in
 	// on failure so a reload/reboot never picks up a broken sshd config.
 	if err := m.validate(ctx, rc); err != nil {
-		if readErr == nil {
-			_ = rc.Runner.WriteFile(sshdDropInPath, existing, 0644)
-		} else {
-			_ = rc.Runner.Remove(sshdDropInPath)
-		}
-		return nil, fmt.Errorf("sshd config validation failed, change reverted: %w", err)
+		return nil, fmt.Errorf("sshd config validation failed, change reverted: %w", rollbackAfterFailure(err))
 	}
 	messages = append(messages, "sshd configuration deployed")
 
-	portChanged := portLine(string(existing)) != portLine(content)
+	portChanged := mainIncludeChanged || portLine(string(existing)) != portLine(content)
 	var warnings []string
 	if msg, err := m.reload(ctx, rc, portChanged); err != nil {
 		warnings = append(warnings, fmt.Sprintf("%v (restart sshd manually)", firstLine(err.Error())))
@@ -168,9 +298,14 @@ func (m *SSHModule) validate(ctx context.Context, rc *RunContext) error {
 	if bin == "" || rc.DryRun {
 		return nil
 	}
-	_ = rc.Runner.MkdirAll("/run/sshd", 0755)
+	_ = rc.Runner.MkdirAll(sshdPrivilegeSeparationDir, 0755)
 	if _, err := rc.Runner.Run(ctx, bin, "-t"); err != nil {
 		return err
+	}
+	if config.IsRocky(rc.Config.System) {
+		if err := verifyRockySSHEffective(ctx, rc, bin); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -199,7 +334,11 @@ func (m *SSHModule) reload(ctx context.Context, rc *RunContext, portChanged bool
 	}
 
 	var lastErr error
-	for _, svc := range []string{"ssh", "sshd"} {
+	services := []string{"ssh", "sshd"}
+	if config.IsRocky(rc.Config.System) {
+		services = []string{"sshd", "ssh"}
+	}
+	for _, svc := range services {
 		if _, err := rc.Runner.Run(ctx, "systemctl", "reload", svc); err == nil {
 			return svc + " reloaded", nil
 		} else {

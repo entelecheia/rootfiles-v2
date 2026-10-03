@@ -16,6 +16,22 @@ var embeddedProfiles embed.FS
 
 const maxExtendsDepth = 5
 
+// LoadSite resolves an operator inventory's site configuration without
+// inheriting the controller process's ROOTFILES_* environment overrides.
+func LoadSite(path string) (*Config, error) {
+	cfg, err := resolveFile(path)
+	if err != nil {
+		return nil, err
+	}
+	if cf := cfg.Modules.Cloudflared; cf.TunnelToken != "" && cf.TunnelTokenFile != "" {
+		return nil, fmt.Errorf("modules.cloudflared: set tunnel_token or tunnel_token_file, not both")
+	}
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
+	return cfg, nil
+}
+
 // Load resolves a profile by name (or custom path, "-" for stdin), applies
 // env overrides, validates the result and attaches system info.
 func Load(profileName, customPath string, sysInfo *SystemInfo) (*Config, error) {
@@ -49,7 +65,7 @@ func Load(profileName, customPath string, sysInfo *SystemInfo) (*Config, error) 
 
 // AvailableProfiles returns the list of built-in profile names.
 func AvailableProfiles() []string {
-	return []string{"base", "minimal", "dgx", "gpu-server", "full"}
+	return []string{"base", "minimal", "dgx", "gpu-server", "full", "rocky"}
 }
 
 // Profiles are merged as YAML trees before decoding: a key present in the

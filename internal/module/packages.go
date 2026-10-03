@@ -19,7 +19,7 @@ func (m *PackagesModule) Check(_ context.Context, rc *RunContext) (*CheckResult,
 	if len(missing) > 0 {
 		changes = append(changes, Change{
 			Description: fmt.Sprintf("Install %d packages: %v", len(missing), missing),
-			Command:     fmt.Sprintf("apt-get install -y %v", missing),
+			Command:     packageInstallCommand(rc, missing),
 		})
 	}
 
@@ -40,12 +40,12 @@ func (m *PackagesModule) Apply(ctx context.Context, rc *RunContext) (*ApplyResul
 
 	// Update package index
 	if err := rc.APT.Update(ctx); err != nil {
-		return nil, fmt.Errorf("apt update: %w", err)
+		return nil, fmt.Errorf("%s: %w", packageUpdateCommand(rc), err)
 	}
 
 	// Install missing packages
 	if err := rc.APT.Install(ctx, missing); err != nil {
-		return nil, fmt.Errorf("apt install: %w", err)
+		return nil, fmt.Errorf("installing packages: %w", err)
 	}
 
 	return &ApplyResult{
