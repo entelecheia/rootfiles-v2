@@ -29,6 +29,28 @@ type RunContext struct {
 	// Force bypasses safety guards that would otherwise refuse a change
 	// (e.g. disabling SSH password auth with no key-based login available).
 	Force bool
+	// run maps the modules of the current RunAll or CheckAll to whether
+	// they have failed so far; nil outside one.
+	run map[string]bool
+}
+
+// moduleSucceeding reports whether module name is part of the current run
+// and has not failed so far, so a later module can rely on its work.
+// Outside RunAll and CheckAll it reports whether the config enables it.
+func (rc *RunContext) moduleSucceeding(name string) bool {
+	if rc.run == nil {
+		return rc.Config.IsModuleEnabled(name)
+	}
+	failed, ok := rc.run[name]
+	return ok && !failed
+}
+
+// startRun records the modules of a RunAll or CheckAll.
+func (rc *RunContext) startRun(modules []Module) {
+	rc.run = make(map[string]bool, len(modules))
+	for _, m := range modules {
+		rc.run[m.Name()] = false
+	}
 }
 
 // CheckResult holds the result of a module's Check operation.
@@ -127,6 +149,8 @@ func (r *Registry) Resolve(cfg *config.Config, filter []string) []Module {
 func RunAll(ctx context.Context, modules []Module, rc *RunContext) ([]state.ModuleOutcome, error) {
 	var errors []string
 	outcomes := make([]state.ModuleOutcome, 0, len(modules))
+	rc.startRun(modules)
+	defer func() { rc.run = nil }()
 	for _, m := range modules {
 		out := state.ModuleOutcome{Name: m.Name()}
 		if ctx.Err() != nil {
@@ -136,6 +160,7 @@ func RunAll(ctx context.Context, modules []Module, rc *RunContext) ([]state.Modu
 		}
 		check, err := m.Check(ctx, rc)
 		if err != nil {
+			rc.run[m.Name()] = true
 			fmt.Printf("  ⚠ %s: check error: %v\n", m.Name(), err)
 			out.Status, out.Error = "failed", "check: "+err.Error()
 			errors = append(errors, fmt.Sprintf("%s: check: %v", m.Name(), err))
@@ -162,6 +187,7 @@ func RunAll(ctx context.Context, modules []Module, rc *RunContext) ([]state.Modu
 
 		result, err := m.Apply(ctx, rc)
 		if err != nil {
+			rc.run[m.Name()] = true
 			fmt.Printf("  ✗ %s: %v\n", m.Name(), err)
 			out.Status, out.Error = "failed", err.Error()
 			errors = append(errors, fmt.Sprintf("%s: %v", m.Name(), err))
@@ -219,6 +245,8 @@ func ensureMetaDir(runner *exec.Runner, homeBase string) error {
 // CheckAll runs Check on each module and returns results.
 func CheckAll(ctx context.Context, modules []Module, rc *RunContext) (map[string]*CheckResult, error) {
 	results := make(map[string]*CheckResult, len(modules))
+	rc.startRun(modules)
+	defer func() { rc.run = nil }()
 	for _, m := range modules {
 		check, err := m.Check(ctx, rc)
 		if err != nil {

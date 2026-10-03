@@ -238,10 +238,14 @@ func (m *SSHModule) lockoutGuard(rc *RunContext) error {
 		return nil
 	}
 	if len(keyLoginAccounts(!cfg.DisableRootLogin)) == 0 && len(declaredKeyAccounts(rc)) == 0 {
+		msg := "disabling password auth, but no account has an SSH authorized key"
 		if cfg.DisableRootLogin {
-			return fmt.Errorf("disabling password auth and root login, but no non-root account has an SSH authorized key")
+			msg = "disabling password auth and root login, but no non-root account has an SSH authorized key"
 		}
-		return fmt.Errorf("disabling password auth, but no account has an SSH authorized key")
+		if names := keyedAccounts(rc); len(names) > 0 {
+			msg += fmt.Sprintf("; declared accounts %s do not count because the users module is not in this run, failed, or refuses the home base", strings.Join(names, ", "))
+		}
+		return errors.New(msg)
 	}
 	if stranded, known := strandedPasswordAccounts(rc); len(stranded) > 0 {
 		if !known {
@@ -277,12 +281,18 @@ func strandedPasswordAccounts(rc *RunContext) ([]string, bool) {
 
 // declaredKeyAccounts lists users.accounts entries with SSH keys. The
 // users module (which runs before ssh) creates them, so they count as
-// key-based logins even when not yet present (e.g. in check/dry-run),
-// unless that module refuses the home base and creates none.
+// key-based logins even when not yet present (e.g. in check/dry-run), but
+// only while that module is part of the run, has not failed, and does not
+// refuse the home base.
 func declaredKeyAccounts(rc *RunContext) []string {
-	if !rc.Config.IsModuleEnabled("users") || checkHomeBase(rc.Config.Users.HomeBase) != nil {
+	if !rc.moduleSucceeding("users") || checkHomeBase(rc.Config.Users.HomeBase) != nil {
 		return nil
 	}
+	return keyedAccounts(rc)
+}
+
+// keyedAccounts lists the users.accounts entries that have SSH keys.
+func keyedAccounts(rc *RunContext) []string {
 	var names []string
 	for _, a := range rc.Config.Users.Accounts {
 		if len(a.SSHPubkeys) > 0 {

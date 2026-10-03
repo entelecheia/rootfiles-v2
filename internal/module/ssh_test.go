@@ -2,6 +2,7 @@ package module
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -303,5 +304,101 @@ func TestSSHModule_LockoutGuardIgnoresAccountsOnRefusedHomeBase(t *testing.T) {
 	}
 	if err := NewSSHModule().lockoutGuard(rc); err == nil {
 		t.Error("lockoutGuard counted an account the users module will not create")
+	}
+}
+
+// stubModule is a module whose Check and Apply only report what it is told,
+// and that can probe the run context while checked.
+type stubModule struct {
+	name      string
+	checkErr  error
+	applyErr  error
+	satisfied bool
+	probe     func(*RunContext)
+}
+
+func (s stubModule) Name() string { return s.name }
+func (s stubModule) Check(_ context.Context, rc *RunContext) (*CheckResult, error) {
+	if s.probe != nil {
+		s.probe(rc)
+	}
+	if s.checkErr != nil {
+		return nil, s.checkErr
+	}
+	return &CheckResult{Satisfied: s.satisfied, Changes: []Change{{Description: "stub"}}}, nil
+}
+func (s stubModule) Apply(context.Context, *RunContext) (*ApplyResult, error) {
+	return &ApplyResult{}, s.applyErr
+}
+
+// RunAll and CheckAll tell later modules whether users is in the run and
+// has not failed so far.
+func TestRunAllTracksModuleOutcomes(t *testing.T) {
+	boom := errors.New("boom")
+	cases := []struct {
+		name  string
+		users []Module
+		dry   bool
+		want  bool
+	}{
+		{"users succeeds", []Module{stubModule{name: "users", satisfied: true}}, false, true},
+		{"users pending in dry run", []Module{stubModule{name: "users"}}, true, true},
+		{"users check fails", []Module{stubModule{name: "users", checkErr: boom}}, false, false},
+		{"users apply fails", []Module{stubModule{name: "users", applyErr: boom}}, false, false},
+		{"users not in the run", nil, false, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rc := newDryRunRC(t)
+			rc.DryRun = tc.dry
+			rc.Config.Modules.Users.Enabled = true
+			var got bool
+			probe := stubModule{name: "ssh", satisfied: true, probe: func(rc *RunContext) { got = rc.moduleSucceeding("users") }}
+			_, _ = RunAll(context.Background(), append(tc.users, probe), rc)
+			if got != tc.want {
+				t.Errorf("RunAll: users succeeding = %v, want %v", got, tc.want)
+			}
+			if rc.run != nil {
+				t.Error("RunAll left its run record behind")
+			}
+		})
+	}
+	rc := newDryRunRC(t)
+	var got bool
+	_, _ = CheckAll(context.Background(), []Module{stubModule{name: "ssh", probe: func(rc *RunContext) { got = rc.moduleSucceeding("users") }}}, rc)
+	if got {
+		t.Error("CheckAll: users counted although not in the run")
+	}
+}
+
+// #34 AC1-AC3: declared accounts count for the lockout guard only while
+// the users module is in the run and has not failed.
+func TestSSHModule_LockoutGuardFollowsUsersOutcome(t *testing.T) {
+	cases := []struct {
+		name    string
+		run     map[string]bool
+		wantErr bool
+	}{
+		{"outside a run, users enabled", nil, false},
+		{"users succeeding", map[string]bool{"users": false, "ssh": false}, false},
+		{"users failed", map[string]bool{"users": true, "ssh": false}, true},
+		{"users not in the run", map[string]bool{"ssh": false}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fakePasswd(t)
+			rc := newDryRunRC(t)
+			rc.Config.SSH = config.SSHConfig{DisablePasswordAuth: true, DisableRootLogin: true}
+			rc.Config.Modules.Users.Enabled = true
+			rc.Config.Users.Accounts = []config.AccountConfig{{Name: "bob", SSHPubkeys: []string{"ssh-ed25519 AAAA k"}}}
+			rc.run = tc.run
+			err := NewSSHModule().lockoutGuard(rc)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("lockoutGuard() err = %v, wantErr %v", err, tc.wantErr)
+			}
+			if err != nil && !strings.Contains(err.Error(), "declared accounts bob") {
+				t.Errorf("error should name the declared accounts: %v", err)
+			}
+		})
 	}
 }
