@@ -130,7 +130,8 @@ hosts:
 - When an inventory supplies a site config, the controller compares its resolved,
   environment-independent canonical fingerprint with `applied_config_sha256` in
   the fixed read-only JSON response. A mismatch reports configuration drift; a
-  missing fingerprint reports unverified configuration rather than success.
+  missing fingerprint reports unverified configuration rather than success. Provenance requires
+  a successful apply record carrying the digest; legacy and failed records do not count.
   The controller cannot pass arbitrary `--config` paths through the sudo rule.
 - Each host lands in one of: `ok`, `drift` (exit 2 from `check`), `findings`
   (exit 2 from `doctor`), `needs-privilege` (sudo required a password),
@@ -171,7 +172,7 @@ users:
 
 - `apply` resolves profile and file-based inheritance locally without operator
   environment overrides, then sends the effective configuration on stdin. A real
-  rollout persists it as a stable root-owned configuration before invoking
+  rollout stages it atomically at a root-owned content-hash configuration path before invoking
   `rootfiles apply --yes --config <managed-path>`, so later check/status/doctor
   use the applied configuration. Dry-run uses stdin without persisting a file.
   Configs with an inline `tunnel_token` are refused; use `tunnel_token_file`.
@@ -203,8 +204,10 @@ modules:
 
 - `dcgm_exporter` runs NVIDIA's dcgm-exporter container through Docker and the
   NVIDIA runtime under a managed systemd unit, with a pinned image tag. It
-  requires the `docker` and `nvidia` modules; Check reports the missing
-  dependency instead of installing it. Whether a distro package is preferable
+  requires installed Docker, an NVIDIA container runtime and GPU access; Check
+  inspects those dependencies without requiring their installation-module flags
+  or changing a vendor stack. A managed collectors file enables the supported
+  counters used by the GPU rules, including ECC when available on the GPU. Whether a distro package is preferable
   on DGX OS is decided during implementation (inferred, not yet checked).
 - The image tag must support the host's driver branch. The oldest branch in
   the observed fleet is R535 (verified 2026-10-03); compatibility is checked
