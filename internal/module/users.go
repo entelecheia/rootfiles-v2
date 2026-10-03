@@ -4,7 +4,9 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -140,7 +142,11 @@ func (m *UsersModule) Apply(ctx context.Context, rc *RunContext) (*ApplyResult, 
 	// Update /etc/default/useradd
 	if cfg.HomeBase != "" {
 		want := filepath.Clean(cfg.HomeBase)
-		data, _ := rc.Runner.ReadFile(useraddDefaultsFile)
+		data, err := rc.Runner.ReadFile(useraddDefaultsFile)
+		if err != nil && !errors.Is(err, fs.ErrNotExist) {
+			// Rewriting from an unread file would drop its other defaults.
+			return nil, fmt.Errorf("reading %s: %w", useraddDefaultsFile, err)
+		}
 		if config.UseraddHome(data) != want {
 			// Replace or append HOME= line
 			var lines []string

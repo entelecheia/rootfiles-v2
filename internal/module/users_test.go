@@ -118,6 +118,23 @@ func TestUsersModule_ApplyWritesHomeToUseradd(t *testing.T) {
 	}
 }
 
+// An unreadable useradd file is not rewritten from nothing.
+func TestUsersModule_ApplyRefusesUnreadableUseradd(t *testing.T) {
+	oldSudoersDir := sudoersDir
+	sudoersDir = t.TempDir()
+	t.Cleanup(func() { sudoersDir = oldSudoersDir })
+	old := useraddDefaultsFile
+	useraddDefaultsFile = t.TempDir() // a directory: ReadFile fails with EISDIR
+	t.Cleanup(func() { useraddDefaultsFile = old })
+	rc := newDryRunRC(t)
+	rc.DryRun = false
+	rc.Runner = exec.NewRunner(false, rc.Runner.Logger)
+	rc.Config.Users = config.UsersConfig{HomeBase: "/home"}
+	if _, err := NewUsersModule().Apply(context.Background(), rc); err == nil || !strings.Contains(err.Error(), "reading") {
+		t.Fatalf("Apply error = %v, want a read error", err)
+	}
+}
+
 // A home base written with a trailing slash still converges.
 func TestUsersModule_ApplySettlesUncleanHomeBase(t *testing.T) {
 	oldSudoersDir := sudoersDir

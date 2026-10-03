@@ -300,7 +300,7 @@ func statusProvesInstalled(res Result) bool {
 		ConfigError      string `json:"config_error"`
 		ModuleCheckError string `json:"module_check_error"`
 	}
-	if json.Unmarshal(res.Remote, &report) != nil || report.ConfigError != "" || report.ModuleCheckError != "" {
+	if json.Unmarshal(res.Remote, &report) != nil || (report.ConfigError != "" && !ambiguousHomeBaseStatus(res)) || report.ModuleCheckError != "" {
 		return false
 	}
 	return true

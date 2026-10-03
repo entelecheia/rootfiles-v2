@@ -167,6 +167,18 @@ func TestApplyProceedsOnAmbiguousHomeBaseStatus(t *testing.T) {
 	}
 }
 
+func TestStatusProvesInstalledWithAmbiguousHomeBase(t *testing.T) {
+	system := `"system":{"os":"ubuntu","version":"24.04"}`
+	ambiguous := Result{Command: "status", ExitCode: 0, Remote: json.RawMessage(`{"config_error":"users.home_base: ambiguous home base","home_base_ambiguous":true,` + system + `}`)}
+	if !statusProvesInstalled(ambiguous) {
+		t.Fatal("an ambiguous home base hid an installed binary from bootstrap")
+	}
+	other := Result{Command: "status", ExitCode: 0, Remote: json.RawMessage(`{"config_error":"invalid YAML",` + system + `}`)}
+	if statusProvesInstalled(other) {
+		t.Fatal("other config errors must not prove a healthy install")
+	}
+}
+
 func TestInspectStatusHealth(t *testing.T) {
 	for _, tc := range []struct{ name, payload, wantState, wantReason string }{
 		{"config error", `{"config_error":"bad config","system":{"os":"ubuntu"}}`, "error", "remote config error"},
