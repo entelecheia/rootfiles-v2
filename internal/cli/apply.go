@@ -179,10 +179,7 @@ func saveAppliedConfig(cfg *config.Config, configPath string) error {
 	if configPath == "" {
 		return state.SaveAppliedConfig(nil)
 	}
-	snap := *cfg
-	snap.Extends = ""
-	snap.Modules.Cloudflared.TunnelToken = ""
-	data, err := config.MarshalYAML(&snap)
+	data, err := cfg.Effective()
 	if err != nil {
 		return err
 	}

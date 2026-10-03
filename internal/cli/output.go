@@ -113,7 +113,7 @@ var (
 
 // resolveRunTarget picks the config for the user, gpu, tunnel, schedule and
 // backup subcommands: flags or env first, then what was last applied, then
-// detection's suggestion. A config they were not given decides what root
+// minimal with home-base detection. A config they were not given decides what root
 // does (sudoers, groups, tunnel settings), so after a config-file apply they
 // never re-read that file, which anyone may have changed since; they reuse
 // the resolved copy apply kept in the state directory, and only when root
@@ -152,7 +152,9 @@ func resolveRunTarget(cmd *cobra.Command, sys *config.SystemInfo, logger *slog.L
 	if last != nil && last.Profile != "" {
 		return last.Profile, ""
 	}
-	return sys.SuggestProfile(), ""
+	// Never the suggested profile: on DGX that is dgx, which would pin
+	// /raid/home and a private network the host never chose.
+	return "minimal", ""
 }
 
 // sameRun reports whether the kept copy is the config of the recorded run:

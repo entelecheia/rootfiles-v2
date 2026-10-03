@@ -353,9 +353,9 @@ func TestStatus_ConfigLoadErrorHomeBase(t *testing.T) {
 	}
 }
 
-// Without a usable kept copy after a config apply, subcommands fall back to
-// minimal plus detection, as before the copy existed, not to a suggested
-// profile such as dgx that pins another home base.
+// Without a usable record, or a usable kept copy after a config apply,
+// subcommands fall back to minimal plus detection, as before #32, never to a
+// suggested profile such as dgx that pins another home base and network.
 func TestResolveRunTarget_FallbackAfterConfigApply(t *testing.T) {
 	t.Setenv("ROOTFILES_STATE_DIR", t.TempDir())
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
@@ -364,8 +364,8 @@ func TestResolveRunTarget_FallbackAfterConfigApply(t *testing.T) {
 		t.Fatal(err)
 	}
 	dgx := &config.SystemInfo{IsDGX: true}
-	if p, c := resolveRunTarget(sub, dgx, logger); p != "dgx" || c != "" {
-		t.Errorf("never applied: got %q %q, want the suggested dgx", p, c)
+	if p, c := resolveRunTarget(sub, dgx, logger); p != "minimal" || c != "" {
+		t.Errorf("never applied: got %q %q, want minimal, not the suggested dgx", p, c)
 	}
 	if err := state.Record(state.Run{ConfigPath: "/etc/rootfiles/site.yaml", Success: true}); err != nil {
 		t.Fatal(err)
