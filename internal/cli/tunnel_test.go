@@ -1,9 +1,18 @@
 package cli
 
 import (
+	"bytes"
+	"encoding/json"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/spf13/cobra"
+
+	"github.com/entelecheia/rootfiles-v2/internal/module"
+	"github.com/entelecheia/rootfiles-v2/internal/state"
 )
 
 func TestNewTunnelCmd_Subcommands(t *testing.T) {
@@ -130,5 +139,106 @@ func TestConfigFreeCommandsRunWithoutProfile(t *testing.T) {
 				t.Errorf("err = %v, want the command to run without a profile", err)
 			}
 		})
+	}
+}
+
+// runContextFor builds the run context of the subcommand at path with flags.
+func runContextFor(t *testing.T, build func(*cobra.Command) (*module.RunContext, error), path []string, flags ...string) (*module.RunContext, error) {
+	t.Helper()
+	root := NewRootCmd("test", "abc")
+	sub, _, err := root.Find(path)
+	if err != nil {
+		t.Fatalf("find %v: %v", path, err)
+	}
+	if err := sub.ParseFlags(flags); err != nil {
+		t.Fatal(err)
+	}
+	return build(sub)
+}
+
+func writeFile(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// #32: subcommands pick their config the way apply and check do.
+func TestBuildRunContext_ConfigSelection(t *testing.T) {
+	noHostCommands(t)
+	t.Setenv("ROOTFILES_HOME_BASE", "")
+	t.Setenv("ROOTFILES_STATE_DIR", t.TempDir())
+	dir := t.TempDir()
+	site := filepath.Join(dir, "site.yaml")
+	writeFile(t, site, "extends: minimal\nusers:\n  home_base: /srv/home\n  default_shell: /bin/sh\n")
+	broken := filepath.Join(dir, "broken.yaml")
+	writeFile(t, broken, "users: [\n")
+	userAdd := []string{"user", "add"}
+
+	// AC1: --config is honored.
+	rc, err := runContextFor(t, buildRunContext, userAdd, "--config", site)
+	if err != nil || rc.Config.Users.HomeBase != "/srv/home" || rc.Config.Users.DefaultShell != "/bin/sh" {
+		t.Fatalf("--config: got %+v, err=%v", rc, err)
+	}
+	// AC2: a broken --config file stops the command.
+	if _, err := runContextFor(t, buildRunContext, userAdd, "--config", broken); err == nil {
+		t.Error("broken --config: want a load error")
+	}
+	// AC3: without flags or env, the config last applied on the host wins.
+	if err := state.Record(state.Run{ConfigPath: site, Success: true}); err != nil {
+		t.Fatal(err)
+	}
+	if rc, err := runContextFor(t, buildRunContext, userAdd); err != nil || rc.Config.Users.HomeBase != "/srv/home" {
+		t.Errorf("last applied config: got %+v, err=%v", rc, err)
+	}
+}
+
+// #36 AC1, AC3: the config-free fallback keeps env overrides and --home-base.
+func TestBuildConfigFreeRunContext_FallbackKeepsOverrides(t *testing.T) {
+	noHostCommands(t)
+	t.Setenv("ROOTFILES_VLAN_INTERFACE", "vlan7")
+	rc, err := runContextFor(t, buildConfigFreeRunContext, []string{"tunnel", "status"}, "--profile", "nope", "--home-base", "/srv/h")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := rc.Config.Modules.Cloudflared.PrivateNetwork.Interface; got != "vlan7" {
+		t.Errorf("VLAN interface = %q, want vlan7", got)
+	}
+	if got := rc.Config.Users.HomeBase; got != "/srv/h" {
+		t.Errorf("home base = %q, want /srv/h", got)
+	}
+}
+
+// #36 AC2, AC3: status after a config load error reads the user and GPU
+// databases only under a home base it was given.
+func TestStatus_ConfigLoadErrorHomeBase(t *testing.T) {
+	noHostCommands(t)
+	t.Setenv("ROOTFILES_HOME_BASE", "")
+	base := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(base, ".rootfiles"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(base, ".rootfiles", "users.json"), `{"users":[{"name":"alice"}]}`)
+	status := func(t *testing.T, args ...string) statusReport {
+		t.Helper()
+		var out bytes.Buffer
+		root := NewRootCmd("test", "abc")
+		root.SetOut(&out)
+		root.SetErr(io.Discard)
+		root.SetArgs(append([]string{"status", "-o", "json", "--profile", "nope"}, args...))
+		if err := root.Execute(); err != nil {
+			t.Fatal(err)
+		}
+		var r statusReport
+		if err := json.Unmarshal(out.Bytes(), &r); err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+	if r := status(t); r.ConfigErr == "" || r.Users.HomeBase != "" || r.Users.Managed != 0 || r.GPU != nil {
+		t.Errorf("no home base: got config_error=%q users=%+v gpu=%v", r.ConfigErr, r.Users, r.GPU)
+	}
+	if r := status(t, "--home-base", base); r.Users.HomeBase != base || r.Users.Managed != 1 {
+		t.Errorf("--home-base: got users=%+v", r.Users)
 	}
 }

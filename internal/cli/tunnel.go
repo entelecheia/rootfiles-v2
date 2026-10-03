@@ -206,14 +206,6 @@ func loadRunContext(cmd *cobra.Command, tolerateLoadErr bool) (*module.RunContex
 		yes = true
 	}
 
-	profileName, _ := cmd.Flags().GetString("profile")
-	if profileName == "" {
-		profileName = os.Getenv("ROOTFILES_PROFILE")
-	}
-	if profileName == "" {
-		profileName = "minimal"
-	}
-
 	runner := newRunner(cmd, dryRun)
 	logger := runner.Logger
 
@@ -221,13 +213,16 @@ func loadRunContext(cmd *cobra.Command, tolerateLoadErr bool) (*module.RunContex
 	if sysErr != nil {
 		logger.Warn("system detection failed, using defaults", "err", sysErr)
 	}
-	cfg, cfgErr := config.LoadWithHomeBase(profileName, "", sysInfo, homeBaseFlag(cmd))
+	// Pick the config as apply and check do: flags, env, the last applied
+	// config or profile, then system detection's suggestion.
+	profileName, configPath := resolveTarget(cmd, sysInfo)
+	cfg, cfgErr := config.LoadWithHomeBase(profileName, configPath, sysInfo, homeBaseFlag(cmd))
 	if cfgErr != nil {
 		if !tolerateLoadErr {
 			return nil, cfgErr
 		}
-		logger.Warn("loading profile config failed, continuing without it", "profile", profileName, "err", cfgErr)
-		cfg = &config.Config{System: sysInfo}
+		logger.Warn("loading config failed, continuing without it", "profile", profileName, "config", configPath, "err", cfgErr)
+		cfg = config.Fallback(sysInfo, homeBaseFlag(cmd))
 	}
 
 	// Apply flag overrides

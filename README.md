@@ -226,7 +226,7 @@ Unified at-a-glance view — system info, active profile, module satisfaction, G
 rootfiles status
 ```
 
-Without flags, `status` and `check` evaluate against the profile/config last applied on this host (falling back to detection). `-o json` is available. Evaluate against a specific profile without applying anything:
+Without flags, `status`, `check` and the `user`, `gpu`, `tunnel`, `schedule` and `backup` subcommands use the profile/config last applied on this host (falling back to detection); `--profile` and `--config` override it. `user`, `gpu`, `backup` and the tunnel commands that read tunnel settings stop on a config load error; `tunnel status`, `restart`, `update` and `schedule` continue with env overrides and `--home-base` only. When the config does not load and no home base is given, `status` skips the user and GPU databases instead of reading them under `/home`. `-o json` is available. Evaluate against a specific profile without applying anything:
 
 ```bash
 rootfiles status --profile dgx
@@ -508,7 +508,7 @@ All flags can be set via environment variables for unattended operation:
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `ROOTFILES_PROFILE` | Profile name | `minimal` |
+| `ROOTFILES_PROFILE` | Profile name | `apply`: detected (prompted without `--yes`); other commands: last applied, else detected |
 | `ROOTFILES_YES` | Skip all prompts | `false` |
 | `ROOTFILES_HOME_BASE` | Custom home directory | detected (see [User management](#user-management)) |
 | `ROOTFILES_USER` | Username to create | — |

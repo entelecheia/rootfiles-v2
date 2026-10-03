@@ -53,8 +53,8 @@ func runStatus(cmd *cobra.Command, _ []string) error {
 	active, configPath := resolveTarget(cmd, sysInfo)
 
 	cfg, cfgErr := config.LoadWithHomeBase(active, configPath, sysInfo, homeBaseFlag(cmd))
-	if cfg == nil {
-		cfg = &config.Config{}
+	if cfgErr != nil {
+		cfg = config.Fallback(sysInfo, homeBaseFlag(cmd))
 	}
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelError}))
@@ -204,8 +204,13 @@ func collectStatus(ctx context.Context, rc *module.RunContext, sys *config.Syste
 		r.ModuleCheckError = err.Error()
 	}
 
-	if db, err := module.LoadGPUDB(rc); err == nil && db != nil && (db.TotalGPUs > 0 || len(db.Allocations) > 0) {
-		r.GPU = db
+	// An empty home base means the config did not load and none was given:
+	// skip the databases instead of reading them under /home.
+	homeBase := rc.Config.Users.HomeBase
+	if homeBase != "" {
+		if db, err := module.LoadGPUDB(rc); err == nil && db != nil && (db.TotalGPUs > 0 || len(db.Allocations) > 0) {
+			r.GPU = db
+		}
 	}
 
 	if rc.Runner.FileExists(cloudflaredStatusBinary) {
@@ -220,9 +225,11 @@ func collectStatus(ctx context.Context, rc *module.RunContext, sys *config.Syste
 	}
 	r.Tunnel.VLAN = interfaceAddress(iface)
 
-	r.Users.HomeBase = firstNonEmpty(rc.Config.Users.HomeBase, "/home")
-	if db, _ := module.LoadUsersDB(rc); db != nil {
-		r.Users.Managed = len(db.Users)
+	r.Users.HomeBase = homeBase
+	if homeBase != "" {
+		if db, _ := module.LoadUsersDB(rc); db != nil {
+			r.Users.Managed = len(db.Users)
+		}
 	}
 	if sysUsers, err := module.ScanSystemUsersExported(ctx, rc); err == nil {
 		r.Users.System = len(sysUsers)
@@ -298,8 +305,12 @@ func renderModulesSection(ctx context.Context, out io.Writer, rc *module.RunCont
 }
 
 func renderGPUSection(out io.Writer, rc *module.RunContext) {
-	db, _ := module.LoadGPUDB(rc)
 	ui.WriteSection(out, "GPU Allocations")
+	if rc.Config.Users.HomeBase == "" {
+		ui.WriteHint(out, unknownHomeBaseHint)
+		return
+	}
+	db, _ := module.LoadGPUDB(rc)
 
 	if db == nil || (db.TotalGPUs == 0 && len(db.Allocations) == 0) {
 		ui.WriteKV(out, "Total GPUs", "none recorded")
@@ -375,16 +386,17 @@ func renderUsersSection(ctx context.Context, out io.Writer, rc *module.RunContex
 
 	homeBase := rc.Config.Users.HomeBase
 	if homeBase == "" {
-		homeBase = "/home"
+		ui.WriteKV(out, "Home base", ui.StyleHint.Render("unknown"))
+		ui.WriteHint(out, unknownHomeBaseHint)
+	} else {
+		ui.WriteKV(out, "Home base", homeBase)
+		db, _ := module.LoadUsersDB(rc)
+		managed := 0
+		if db != nil {
+			managed = len(db.Users)
+		}
+		ui.WriteKV(out, "Managed", fmt.Sprintf("%d user(s)", managed))
 	}
-	ui.WriteKV(out, "Home base", homeBase)
-
-	db, _ := module.LoadUsersDB(rc)
-	managed := 0
-	if db != nil {
-		managed = len(db.Users)
-	}
-	ui.WriteKV(out, "Managed", fmt.Sprintf("%d user(s)", managed))
 
 	// System-user count: ignore scan errors (missing /etc/passwd, etc.).
 	sysUsers, err := module.ScanSystemUsersExported(ctx, rc)
@@ -392,6 +404,10 @@ func renderUsersSection(ctx context.Context, out io.Writer, rc *module.RunContex
 		ui.WriteKV(out, "System", fmt.Sprintf("%d user(s) (UID 1000-65533)", len(sysUsers)))
 	}
 }
+
+// unknownHomeBaseHint explains skipped user and GPU data after a config
+// load error.
+const unknownHomeBaseHint = "config did not load, so the home base is unknown; set --home-base or fix the config to see user and GPU data"
 
 // --- helpers ---
 
