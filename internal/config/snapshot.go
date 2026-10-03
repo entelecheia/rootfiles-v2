@@ -283,8 +283,12 @@ func detectCloudflaredConfig() CloudflaredConfig {
 func detectUsersConfig() UsersConfig {
 	cfg := UsersConfig{
 		DefaultShell: "/usr/bin/zsh",
-		// Detect home_base from /etc/default/useradd or common paths
-		HomeBase: useraddHome(),
+	}
+
+	// Detect home_base from /etc/default/useradd or common paths
+	data, _ := os.ReadFile(useraddDefaultsPath)
+	if hb := UseraddHome(data); hb != "/home" {
+		cfg.HomeBase = hb
 	}
 
 	// Fallback: check common custom home paths

@@ -154,12 +154,14 @@ var dataDriveMounts = []string{"/raid", "/data", "/nvme"}
 var homeFS = map[string]bool{"ext4": true, "xfs": true, "btrfs": true, "zfs": true}
 
 // defaultHomeBase picks users.home_base when a config leaves it unset. An
-// existing layout wins so a host is never silently re-homed: a custom HOME
-// in /etc/default/useradd, then a base where rootfiles already manages
-// users. Otherwise a separate local data drive gets <mount>/home, on APT
-// hosts only: Rocky has no SELinux home labeling for paths outside /home.
+// existing layout wins so a host is never silently re-homed: an uncommented
+// HOME= in /etc/default/useradd (the users module writes it on apply, /home
+// included), then a base where rootfiles already manages users. Otherwise a
+// separate local data drive gets <mount>/home, on APT hosts only: Rocky has
+// no SELinux home labeling for paths outside /home.
 func defaultHomeBase(sys *SystemInfo) string {
-	if hb := useraddHome(); hb != "" {
+	data, _ := os.ReadFile(useraddDefaultsPath)
+	if hb := UseraddHome(data); hb != "" {
 		return hb
 	}
 	for _, hb := range managedHomeBases {
@@ -179,20 +181,14 @@ func defaultHomeBase(sys *SystemInfo) string {
 	return "/home"
 }
 
-// useraddHome returns a non-default HOME from /etc/default/useradd, or "".
-func useraddHome() string {
-	data, err := os.ReadFile(useraddDefaultsPath)
-	if err != nil {
-		return ""
-	}
+// UseraddHome returns the last uncommented HOME= value of an
+// /etc/default/useradd file, or "".
+func UseraddHome(data []byte) string {
 	hb := ""
 	for _, line := range strings.Split(string(data), "\n") {
 		if v, ok := strings.CutPrefix(strings.TrimSpace(line), "HOME="); ok {
 			hb = strings.TrimSpace(v)
 		}
-	}
-	if hb == "/home" {
-		return ""
 	}
 	return hb
 }

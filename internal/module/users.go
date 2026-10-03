@@ -61,19 +61,20 @@ func LoadUsersDB(rc *RunContext) (*UsersDB, error) {
 	return &db, nil
 }
 
+// useraddDefaultsFile holds useradd's default HOME; tests redirect it.
+var useraddDefaultsFile = "/etc/default/useradd"
+
 func (m *UsersModule) Check(ctx context.Context, rc *RunContext) (*CheckResult, error) {
 	var changes []Change
 	cfg := rc.Config.Users
 
-	if cfg.HomeBase != "" && cfg.HomeBase != "/home" && !rc.Runner.FileExists(cfg.HomeBase) {
-		changes = append(changes, Change{
-			Description: fmt.Sprintf("Create custom home base directory %s", cfg.HomeBase),
-			Command:     fmt.Sprintf("mkdir -p %s", cfg.HomeBase),
-		})
-	}
-	// The metadata directory also records a /home choice, which home-base
-	// detection would otherwise override on a host with a data drive.
-	if cfg.HomeBase != "" {
+	if cfg.HomeBase != "" && cfg.HomeBase != "/home" {
+		if !rc.Runner.FileExists(cfg.HomeBase) {
+			changes = append(changes, Change{
+				Description: fmt.Sprintf("Create custom home base directory %s", cfg.HomeBase),
+				Command:     fmt.Sprintf("mkdir -p %s", cfg.HomeBase),
+			})
+		}
 		metaDir := filepath.Join(cfg.HomeBase, ".rootfiles")
 		if !rc.Runner.FileExists(metaDir) {
 			changes = append(changes, Change{
@@ -83,13 +84,14 @@ func (m *UsersModule) Check(ctx context.Context, rc *RunContext) (*CheckResult, 
 		}
 	}
 
-	// Check /etc/default/useradd HOME setting
-	if cfg.HomeBase != "" && cfg.HomeBase != "/home" {
-		data, _ := rc.Runner.ReadFile("/etc/default/useradd")
-		if !strings.Contains(string(data), "HOME="+cfg.HomeBase) {
+	// Check /etc/default/useradd HOME setting. /home is written too: it is
+	// how home-base detection keeps a /home choice on a host with a data drive.
+	if cfg.HomeBase != "" {
+		data, _ := rc.Runner.ReadFile(useraddDefaultsFile)
+		if config.UseraddHome(data) != cfg.HomeBase {
 			changes = append(changes, Change{
 				Description: fmt.Sprintf("Set default useradd HOME to %s", cfg.HomeBase),
-				Command:     fmt.Sprintf("update HOME=%s in /etc/default/useradd", cfg.HomeBase),
+				Command:     fmt.Sprintf("update HOME=%s in %s", cfg.HomeBase, useraddDefaultsFile),
 			})
 		}
 	}
@@ -121,8 +123,8 @@ func (m *UsersModule) Apply(ctx context.Context, rc *RunContext) (*ApplyResult, 
 	var messages, warnings []string
 	changed := false
 
-	// Create the home base and its metadata directory
-	if cfg.HomeBase != "" &&
+	// Create custom home base
+	if cfg.HomeBase != "" && cfg.HomeBase != "/home" &&
 		(!rc.Runner.FileExists(cfg.HomeBase) || !isDir(filepath.Join(cfg.HomeBase, ".rootfiles"))) {
 		if err := rc.Runner.MkdirAll(cfg.HomeBase, 0755); err != nil {
 			return nil, fmt.Errorf("creating home base: %w", err)
@@ -135,10 +137,9 @@ func (m *UsersModule) Apply(ctx context.Context, rc *RunContext) (*ApplyResult, 
 	}
 
 	// Update /etc/default/useradd
-	if cfg.HomeBase != "" && cfg.HomeBase != "/home" {
-		content := fmt.Sprintf("HOME=%s\n", cfg.HomeBase)
-		data, _ := rc.Runner.ReadFile("/etc/default/useradd")
-		if !strings.Contains(string(data), "HOME="+cfg.HomeBase) {
+	if cfg.HomeBase != "" {
+		data, _ := rc.Runner.ReadFile(useraddDefaultsFile)
+		if config.UseraddHome(data) != cfg.HomeBase {
 			// Replace or append HOME= line
 			lines := strings.Split(string(data), "\n")
 			var newLines []string
@@ -154,11 +155,11 @@ func (m *UsersModule) Apply(ctx context.Context, rc *RunContext) (*ApplyResult, 
 			if !found {
 				newLines = append(newLines, "HOME="+cfg.HomeBase)
 			}
-			content = strings.Join(newLines, "\n")
-			if err := rc.Runner.WriteFile("/etc/default/useradd", []byte(content), 0644); err != nil {
-				return nil, fmt.Errorf("writing /etc/default/useradd: %w", err)
+			content := strings.Join(newLines, "\n")
+			if err := rc.Runner.WriteFile(useraddDefaultsFile, []byte(content), 0644); err != nil {
+				return nil, fmt.Errorf("writing %s: %w", useraddDefaultsFile, err)
 			}
-			messages = append(messages, "updated /etc/default/useradd")
+			messages = append(messages, "updated "+useraddDefaultsFile)
 			changed = true
 		}
 	}
