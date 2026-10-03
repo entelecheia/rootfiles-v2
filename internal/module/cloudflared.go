@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -113,7 +114,13 @@ func resolveTunnelToken(rc *RunContext) (string, error) {
 		return cfg.TunnelToken, nil
 	}
 	path := cfg.TunnelTokenFile
-	fi, err := os.Stat(path)
+	// Stat and read through one descriptor so the checked file is the one read.
+	f, err := os.Open(path)
+	if err != nil {
+		return "", fmt.Errorf("tunnel_token_file: %w", err)
+	}
+	defer f.Close()
+	fi, err := f.Stat()
 	if err != nil {
 		return "", fmt.Errorf("tunnel_token_file: %w", err)
 	}
@@ -126,7 +133,7 @@ func resolveTunnelToken(rc *RunContext) (string, error) {
 	if st, ok := fi.Sys().(*syscall.Stat_t); ok && st.Uid != tunnelTokenFileUID {
 		return "", fmt.Errorf("tunnel_token_file %s: owned by uid %d, want root", path, st.Uid)
 	}
-	data, err := rc.Runner.ReadFile(path)
+	data, err := io.ReadAll(io.LimitReader(f, 64<<10))
 	if err != nil {
 		return "", fmt.Errorf("tunnel_token_file: %w", err)
 	}
