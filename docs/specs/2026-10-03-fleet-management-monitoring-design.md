@@ -95,7 +95,7 @@ Rejected alternatives:
 # fleet.yaml (operator-owned, not committed here)
 defaults:
   sudo: nopasswd          # nopasswd | root | none
-  parallel: 4
+  parallel: 2
 hosts:
   gpu01:
     ssh: gpu01            # ssh destination: config alias or user@host
@@ -110,7 +110,7 @@ hosts:
 ```
 
 - `config` paths resolve relative to the inventory file. Each site config is
-  validated with the existing `config.Load` before anything is sent.
+  validated with the environment-independent `config.LoadSite` before anything is sent.
 - `ssh` values starting with `-` and unknown keys are rejected (strict
   decoding, like profiles).
 - Selection: `--host a,b` and `--group g` (union). Mutating commands refuse to
