@@ -11,6 +11,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/entelecheia/rootfiles-v2/internal/config"
 	"github.com/entelecheia/rootfiles-v2/internal/module"
 	"github.com/entelecheia/rootfiles-v2/internal/state"
 )
@@ -184,45 +185,89 @@ func TestBuildRunContext_ConfigSelection(t *testing.T) {
 	if _, err := runContextFor(t, buildRunContext, userAdd, "--config", broken); err == nil {
 		t.Error("broken --config: want a load error")
 	}
-	// AC3: without flags or env, the config last applied on the host wins.
+	// AC3: without flags or env, the config last applied wins, through the
+	// copy apply kept; the recorded file is not read again.
 	if err := state.Record(state.Run{ConfigPath: site, Success: true}); err != nil {
 		t.Fatal(err)
 	}
-	if rc, err := runContextFor(t, buildRunContext, userAdd); err != nil || rc.Config.Users.HomeBase != "/srv/home" {
-		t.Errorf("last applied config: got %+v, err=%v", rc, err)
+	if err := saveAppliedConfig(rc.Config, site); err != nil {
+		t.Fatal(err)
 	}
-	// A reused config must be one root alone controls and this process can
-	// read; otherwise the subcommand falls back instead of trusting it.
+	writeFile(t, filepath.Join(dir, "base.yaml"), "extends: minimal\nusers:\n  default_groups: [tampered]\n")
+	writeFile(t, site, "extends: base.yaml\nusers:\n  home_base: /srv/changed\n")
+	if rc, err := runContextFor(t, buildRunContext, userAdd); err != nil || rc.Config.Users.HomeBase != "/srv/home" ||
+		rc.Config.Users.DefaultShell != "/bin/sh" || strings.Contains(strings.Join(rc.Config.Users.DefaultGroups, ","), "tampered") {
+		t.Errorf("last applied config: got %+v, err=%v; want the kept copy", rc, err)
+	}
+	// The kept copy is reused only when root alone controls it and this
+	// process can read it; otherwise the subcommand falls back.
+	t.Setenv("ROOTFILES_HOME_BASE", "/home") // keep the fallback profile off host detection
+	snap := state.AppliedConfigPath()
 	for _, mode := range []os.FileMode{0o666, 0o000} {
 		if mode == 0 && os.Geteuid() == 0 {
 			continue // root reads a 0000 file
 		}
-		if err := os.Chmod(site, mode); err != nil {
+		if err := os.Chmod(snap, mode); err != nil {
 			t.Fatal(err)
 		}
 		if rc, err := runContextFor(t, buildRunContext, userAdd); err != nil || rc.Config.Users.DefaultShell == "/bin/sh" {
-			t.Errorf("recorded config with mode %o: got %+v, err=%v; want the fallback profile", mode, rc, err)
+			t.Errorf("kept copy with mode %o: got %+v, err=%v; want the fallback profile", mode, rc, err)
 		}
 	}
-	if err := os.Chmod(site, 0o600); err != nil {
+	if err := state.SaveAppliedConfig(nil); err != nil {
 		t.Fatal(err)
 	}
+	if rc, err := runContextFor(t, buildRunContext, userAdd); err != nil || rc.Config.Users.DefaultShell == "/bin/sh" {
+		t.Errorf("no kept copy: got %+v, err=%v; want the fallback profile", rc, err)
+	}
 	// A recorded profile is used when no config path was recorded.
+	t.Setenv("ROOTFILES_HOME_BASE", "")
 	if err := state.Record(state.Run{Profile: "dgx", Success: true}); err != nil {
 		t.Fatal(err)
 	}
 	if rc, err := runContextFor(t, buildRunContext, userAdd); err != nil || rc.Config.Users.HomeBase != "/raid/home" {
 		t.Errorf("recorded profile: got %+v, err=%v; want the dgx home base", rc, err)
 	}
-	// A relative recorded path is not resolved against the current directory.
+	// check and status, which read the recorded path, ignore a relative one.
 	other := t.TempDir()
-	writeFile(t, filepath.Join(other, "site.yaml"), "extends: minimal\nusers:\n  home_base: /srv/other\n")
+	writeFile(t, filepath.Join(other, "site.yaml"), "extends: minimal\n")
 	chdir(t, other)
 	if err := state.Record(state.Run{ConfigPath: "site.yaml", Success: true}); err != nil {
 		t.Fatal(err)
 	}
-	if rc, err := runContextFor(t, buildRunContext, userAdd); err == nil && rc.Config.Users.HomeBase == "/srv/other" {
-		t.Error("relative recorded config path was resolved against the current directory")
+	root := NewRootCmd("test", "abc")
+	sub, _, _ := root.Find([]string{"check"})
+	if _, path := resolveTarget(sub, &config.SystemInfo{}); path != "" {
+		t.Errorf("resolveTarget used the relative recorded path %q", path)
+	}
+}
+
+// apply keeps the resolved config of a --config apply, mode 0600, without
+// the inline tunnel token, and a profile apply removes it.
+func TestSaveAppliedConfig(t *testing.T) {
+	t.Setenv("ROOTFILES_STATE_DIR", t.TempDir())
+	cfg := &config.Config{Extends: "minimal"}
+	cfg.Users.HomeBase = "/srv/home"
+	cfg.Modules.Cloudflared.TunnelToken = "secret-token"
+	if err := saveAppliedConfig(cfg, "/etc/rootfiles/site.yaml"); err != nil {
+		t.Fatal(err)
+	}
+	fi, err := os.Stat(state.AppliedConfigPath())
+	if err != nil || fi.Mode().Perm() != 0o600 {
+		t.Fatalf("kept copy: %v, err=%v; want mode 0600", fi, err)
+	}
+	data, _ := os.ReadFile(state.AppliedConfigPath())
+	if strings.Contains(string(data), "secret-token") || strings.Contains(string(data), "extends") || !strings.Contains(string(data), "/srv/home") {
+		t.Errorf("kept copy:\n%s", data)
+	}
+	if cfg.Modules.Cloudflared.TunnelToken != "secret-token" {
+		t.Error("saveAppliedConfig changed the live config")
+	}
+	if err := saveAppliedConfig(cfg, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(state.AppliedConfigPath()); !os.IsNotExist(err) {
+		t.Errorf("profile apply left the kept copy: %v", err)
 	}
 }
 

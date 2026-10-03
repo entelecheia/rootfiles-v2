@@ -161,8 +161,31 @@ func runApply(cmd *cobra.Command, _ []string) error {
 	if err := state.Record(run); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: recording apply state: %v\n", err)
 	}
+	if runErr == nil {
+		if err := saveAppliedConfig(cfg, configPath); err != nil {
+			fmt.Fprintf(os.Stderr, "warning: saving the applied config: %v\n", err)
+		}
+	}
 	auditf(cmd, "apply finished", "profile", profileName, "success", runErr == nil, "backup", run.BackupID)
 	return runErr
+}
+
+// saveAppliedConfig keeps the resolved config of a successful --config apply
+// for the subcommands to reuse (resolveRunTarget). Root writes it into the
+// root-owned state directory, fully resolved (no extends) and without an
+// inline tunnel token. A profile apply removes it.
+func saveAppliedConfig(cfg *config.Config, configPath string) error {
+	if configPath == "" {
+		return state.SaveAppliedConfig(nil)
+	}
+	snap := *cfg
+	snap.Extends = ""
+	snap.Modules.Cloudflared.TunnelToken = ""
+	data, err := config.MarshalYAML(&snap)
+	if err != nil {
+		return err
+	}
+	return state.SaveAppliedConfig(data)
 }
 
 // selectProfile resolves the profile name. Priority: explicit --profile flag

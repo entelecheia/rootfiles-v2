@@ -107,25 +107,36 @@ var (
 	configOwnerUID  uint32 = 0
 )
 
-// resolveRunTarget is resolveTarget for the user, gpu, tunnel, schedule and
-// backup subcommands. A config they were not given but would reuse from the
-// last apply decides what root does (sudoers, groups, tunnel settings), so
-// it is reused only when root alone controls it and this process can read
-// it; otherwise they warn and fall back to the recorded profile or the one
-// detection suggests.
+// resolveRunTarget picks the config for the user, gpu, tunnel, schedule and
+// backup subcommands: flags or env first, then what was last applied, then
+// detection's suggestion. A config they were not given decides what root
+// does (sudoers, groups, tunnel settings), so after a config-file apply they
+// never re-read that file, which anyone may have changed since; they reuse
+// the resolved copy apply kept in the state directory, and only when root
+// alone controls it and this process can read it. Otherwise they warn and
+// fall back.
 func resolveRunTarget(cmd *cobra.Command, sys *config.SystemInfo, logger *slog.Logger) (profile, configPath string) {
-	profile, configPath = resolveTarget(cmd, sys)
-	if flag, _ := cmd.Flags().GetString("config"); configPath == "" || configPath == flag {
+	profile, _ = cmd.Flags().GetString("profile")
+	configPath, _ = cmd.Flags().GetString("config")
+	if profile == "" {
+		profile = os.Getenv("ROOTFILES_PROFILE")
+	}
+	if profile != "" || configPath != "" {
 		return profile, configPath
 	}
-	if err := reusableConfig(configPath); err != nil {
-		logger.Warn("not reusing the last applied config; pass --config or --profile to choose", "config", configPath, "err", err)
-		if last, err := state.Last(); err == nil && last != nil && last.Profile != "" {
-			return last.Profile, ""
+	last, _ := state.Last()
+	if last != nil && last.ConfigPath != "" {
+		snap := state.AppliedConfigPath()
+		err := reusableConfig(snap)
+		if err == nil {
+			return "", snap
 		}
-		return sys.SuggestProfile(), ""
+		logger.Warn("not reusing the last applied config; pass --config or --profile to choose", "config", snap, "err", err)
 	}
-	return profile, configPath
+	if last != nil && last.Profile != "" {
+		return last.Profile, ""
+	}
+	return sys.SuggestProfile(), ""
 }
 
 // reusableConfig reports why path may not be reused: a directory from the
