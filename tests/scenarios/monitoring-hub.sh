@@ -91,7 +91,7 @@ fi
 PROJECT="rootfiles-monitoring-scenario-$$-${RANDOM}"
 SSH_IMAGE="rootfiles-monitoring-target-push:scenario-$$-${RANDOM}"
 SSH_CONTAINER="rootfiles-monitoring-target-push-hub-$$-${RANDOM}"
-WORK_TMP="$(mktemp -d)"
+WORK_TMP="$(mktemp -d "$FIXTURE_ROOT/scenario-work.XXXXXX")"
 COMPOSE_CMD=(docker compose --project-name "$PROJECT" --file "$COMPOSE")
 cleanup() {
     local status=$?
