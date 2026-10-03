@@ -37,6 +37,13 @@ func TestCheckHomeBase_SymlinkedHome(t *testing.T) {
 				t.Fatal(err)
 			}
 		}, "home/users", "points to"},
+		{"writable directory below an absolute target", "/data/home", func(t *testing.T, root string) {
+			mkdirs(t, root, "data/home/users")
+			if err := os.Chmod(filepath.Join(root, "data/home/users"), 0o777); err != nil {
+				t.Fatal(err)
+			}
+		}, "home/users", "writable by group or others"},
+		{"target through ..", "data/../data/home", nil, "home/users", "contains .."},
 		{"other symlink", "data/home", func(t *testing.T, root string) {
 			if err := os.Symlink("data", filepath.Join(root, "srv")); err != nil {
 				t.Fatal(err)

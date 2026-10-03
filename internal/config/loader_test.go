@@ -661,6 +661,26 @@ func TestDefaultHomeBase_SameDeviceAsRoot(t *testing.T) {
 	}
 }
 
+// #37: detection keeps the strict rule for a symlinked /home, so /home and
+// its target are never two managed bases with the same metadata.
+func TestDetectHomeBase_SymlinkedHomeIsNotManaged(t *testing.T) {
+	root := isolateHomeDetection(t, "", "/raid/home")
+	t.Setenv("ROOTFILES_HOME_BASE", "")
+	if err := os.Remove(filepath.Join(root, "home")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("raid/home", filepath.Join(root, "home")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "raid", "home", ".rootfiles", "users.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load("minimal", "", &SystemInfo{OS: "ubuntu"})
+	if err != nil || cfg.Users.HomeBase != "/raid/home" {
+		t.Fatalf("got %v, err=%v; want /raid/home", cfg, err)
+	}
+}
+
 // #38: a btrfs subvolume of the root filesystem or a ZFS dataset in the root
 // pool has its own st_dev but is not a data drive.
 func TestDefaultHomeBase_RootFilesystemSubvolumes(t *testing.T) {

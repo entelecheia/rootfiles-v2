@@ -338,19 +338,26 @@ func rootOnlyWalk(root, base string, uid uint32, followHome bool) error {
 			return err
 		}
 		if followHome && fi.Mode()&os.ModeSymlink != 0 && dir == filepath.Join(root, "home") {
-			target, err := os.Readlink(dir)
+			link, err := os.Readlink(dir)
 			if err != nil {
 				return err
 			}
-			if filepath.IsAbs(target) {
-				target = filepath.Join(root, target)
-			} else {
-				target = filepath.Join(filepath.Dir(dir), target)
+			// A ".." after a symlinked component resolves differently in the
+			// kernel than in filepath.Join, so the checked path could differ.
+			if slices.Contains(strings.Split(link, "/"), "..") {
+				return fmt.Errorf("%s points to %s, which contains ..", dir, link)
 			}
-			if err := RootOnlyBase(root, target, uid); err != nil {
+			target := filepath.Join(filepath.Dir(dir), link)
+			if filepath.IsAbs(link) {
+				target = filepath.Join(root, link)
+			}
+			// Walk the rest of the base below the resolved target, never
+			// through the link, so every checked path is the real one.
+			rest, _ := filepath.Rel(dir, base)
+			if err := RootOnlyBase(root, filepath.Join(target, rest), uid); err != nil {
 				return fmt.Errorf("%s points to %s: %w", dir, target, err)
 			}
-			continue
+			return nil
 		}
 		st, ok := fi.Sys().(*syscall.Stat_t)
 		switch {
