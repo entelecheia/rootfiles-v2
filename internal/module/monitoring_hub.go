@@ -50,6 +50,10 @@ func checkMonitoringHub(ctx context.Context, rc *RunContext) ([]Change, error) {
 	if err := validateMonitoringDiscoveryDir(h, rc.Config.Modules.Cloudflared.TunnelTokenFile); err != nil {
 		return nil, err
 	}
+	targetsExist, err := validateMonitoringDiscoveryFilesystem(h.TargetsFile)
+	if err != nil {
+		return nil, err
+	}
 	if !rc.Runner.CommandExists("docker") {
 		return nil, errors.New("monitoring hub requires Docker; enable the docker module first")
 	}
@@ -109,7 +113,7 @@ func checkMonitoringHub(ctx context.Context, rc *RunContext) ([]Change, error) {
 			changes = append(changes, Change{Description: "Create monitoring data directory " + dir})
 		}
 	}
-	if !rc.Runner.FileExists(h.TargetsFile) {
+	if !targetsExist {
 		changes = append(changes, Change{Description: "Create empty Prometheus file discovery targets"})
 	}
 	serviceChanges, err := monitoringHubServiceChanges(ctx, rc)
@@ -149,7 +153,11 @@ func applyMonitoringHub(ctx context.Context, rc *RunContext) (*ApplyResult, erro
 			return nil, fmt.Errorf("creating monitoring data directory: %w", err)
 		}
 	}
-	if !rc.Runner.FileExists(h.TargetsFile) {
+	targetsExist, err := validateMonitoringDiscoveryFilesystem(h.TargetsFile)
+	if err != nil {
+		return nil, err
+	}
+	if !targetsExist {
 		if err := rc.Runner.MkdirAll(filepath.Dir(h.TargetsFile), 0755); err != nil {
 			return nil, fmt.Errorf("creating targets directory: %w", err)
 		}
@@ -227,6 +235,9 @@ func applyMonitoringHub(ctx context.Context, rc *RunContext) (*ApplyResult, erro
 }
 
 func validateMonitoringDataDir(path string) (bool, error) {
+	if _, err := validateTrustedMonitoringDirectoryPath(filepath.Dir(path)); err != nil {
+		return false, fmt.Errorf("monitoring hub data directory parent is unsafe: %w", err)
+	}
 	info, err := monitoringHubLstat(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return false, nil
@@ -245,6 +256,81 @@ func validateMonitoringDataDir(path string) (bool, error) {
 		return false, fmt.Errorf("monitoring hub data directory %s must grant root read, write and execute access", path)
 	}
 	return true, nil
+}
+
+func validateMonitoringDiscoveryFilesystem(target string) (bool, error) {
+	dir := filepath.Dir(target)
+	exists, err := validateTrustedMonitoringDirectoryPath(dir)
+	if err != nil {
+		return false, fmt.Errorf("monitoring discovery directory is unsafe: %w", err)
+	}
+	info, err := monitoringHubLstat(target)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, errors.New("cannot inspect monitoring targets file safely")
+	}
+	if !exists {
+		return false, errors.New("monitoring targets file exists without an existing parent directory")
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
+		return false, errors.New("monitoring targets file must be a regular file, not a symlink")
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || stat.Uid != 0 {
+		return false, errors.New("monitoring targets file must be owned by root")
+	}
+	if info.Mode().Perm()&0022 != 0 {
+		return false, errors.New("monitoring targets file must not be group- or world-writable")
+	}
+	if info.Mode().Perm()&0400 == 0 {
+		return false, errors.New("monitoring targets file must be readable by root")
+	}
+	return true, nil
+}
+
+func validateTrustedMonitoringDirectoryPath(path string) (bool, error) {
+	path = filepath.Clean(path)
+	components := []string{}
+	for current := path; ; current = filepath.Dir(current) {
+		components = append(components, current)
+		parent := filepath.Dir(current)
+		if parent == current {
+			break
+		}
+	}
+	exists := true
+	var previous os.FileInfo
+	for i := len(components) - 1; i >= 0; i-- {
+		component := components[i]
+		info, err := monitoringHubLstat(component)
+		if errors.Is(err, os.ErrNotExist) {
+			if previous != nil && previous.Mode().Perm()&0200 == 0 {
+				return false, fmt.Errorf("existing parent %s must grant root write access to create missing components", components[i+1])
+			}
+			exists = false
+			break
+		}
+		if err != nil {
+			return false, fmt.Errorf("cannot inspect directory component %s", component)
+		}
+		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+			return false, fmt.Errorf("directory component %s must be a real directory", component)
+		}
+		stat, ok := info.Sys().(*syscall.Stat_t)
+		if !ok || stat.Uid != 0 {
+			return false, fmt.Errorf("directory component %s must be owned by root", component)
+		}
+		if info.Mode().Perm()&0022 != 0 || info.Mode().Perm()&0100 == 0 {
+			return false, fmt.Errorf("directory component %s must be non-writable by group/world and traversable by root", component)
+		}
+		if i == 0 && info.Mode().Perm()&0700 != 0700 {
+			return false, fmt.Errorf("discovery directory %s must grant root read, write and execute access", component)
+		}
+		previous = info
+	}
+	return exists, nil
 }
 
 type monitoringHubContainerState struct {
@@ -497,7 +583,7 @@ func renderMonitoringHubFiles(h config.MonitoringHubConfig, passwordFile string)
 		"alerting":   map[string]any{"alertmanagers": []any{map[string]any{"static_configs": []any{map[string]any{"targets": []string{"alertmanager:9093"}}}}}},
 		"scrape_configs": []any{
 			map[string]any{"job_name": "prometheus", "static_configs": []any{map[string]any{"targets": []string{"localhost:9090"}}}},
-			map[string]any{"job_name": "fleet", "file_sd_configs": []any{map[string]any{"files": []string{"/etc/prometheus/discovery/targets.json"}, "refresh_interval": "30s"}}},
+			map[string]any{"job_name": "fleet", "file_sd_configs": []any{map[string]any{"files": []string{filepath.Join("/etc/prometheus/discovery", filepath.Base(h.TargetsFile))}, "refresh_interval": "30s"}}},
 		},
 	}
 	compose := map[string]any{

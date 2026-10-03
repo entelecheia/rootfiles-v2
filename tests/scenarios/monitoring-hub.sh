@@ -109,6 +109,29 @@ docker run --rm --volume "$DATA_DIR:/scenario-data" busybox:1.36.1 sh -c \
     check config /etc/prometheus/prometheus.yaml
 "${COMPOSE_CMD[@]}" run --rm --no-deps --entrypoint promtool prometheus \
     check rules /etc/prometheus/alert-rules.yaml
+cat >"$WORK_TMP/fleet-targetdown.test.yml" <<'YAML'
+rule_files:
+  - /etc/prometheus/alert-rules.yaml
+evaluation_interval: 1m
+tests:
+  - interval: 1m
+    input_series:
+      - series: 'up{job="fleet",host="scenario-down"}'
+        values: '0+0x5'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: FleetTargetDown
+        exp_alerts:
+          - exp_labels:
+              alertname: FleetTargetDown
+              host: scenario-down
+              job: fleet
+              severity: critical
+YAML
+"${COMPOSE_CMD[@]}" run --rm --no-deps \
+    --volume "$WORK_TMP/fleet-targetdown.test.yml:/tmp/fleet-targetdown.test.yml:ro" \
+    --entrypoint promtool prometheus test rules /tmp/fleet-targetdown.test.yml
+echo "PASS: generated FleetTargetDown rule fires after a simulated five-minute outage"
 "${COMPOSE_CMD[@]}" run --rm --no-deps --entrypoint amtool alertmanager \
     check-config /etc/alertmanager/alertmanager.yml
 "${COMPOSE_CMD[@]}" up -d
@@ -139,12 +162,58 @@ for item in 'prometheus 9090 9090' 'alertmanager 9093 9093' 'grafana 3000 3000';
     fi
 done
 
-curl --silent --show-error --fail 'http://127.0.0.1:9090/api/v1/targets?state=active' >"$WORK_TMP/targets.json"
-python3 -c 'import json,sys; p=json.load(open(sys.argv[1])); ts=p.get("data",{}).get("activeTargets",[]); ok=any(t.get("health")=="up" and t.get("labels",{}).get("host")=="monitoring-scenario-prometheus" and t.get("labels",{}).get("exporter")=="scenario" and "prometheus:9090" in t.get("scrapeUrl","") for t in ts); sys.exit(0 if ok else 1)' "$WORK_TMP/targets.json" || {
+target_ready=0
+for _ in $(seq 1 60); do
+    curl --silent --show-error --fail 'http://127.0.0.1:9090/api/v1/targets?state=active' >"$WORK_TMP/targets.json" || true
+    if python3 -c 'import json,sys; p=json.load(open(sys.argv[1])); ts=p.get("data",{}).get("activeTargets",[]); ok=any(t.get("health")=="up" and t.get("labels",{}).get("host")=="monitoring-scenario-prometheus" and t.get("labels",{}).get("exporter")=="scenario" and "prometheus:9090" in t.get("scrapeUrl","") for t in ts); sys.exit(0 if ok else 1)' "$WORK_TMP/targets.json" 2>/dev/null; then
+        target_ready=1
+        break
+    fi
+    sleep 2
+done
+if [[ "$target_ready" != 1 ]]; then
+    cat "$WORK_TMP/targets.json" >&2
     echo "file-discovery target did not become healthy with the expected labels" >&2
     exit 1
-}
+fi
 echo "PASS: generated file-discovery target is healthy with host/exporter labels"
+
+PROM_CONTAINER_BEFORE=$("${COMPOSE_CMD[@]}" ps -q prometheus)
+[[ -n "$PROM_CONTAINER_BEFORE" ]] || { echo "Prometheus container ID is unavailable" >&2; exit 1; }
+PROM_STARTED_BEFORE=$(docker inspect --format '{{.State.StartedAt}}' "$PROM_CONTAINER_BEFORE")
+UPDATED_TARGETS="$(mktemp "$CONFIG_DIR/discovery/targets.json.tmp.XXXXXX")"
+cat >"$UPDATED_TARGETS" <<'JSON'
+[
+  {
+    "targets": ["prometheus:9090"],
+    "labels": {"host": "monitoring-scenario-prometheus-updated", "exporter": "scenario"}
+  },
+  {
+    "targets": ["prometheus-unreachable.invalid:9090"],
+    "labels": {"host": "monitoring-scenario-unreachable", "exporter": "scenario"}
+  }
+]
+JSON
+chmod 0644 "$UPDATED_TARGETS"
+mv -f "$UPDATED_TARGETS" "$TARGETS"
+
+file_sd_updated=0
+for _ in $(seq 1 90); do
+    curl --silent --show-error --fail 'http://127.0.0.1:9090/api/v1/targets?state=active' >"$WORK_TMP/targets-updated.json" || true
+    if python3 -c 'import json,sys; p=json.load(open(sys.argv[1])); ts=p.get("data",{}).get("activeTargets",[]); good=any(t.get("health")=="up" and t.get("labels",{}).get("host")=="monitoring-scenario-prometheus-updated" for t in ts); down=any(t.get("health")=="down" and t.get("labels",{}).get("host")=="monitoring-scenario-unreachable" for t in ts); old=any(t.get("labels",{}).get("host")=="monitoring-scenario-prometheus" for t in ts); sys.exit(0 if good and down and not old else 1)' "$WORK_TMP/targets-updated.json" 2>/dev/null; then
+        file_sd_updated=1
+        break
+    fi
+    sleep 2
+done
+[[ "$file_sd_updated" == 1 ]] || { echo "atomic file-discovery update did not replace labels and add the unreachable target" >&2; exit 1; }
+PROM_CONTAINER_AFTER=$("${COMPOSE_CMD[@]}" ps -q prometheus)
+PROM_STARTED_AFTER=$(docker inspect --format '{{.State.StartedAt}}' "$PROM_CONTAINER_AFTER")
+if [[ "$PROM_CONTAINER_AFTER" != "$PROM_CONTAINER_BEFORE" || "$PROM_STARTED_AFTER" != "$PROM_STARTED_BEFORE" ]]; then
+    echo "Prometheus restarted during atomic file-discovery update" >&2
+    exit 1
+fi
+echo "PASS: atomic file-discovery replacement appeared without restarting Prometheus"
 
 alert_fired=0
 for _ in $(seq 1 90); do
@@ -171,3 +240,4 @@ done
 curl --silent --show-error --fail 'http://127.0.0.1:3000/api/health' >"$WORK_TMP/grafana-health.json"
 echo "PASS: generated Prometheus, Alertmanager, and Grafana configs are running; synthetic alert reached the no-op receiver"
 echo "NOTE: file discovery targets Prometheus itself as a fixture only; it does not simulate GPU or DCGM telemetry."
+echo "NOTE: this acceptance verifies Prometheus file-SD refresh directly; it does not exercise the SSH-backed fleet targets --push command."

@@ -265,6 +265,17 @@ func TestMonitoringHubRequiresConfiguredGrafanaPasswordFileBeforeMutation(t *tes
 	fakeMonitoringCommand(t, "docker", "#!/bin/sh\nexit 0\n")
 	rc := newRealRC(t)
 	tmp := t.TempDir()
+	oldLstat := monitoringHubLstat
+	monitoringHubLstat = func(path string) (os.FileInfo, error) {
+		if path == tmp {
+			return fakeRootOwnedInfo{mode: os.ModeDir | 0755}, nil
+		}
+		if strings.HasPrefix(path, tmp+string(filepath.Separator)) {
+			return nil, os.ErrNotExist
+		}
+		return fakeRootOwnedInfo{mode: os.ModeDir | 0755}, nil
+	}
+	t.Cleanup(func() { monitoringHubLstat = oldLstat })
 	rc.Config.Modules.Monitoring.Hub = config.MonitoringHubConfig{
 		Enabled: true, DataDir: filepath.Join(tmp, "data"), TargetsFile: filepath.Join(tmp, "discovery", "targets.json"),
 		GrafanaAdminPasswordFile: filepath.Join(tmp, "provided-password"),
@@ -301,11 +312,16 @@ func TestMonitoringHubLifecycleRecoveryAndStartupFailureWithFakeCommands(t *test
 		return true, nil
 	}
 	monitoringHubLstat = func(path string) (os.FileInfo, error) {
-		info, err := os.Lstat(path)
+		info, err := os.Stat(path)
 		if err != nil {
 			return nil, err
 		}
-		return fakeRootOwnedInfo{FileInfo: info}, nil
+		mode := info.Mode() & os.ModeType
+		mode |= info.Mode().Perm() &^ 0022
+		if info.IsDir() {
+			mode |= 0700
+		}
+		return fakeRootOwnedInfo{FileInfo: info, mode: mode}, nil
 	}
 	t.Cleanup(func() {
 		monitoringHubConfigDir, monitoringHubCompose, monitoringHubUnitPath = oldPaths[0], oldPaths[1], oldPaths[2]
@@ -368,9 +384,21 @@ func TestMonitoringHubLifecycleRecoveryAndStartupFailureWithFakeCommands(t *test
 	}
 }
 
-type fakeRootOwnedInfo struct{ os.FileInfo }
+type fakeRootOwnedInfo struct {
+	os.FileInfo
+	mode os.FileMode
+}
 
 func (fakeRootOwnedInfo) Sys() any { return &syscall.Stat_t{Uid: 0} }
+
+func (info fakeRootOwnedInfo) Mode() os.FileMode {
+	if info.mode != 0 {
+		return info.mode
+	}
+	return info.FileInfo.Mode()
+}
+
+func (info fakeRootOwnedInfo) IsDir() bool { return info.Mode().IsDir() }
 
 type fakeUserOwnedInfo struct{ os.FileInfo }
 
@@ -384,12 +412,16 @@ func TestMonitoringHubDataDirectoryRequiresRootWritableDirectory(t *testing.T) {
 	}
 	oldLstat := monitoringHubLstat
 	t.Cleanup(func() { monitoringHubLstat = oldLstat })
-	monitoringHubLstat = func(path string) (os.FileInfo, error) {
-		info, err := os.Lstat(path)
-		if err != nil {
-			return nil, err
+	link := filepath.Join(dir, "data-link")
+	monitoringHubLstat = func(candidate string) (os.FileInfo, error) {
+		if filepath.Clean(candidate) == filepath.Clean(path) || filepath.Clean(candidate) == filepath.Clean(link) {
+			info, err := os.Lstat(candidate)
+			if err != nil {
+				return nil, err
+			}
+			return fakeRootOwnedInfo{FileInfo: info}, nil
 		}
-		return fakeRootOwnedInfo{FileInfo: info}, nil
+		return fakeRootOwnedInfo{mode: os.ModeDir | 0755}, nil
 	}
 	exists, err := validateMonitoringDataDir(path)
 	if err != nil || !exists {
@@ -401,7 +433,6 @@ func TestMonitoringHubDataDirectoryRequiresRootWritableDirectory(t *testing.T) {
 	if _, err := validateMonitoringDataDir(path); err == nil || !strings.Contains(err.Error(), "read, write and execute") {
 		t.Fatalf("non-writable data directory should be refused, got %v", err)
 	}
-	link := filepath.Join(dir, "data-link")
 	if err := os.Symlink(path, link); err != nil {
 		t.Fatal(err)
 	}
@@ -411,22 +442,104 @@ func TestMonitoringHubDataDirectoryRequiresRootWritableDirectory(t *testing.T) {
 	if err := os.Chmod(path, 0700); err != nil {
 		t.Fatal(err)
 	}
-	monitoringHubLstat = func(path string) (os.FileInfo, error) {
-		info, err := os.Lstat(path)
-		if err != nil {
-			return nil, err
+	monitoringHubLstat = func(candidate string) (os.FileInfo, error) {
+		if filepath.Clean(candidate) == filepath.Clean(path) {
+			info, err := os.Lstat(candidate)
+			if err != nil {
+				return nil, err
+			}
+			return fakeUserOwnedInfo{FileInfo: info}, nil
 		}
-		return fakeUserOwnedInfo{FileInfo: info}, nil
+		return fakeRootOwnedInfo{mode: os.ModeDir | 0755}, nil
 	}
 	if _, err := validateMonitoringDataDir(path); err == nil || !strings.Contains(err.Error(), "owned by root") {
 		t.Fatalf("non-root-owned data directory should be refused, got %v", err)
+	}
+	monitoringHubLstat = func(candidate string) (os.FileInfo, error) {
+		if filepath.Clean(candidate) == filepath.Clean(dir) {
+			return fakeRootOwnedInfo{mode: os.ModeDir | 0777}, nil
+		}
+		return fakeRootOwnedInfo{mode: os.ModeDir | 0755}, nil
+	}
+	if _, err := validateMonitoringDataDir(path); err == nil || !strings.Contains(err.Error(), "parent is unsafe") {
+		t.Fatalf("writable data directory parent should be refused, got %v", err)
+	}
+}
+
+func TestMonitoringHubDiscoveryFilesystemTrustsOnlyRootOwnedNonsymlinkParents(t *testing.T) {
+	oldLstat := monitoringHubLstat
+	t.Cleanup(func() { monitoringHubLstat = oldLstat })
+
+	standardDir := "/etc/rootfiles/monitoring/discovery"
+	standardTarget := filepath.Join(standardDir, "targets.json")
+	monitoringHubLstat = func(path string) (os.FileInfo, error) {
+		if path == standardTarget {
+			return nil, os.ErrNotExist
+		}
+		return fakeRootOwnedInfo{mode: os.ModeDir | 0755}, nil
+	}
+	if exists, err := validateMonitoringDiscoveryFilesystem(standardTarget); err != nil || exists {
+		t.Fatalf("root-owned standard discovery path should allow an absent file: exists=%v err=%v", exists, err)
+	}
+	monitoringHubLstat = func(path string) (os.FileInfo, error) {
+		if path == standardTarget {
+			return fakeRootOwnedInfo{mode: 0644}, nil
+		}
+		return fakeRootOwnedInfo{mode: os.ModeDir | 0755}, nil
+	}
+	if exists, err := validateMonitoringDiscoveryFilesystem(standardTarget); err != nil || !exists {
+		t.Fatalf("root-owned regular target should pass: exists=%v err=%v", exists, err)
+	}
+	monitoringHubLstat = func(path string) (os.FileInfo, error) {
+		if path == standardTarget {
+			return fakeRootOwnedInfo{mode: 0666}, nil
+		}
+		return fakeRootOwnedInfo{mode: os.ModeDir | 0755}, nil
+	}
+	if _, err := validateMonitoringDiscoveryFilesystem(standardTarget); err == nil || !strings.Contains(err.Error(), "group- or world-writable") {
+		t.Fatalf("writable target file should be refused, got %v", err)
+	}
+
+	symlinkDir := "/srv/monitoring/discovery"
+	symlinkTarget := filepath.Join(symlinkDir, "targets.json")
+	monitoringHubLstat = func(path string) (os.FileInfo, error) {
+		if path == symlinkDir {
+			return fakeRootOwnedInfo{mode: os.ModeSymlink | 0777}, nil
+		}
+		return fakeRootOwnedInfo{mode: os.ModeDir | 0755}, nil
+	}
+	if _, err := validateMonitoringDiscoveryFilesystem(symlinkTarget); err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("symlink discovery parent should be refused, got %v", err)
+	}
+
+	untrustedParent := "/srv/operator-writable"
+	untrustedTarget := filepath.Join(untrustedParent, "discovery", "targets.json")
+	monitoringHubLstat = func(path string) (os.FileInfo, error) {
+		if path == untrustedParent {
+			return fakeRootOwnedInfo{mode: os.ModeDir | 0777}, nil
+		}
+		return fakeRootOwnedInfo{mode: os.ModeDir | 0755}, nil
+	}
+	if _, err := validateMonitoringDiscoveryFilesystem(untrustedTarget); err == nil || !strings.Contains(err.Error(), "group/world") {
+		t.Fatalf("group/world-writable parent should be refused, got %v", err)
+	}
+
+	target := "/srv/monitoring/discovery/targets.json"
+	monitoringHubLstat = func(path string) (os.FileInfo, error) {
+		if path == target {
+			return fakeRootOwnedInfo{mode: os.ModeSymlink | 0777}, nil
+		}
+		return fakeRootOwnedInfo{mode: os.ModeDir | 0755}, nil
+	}
+	if _, err := validateMonitoringDiscoveryFilesystem(target); err == nil || !strings.Contains(err.Error(), "regular file") {
+		t.Fatalf("symlink target file should be refused, got %v", err)
 	}
 }
 
 func TestMonitoringHubUsesDiscoveryDirectoryForAtomicTargetReplacement(t *testing.T) {
 	h := (config.MonitoringHubConfig{}).WithDefaults()
 	discoveryDir := filepath.Join(t.TempDir(), "discovery")
-	h.TargetsFile = filepath.Join(discoveryDir, "targets.json")
+	h.TargetsFile = filepath.Join(discoveryDir, "targets.prod.json")
 	files, err := renderMonitoringHubFiles(h, monitoringHubPassword)
 	if err != nil {
 		t.Fatal(err)
@@ -454,7 +567,7 @@ func TestMonitoringHubUsesDiscoveryDirectoryForAtomicTargetReplacement(t *testin
 	if !found {
 		t.Fatalf("Prometheus does not mount discovery directory %q", discoveryDir)
 	}
-	if !strings.Contains(string(files[monitoringHubPromConfig]), "/etc/prometheus/discovery/targets.json") {
+	if !strings.Contains(string(files[monitoringHubPromConfig]), "/etc/prometheus/discovery/targets.prod.json") {
 		t.Fatal("Prometheus file_sd config does not point into the mounted directory")
 	}
 

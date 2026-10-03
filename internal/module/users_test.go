@@ -21,6 +21,9 @@ func TestUsersModule_Name(t *testing.T) {
 }
 
 func TestUsersModule_CheckDefaultHomeBaseIsSatisfied(t *testing.T) {
+	oldSudoersDir := sudoersDir
+	sudoersDir = t.TempDir()
+	t.Cleanup(func() { sudoersDir = oldSudoersDir })
 	rc := newDryRunRC(t)
 	// HomeBase "" or "/home" means no custom setup required.
 	result, err := NewUsersModule().Check(context.Background(), rc)
@@ -33,6 +36,9 @@ func TestUsersModule_CheckDefaultHomeBaseIsSatisfied(t *testing.T) {
 }
 
 func TestUsersModule_ApplyCustomHomeBaseDryRun(t *testing.T) {
+	oldSudoersDir := sudoersDir
+	sudoersDir = t.TempDir()
+	t.Cleanup(func() { sudoersDir = oldSudoersDir })
 	tmp := t.TempDir()
 	rc := newDryRunRC(t)
 	rc.Config.Users = config.UsersConfig{HomeBase: filepath.Join(tmp, "home2")}
