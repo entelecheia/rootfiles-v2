@@ -114,10 +114,11 @@ func resolveTunnelToken(rc *RunContext) (string, error) {
 		return cfg.TunnelToken, nil
 	}
 	path := cfg.TunnelTokenFile
-	// Stat and read through one descriptor so the checked file is the one read.
-	f, err := os.Open(path)
+	// Stat and read through one descriptor so the checked file is the one
+	// read, and refuse a symlink in place of the file.
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
 	if err != nil {
-		return "", fmt.Errorf("tunnel_token_file: %w", err)
+		return "", fmt.Errorf("tunnel_token_file %s: %w (must be a regular file, not a symlink)", path, err)
 	}
 	defer f.Close()
 	fi, err := f.Stat()
@@ -140,6 +141,10 @@ func resolveTunnelToken(rc *RunContext) (string, error) {
 	token := strings.TrimSpace(string(data))
 	if token == "" {
 		return "", fmt.Errorf("tunnel_token_file %s: empty", path)
+	}
+	// Same rule installTunnelService enforces, so Check and Apply agree.
+	if strings.ContainsAny(token, "\n\r \"'") {
+		return "", fmt.Errorf("tunnel_token_file %s: token contains invalid characters", path)
 	}
 	return token, nil
 }

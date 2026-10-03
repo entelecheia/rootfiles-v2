@@ -160,6 +160,15 @@ func TestCloudflared_TokenFileRejected(t *testing.T) {
 		"group readable": func(t *testing.T) string { return tokenFile(t, "tok", 0640) },
 		"empty":          func(t *testing.T) string { return tokenFile(t, " \n", 0600) },
 		"missing":        func(t *testing.T) string { return filepath.Join(t.TempDir(), "absent") },
+		"inner space":    func(t *testing.T) string { return tokenFile(t, "tok en", 0600) },
+		"symlink": func(t *testing.T) string {
+			target := tokenFile(t, "tok", 0600)
+			link := filepath.Join(t.TempDir(), "link")
+			if err := os.Symlink(target, link); err != nil {
+				t.Fatal(err)
+			}
+			return link
+		},
 		"wrong owner": func(t *testing.T) string {
 			p := tokenFile(t, "tok", 0600)
 			tunnelTokenFileUID = uint32(os.Getuid()) + 1
