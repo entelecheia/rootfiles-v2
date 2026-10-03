@@ -102,6 +102,7 @@ func (c *Config) Validate() error {
 			add("modules.cloudflared.private_network.address: %q is not a CIDR (e.g. 172.16.229.32/32)", pn.Address)
 		}
 	}
+	checkAbs("modules.cloudflared.tunnel_token_file", c.Modules.Cloudflared.TunnelTokenFile)
 	if iface := c.Modules.Cloudflared.PrivateNetwork.Interface; len(iface) > 15 || strings.ContainsAny(iface, " /") {
 		add("modules.cloudflared.private_network.interface: %q is not a valid interface name", iface)
 	}

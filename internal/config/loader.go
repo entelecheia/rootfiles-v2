@@ -34,6 +34,11 @@ func Load(profileName, customPath string, sysInfo *SystemInfo) (*Config, error) 
 		return nil, err
 	}
 
+	// Checked before env overrides: ROOTFILES_TUNNEL_TOKEN may legitimately
+	// override a token file, but one config file must not carry both.
+	if cf := cfg.Modules.Cloudflared; cf.TunnelToken != "" && cf.TunnelTokenFile != "" {
+		return nil, fmt.Errorf("modules.cloudflared: set tunnel_token or tunnel_token_file, not both")
+	}
 	applyEnvOverrides(cfg)
 	if err := cfg.Validate(); err != nil {
 		return nil, err

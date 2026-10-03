@@ -3,12 +3,15 @@ package module
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/entelecheia/rootfiles-v2/internal/config"
@@ -98,9 +101,65 @@ func vlanDrift(rc *RunContext, pn config.PrivateNetworkConfig) bool {
 		!fileEquals(rc, vlanNetworkPath, vlanNetwork(iface, pn.Address))
 }
 
+// tunnelTokenFileUID is the owner a tunnel_token_file must have; tests point
+// it at the test user.
+var tunnelTokenFileUID uint32 = 0
+
+// resolveTunnelToken returns the token to install. An explicit token
+// (--tunnel-token, ROOTFILES_TUNNEL_TOKEN or tunnel_token) wins; otherwise
+// the content of tunnel_token_file, which must be a regular file owned by
+// root and not readable by group or others.
+func resolveTunnelToken(rc *RunContext) (string, error) {
+	cfg := rc.Config.Modules.Cloudflared
+	if cfg.TunnelToken != "" || cfg.TunnelTokenFile == "" {
+		return cfg.TunnelToken, nil
+	}
+	path := cfg.TunnelTokenFile
+	// Stat and read through one descriptor so the checked file is the one
+	// read, and refuse a symlink in place of the file.
+	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	if errors.Is(err, syscall.ELOOP) {
+		return "", fmt.Errorf("tunnel_token_file %s: is a symlink, point it at the file itself", path)
+	}
+	if err != nil {
+		return "", fmt.Errorf("tunnel_token_file: %w", err)
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil {
+		return "", fmt.Errorf("tunnel_token_file: %w", err)
+	}
+	if !fi.Mode().IsRegular() {
+		return "", fmt.Errorf("tunnel_token_file %s: not a regular file", path)
+	}
+	if perm := fi.Mode().Perm(); perm&0o077 != 0 {
+		return "", fmt.Errorf("tunnel_token_file %s: mode %04o is readable by group or others (want 0600)", path, perm)
+	}
+	if st, ok := fi.Sys().(*syscall.Stat_t); ok && st.Uid != tunnelTokenFileUID {
+		return "", fmt.Errorf("tunnel_token_file %s: owned by uid %d, want root", path, st.Uid)
+	}
+	data, err := io.ReadAll(io.LimitReader(f, 64<<10))
+	if err != nil {
+		return "", fmt.Errorf("tunnel_token_file: %w", err)
+	}
+	token := strings.TrimSpace(string(data))
+	if token == "" {
+		return "", fmt.Errorf("tunnel_token_file %s: empty", path)
+	}
+	// Same rule installTunnelService enforces, so Check and Apply agree.
+	if strings.ContainsAny(token, "\n\r \"'") {
+		return "", fmt.Errorf("tunnel_token_file %s: token contains invalid characters", path)
+	}
+	return token, nil
+}
+
 func (m *CloudflaredModule) Check(_ context.Context, rc *RunContext) (*CheckResult, error) {
 	var changes []Change
 	cfg := rc.Config.Modules.Cloudflared
+	token, err := resolveTunnelToken(rc)
+	if err != nil {
+		return nil, err
+	}
 
 	if !rc.Runner.FileExists(cloudflaredBinary) {
 		changes = append(changes, Change{
@@ -109,7 +168,7 @@ func (m *CloudflaredModule) Check(_ context.Context, rc *RunContext) (*CheckResu
 		})
 	}
 
-	if cfg.TunnelToken != "" && tunnelServiceDrift(rc, cfg.TunnelToken) {
+	if token != "" && tunnelServiceDrift(rc, token) {
 		changes = append(changes, Change{
 			Description: "Install/update cloudflared tunnel service",
 			Command:     "write " + cloudflaredUnitPath + " + " + cloudflaredEnvPath,
@@ -133,6 +192,10 @@ func (m *CloudflaredModule) Apply(ctx context.Context, rc *RunContext) (*ApplyRe
 	var messages, warnings []string
 	changed := false
 	cfg := rc.Config.Modules.Cloudflared
+	token, err := resolveTunnelToken(rc)
+	if err != nil {
+		return nil, err
+	}
 
 	if !rc.Runner.FileExists(cloudflaredBinary) {
 		if err := m.installBinary(ctx, rc); err != nil {
@@ -142,8 +205,8 @@ func (m *CloudflaredModule) Apply(ctx context.Context, rc *RunContext) (*ApplyRe
 		changed = true
 	}
 
-	if cfg.TunnelToken != "" && tunnelServiceDrift(rc, cfg.TunnelToken) {
-		w, err := installTunnelService(ctx, rc, cfg.TunnelToken)
+	if token != "" && tunnelServiceDrift(rc, token) {
+		w, err := installTunnelService(ctx, rc, token)
 		if err != nil {
 			return nil, err
 		}
