@@ -610,6 +610,8 @@ The managed collector file selects only temperature, utilization, framebuffer us
 
 ## Monitoring hub
 
+The generated acceptance scenario (`tests/scenarios/monitoring-hub.sh`) requires Docker with both Compose and Buildx plugins, plus SSH, curl and Python 3. Verify `docker compose version` and `docker buildx version` before running the scenario; it uses Buildx to check the default NVIDIA image's registry manifest.
+
 The opt-in monitoring hub runs Prometheus, Alertmanager and Grafana on one Docker host. It reads scrape targets from Prometheus file discovery; `rootfiles fleet targets --push <hub>` replaces that target file atomically, and Prometheus reloads it from the mounted discovery directory without restarting the containers.
 
 The discovery directory must contain only the configured targets file. Check and Apply refuse other entries before mounting the directory, including credentials, symlinks, subdirectories and temporary staging files. A check that overlaps an atomic target push can be retried after the rename completes.
