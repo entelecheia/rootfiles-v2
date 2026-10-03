@@ -225,6 +225,24 @@ func TestRockyFirewallAllowsSSHKnownInactiveAndExistingAllowance(t *testing.T) {
 			t.Fatalf("one denied active zone returned allowed=%t err=%v", allowed, err)
 		}
 	})
+	t.Run("port 22 must be allowed in every active zone", func(t *testing.T) {
+		dir := t.TempDir()
+		script := "#!/bin/sh\ncase \"$1:$2:$3\" in\n--state::) echo running;;\n--get-active-zones::) printf 'public (active)\\nmgmt (active)\\n';;\n--zone:public:--query-port) echo yes;;\n--zone:mgmt:--query-port) echo no; exit 1;;\n--zone:mgmt:--query-service) echo no; exit 1;;\nesac\n"
+		writeRockyFirewallFake(t, dir, script)
+		allowed, err := rockyFirewallAllowsSSH(context.Background(), newDryRunRC(t), 22)
+		if err != nil || allowed {
+			t.Fatalf("port 22 allowed in only one zone returned allowed=%t err=%v", allowed, err)
+		}
+	})
+	t.Run("port 22 SSH service in every active zone", func(t *testing.T) {
+		dir := t.TempDir()
+		script := "#!/bin/sh\ncase \"$1:$2:$3\" in\n--state::) echo running;;\n--get-active-zones::) printf 'public (active)\\nmgmt (active)\\n';;\n--zone:public:--query-port|--zone:mgmt:--query-port) echo no; exit 1;;\n--zone:public:--query-service|--zone:mgmt:--query-service) echo yes;;\nesac\n"
+		writeRockyFirewallFake(t, dir, script)
+		allowed, err := rockyFirewallAllowsSSH(context.Background(), newDryRunRC(t), 22)
+		if err != nil || !allowed {
+			t.Fatalf("SSH service in every zone returned allowed=%t err=%v", allowed, err)
+		}
+	})
 }
 
 func TestRockyFirewallAllowsSSHRejectsUntrustedBooleanOutput(t *testing.T) {
@@ -234,6 +252,16 @@ func TestRockyFirewallAllowsSSHRejectsUntrustedBooleanOutput(t *testing.T) {
 	allowed, err := rockyFirewallAllowsSSH(context.Background(), newDryRunRC(t), 2222)
 	if err == nil || allowed {
 		t.Fatalf("no output with unexpected exit status returned allowed=%t err=%v", allowed, err)
+	}
+}
+
+func TestRockyFirewallRejectsFirewalldRichRules(t *testing.T) {
+	dir := t.TempDir()
+	script := "#!/bin/sh\ncase \"$1:$2:$3\" in\n--state::) echo running;;\n--get-active-zones::) echo 'public (default, active)';;\n--zone:public:--list-rich-rules) echo 'rule family=ipv4 source address=10.0.0.0/8 port port=2222 protocol=tcp drop';;\n--zone:public:--query-port) echo yes;;\nesac\n"
+	writeRockyFirewallFake(t, dir, script)
+	allowed, err := rockyFirewallAllowsSSH(context.Background(), newDryRunRC(t), 2222)
+	if err != nil || allowed {
+		t.Fatalf("firewalld rich-rule override returned allowed=%t err=%v", allowed, err)
 	}
 }
 
@@ -285,6 +313,18 @@ func TestRockyFirewallRequiresUnrestrictedUFWAllowance(t *testing.T) {
 			t.Fatalf("source-limited UFW allowance returned allowed=%t err=%v", allowed, err)
 		}
 	})
+	t.Run("deny overrides unrestricted allow", func(t *testing.T) {
+		dir := t.TempDir()
+		script := "#!/bin/sh\nprintf 'Status: active\\nTo Action From\\n2222/tcp DENY 10.0.0.0/8\\n2222/tcp ALLOW Anywhere\\n2222/tcp (v6) ALLOW Anywhere (v6)\\n'\n"
+		if err := os.WriteFile(filepath.Join(dir, "ufw"), []byte(script), 0755); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("PATH", dir)
+		allowed, err := rockyFirewallAllowsSSH(context.Background(), newDryRunRC(t), 2222)
+		if err != nil || allowed {
+			t.Fatalf("deny plus unrestricted allow returned allowed=%t err=%v", allowed, err)
+		}
+	})
 	t.Run("unrestricted TCP allowance", func(t *testing.T) {
 		dir := t.TempDir()
 		script := "#!/bin/sh\nprintf 'Status: active\\nTo Action From\\n2222/tcp ALLOW Anywhere\\n2222/tcp (v6) ALLOW Anywhere (v6)\\n'\n"
@@ -316,6 +356,19 @@ func TestRockyFirewallRequiresUnrestrictedUFWAllowance(t *testing.T) {
 				t.Fatalf("family-limited UFW allowance returned allowed=%t err=%v", allowed, err)
 			}
 		})
+	}
+}
+
+func TestRockyFirewallRequiresUnrestrictedUFWAllowanceForPort22(t *testing.T) {
+	dir := t.TempDir()
+	script := "#!/bin/sh\nprintf 'Status: active\\nTo Action From\\n22/tcp ALLOW 10.0.0.0/8\\n22/tcp (v6) ALLOW Anywhere (v6)\\n'\n"
+	if err := os.WriteFile(filepath.Join(dir, "ufw"), []byte(script), 0755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+	allowed, err := rockyFirewallAllowsSSH(context.Background(), newDryRunRC(t), 22)
+	if err != nil || allowed {
+		t.Fatalf("source-limited port 22 UFW rule returned allowed=%t err=%v", allowed, err)
 	}
 }
 

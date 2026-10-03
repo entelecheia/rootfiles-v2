@@ -136,10 +136,10 @@ func rockyFirewallAllowsSSH(ctx context.Context, rc *RunContext, port int) (bool
 		if !known {
 			return false, fmt.Errorf("installed UFW returned an unrecognized status before changing SSH port")
 		}
-		if active && port == 22 && !parseUFWStatus(res.Stdout).Allowed[port] {
+		if active && ufwHasDenyOrRejectRule(res.Stdout) {
 			return false, nil
 		}
-		if active && port != 22 && !ufwAllowsUnrestrictedTCPPort(res.Stdout, port) {
+		if active && !ufwAllowsUnrestrictedTCPPort(res.Stdout, port) {
 			return false, nil
 		}
 	}
@@ -180,31 +180,47 @@ func rockyFirewallAllowsSSH(ctx context.Context, rc *RunContext, port int) (bool
 	}
 	allZonesAllow := true
 	for _, zone := range activeZones {
+		richRules, err := rc.Runner.Query(ctx, "firewall-cmd", "--zone", zone, "--list-rich-rules")
+		if err != nil {
+			return false, fmt.Errorf("cannot inspect rich firewalld rules in zone %s before changing SSH port: %w", zone, err)
+		}
+		if richRules == nil {
+			return false, fmt.Errorf("firewalld returned no rich-rule status for zone %s before changing SSH port", zone)
+		}
+		if strings.TrimSpace(richRules.Stdout) != "" {
+			return false, nil
+		}
 		allowed, err := queryFirewalldBoolean(ctx, rc, "--zone", zone, "--query-port", strconv.Itoa(port)+"/tcp")
 		if err != nil {
 			return false, fmt.Errorf("cannot verify firewalld allowance for SSH port %d in zone %s: %w", port, zone, err)
 		}
-		if allowed {
-			if port == 22 {
-				return true, nil
-			}
-			continue
-		}
-		if port == 22 {
+		if !allowed && port == 22 {
 			serviceAllowed, serviceErr := queryFirewalldBoolean(ctx, rc, "--zone", zone, "--query-service", "ssh")
 			if serviceErr != nil {
 				return false, fmt.Errorf("cannot verify firewalld SSH service in zone %s: %w", zone, serviceErr)
 			}
-			if serviceAllowed {
-				return true, nil
-			}
+			allowed = serviceAllowed
 		}
-		allZonesAllow = false
-	}
-	if port == 22 {
-		return false, nil
+		if !allowed {
+			allZonesAllow = false
+		}
 	}
 	return allZonesAllow, nil
+}
+
+func ufwHasDenyOrRejectRule(out string) bool {
+	for _, line := range strings.Split(out, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+		for _, field := range fields[1:] {
+			if field == "DENY" || field == "REJECT" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func ufwAllowsUnrestrictedTCPPort(out string, port int) bool {
