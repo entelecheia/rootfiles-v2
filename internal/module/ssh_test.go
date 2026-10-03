@@ -285,3 +285,23 @@ func TestSSHModule_LockoutGuardUnreadableShadow(t *testing.T) {
 		t.Errorf("unreadable shadow: want a conservative error naming bob, got %v", err)
 	}
 }
+
+// A declared account does not count as a key login when the users module
+// will refuse the home base, because it is never created.
+func TestSSHModule_LockoutGuardIgnoresAccountsOnRefusedHomeBase(t *testing.T) {
+	fakePasswd(t)
+	parent := t.TempDir()
+	if err := os.Chmod(parent, 0o777); err != nil {
+		t.Fatal(err)
+	}
+	rc := newDryRunRC(t)
+	rc.Config.SSH = config.SSHConfig{DisablePasswordAuth: true, DisableRootLogin: true}
+	rc.Config.Modules.Users.Enabled = true
+	rc.Config.Users = config.UsersConfig{
+		HomeBase: filepath.Join(parent, "home"),
+		Accounts: []config.AccountConfig{{Name: "bob", SSHPubkeys: []string{"ssh-ed25519 AAAA k"}}},
+	}
+	if err := NewSSHModule().lockoutGuard(rc); err == nil {
+		t.Error("lockoutGuard counted an account the users module will not create")
+	}
+}

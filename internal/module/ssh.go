@@ -277,9 +277,10 @@ func strandedPasswordAccounts(rc *RunContext) ([]string, bool) {
 
 // declaredKeyAccounts lists users.accounts entries with SSH keys. The
 // users module (which runs before ssh) creates them, so they count as
-// key-based logins even when not yet present (e.g. in check/dry-run).
+// key-based logins even when not yet present (e.g. in check/dry-run),
+// unless that module refuses the home base and creates none.
 func declaredKeyAccounts(rc *RunContext) []string {
-	if !rc.Config.IsModuleEnabled("users") {
+	if !rc.Config.IsModuleEnabled("users") || checkHomeBase(rc.Config.Users.HomeBase) != nil {
 		return nil
 	}
 	var names []string
