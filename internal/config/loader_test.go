@@ -431,16 +431,23 @@ func TestMain(m *testing.M) {
 
 // isolateHomeDetection points home-base detection at a temp host root owned
 // by the test user, who stands in for root. /home, /raid, /data and /nvme
-// exist with mode 0755. managed, when set, is a home base that already
+// exist with mode 0755, and every mount is on a different device than /. managed, when set, is a home base that already
 // holds .rootfiles. It returns the host root.
 func isolateHomeDetection(t *testing.T, useradd, managed string) string {
 	t.Helper()
 	dir := t.TempDir()
-	oldUseradd, oldRoot, oldUID := useraddDefaultsPath, hostRoot, rootUID
-	t.Cleanup(func() { useraddDefaultsPath, hostRoot, rootUID = oldUseradd, oldRoot, oldUID })
+	oldUseradd, oldRoot, oldUID, oldDev := useraddDefaultsPath, hostRoot, rootUID, deviceOf
+	t.Cleanup(func() { useraddDefaultsPath, hostRoot, rootUID, deviceOf = oldUseradd, oldRoot, oldUID, oldDev })
 	useraddDefaultsPath = filepath.Join(dir, "useradd")
 	hostRoot = filepath.Join(dir, "root")
 	rootUID = uint32(os.Getuid())
+	// Every path but / stands on a separate device.
+	deviceOf = func(path string) (uint64, bool) {
+		if path == "/" {
+			return 1, true
+		}
+		return 2, true
+	}
 	mkdir := func(rel string) {
 		t.Helper()
 		p := filepath.Join(hostRoot, rel)
@@ -479,10 +486,10 @@ func TestDefaultHomeBase(t *testing.T) {
 		{"no system info", nil, "", "", "/home"},
 		{"no data drive", mounts(), "", "", "/home"},
 		{"data drive", mounts(data), "", "", "/data/home"},
-		{"raid preferred over data", mounts(data, MountPoint{"/dev/md0", "/raid", "xfs"}), "", "", "/raid/home"},
-		{"network filesystem skipped", mounts(MountPoint{"nas:/x", "/data", "nfs4"}), "", "", "/home"},
-		{"ephemeral /mnt skipped", mounts(MountPoint{"/dev/sdb1", "/mnt", "ext4"}), "", "", "/home"},
-		{"nested mount skipped", mounts(MountPoint{"/dev/sdb1", "/data/ssd", "ext4"}), "", "", "/home"},
+		{"raid preferred over data", mounts(data, MountPoint{Device: "/dev/md0", MountPath: "/raid", FSType: "xfs"}), "", "", "/raid/home"},
+		{"network filesystem skipped", mounts(MountPoint{Device: "nas:/x", MountPath: "/data", FSType: "nfs4"}), "", "", "/home"},
+		{"ephemeral /mnt skipped", mounts(MountPoint{Device: "/dev/sdb1", MountPath: "/mnt", FSType: "ext4"}), "", "", "/home"},
+		{"nested mount skipped", mounts(MountPoint{Device: "/dev/sdb1", MountPath: "/data/ssd", FSType: "ext4"}), "", "", "/home"},
 		{"custom useradd HOME kept", mounts(data), "SHELL=/bin/sh\nHOME=/srv/home\n", "", "/srv/home"},
 		{"useradd HOME=/home kept", mounts(data), "HOME=/home\n", "", "/home"},
 		{"stale custom HOME rewritten to /home kept", mounts(data), "HOME=/data/home\nHOME=/home\n", "", "/home"},
@@ -495,6 +502,10 @@ func TestDefaultHomeBase(t *testing.T) {
 		{"relative useradd HOME ignored", mounts(data), "HOME=home\n", "", "/data/home"},
 		{"indented HOME ignored like useradd", mounts(data), "  HOME=/srv/home\n", "", "/data/home"},
 		{"unsupported distro keeps /home", &SystemInfo{OS: "debian", StorageLayout: []MountPoint{data}}, "", "", "/home"},
+		{"read-write data drive", mounts(MountPoint{Device: "/dev/sdb1", MountPath: "/data", FSType: "ext4", Options: "rw,relatime"}), "", "", "/data/home"},
+		{"read-only data drive skipped", mounts(MountPoint{Device: "/dev/sdb1", MountPath: "/data", FSType: "ext4", Options: "ro,relatime"}), "", "", "/home"},
+		{"read-only remount wins", mounts(data, MountPoint{Device: "/dev/sdb1", MountPath: "/data", FSType: "ext4", Options: "ro"}), "", "", "/home"},
+		{"read-only nested home skipped", mounts(data, MountPoint{Device: "/dev/sdc1", MountPath: "/data/home", FSType: "ext4", Options: "ro"}), "", "", "/home"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -606,6 +617,21 @@ func TestLoad_AmbiguousHomeBase(t *testing.T) {
 			t.Errorf("got %v, err=%v", cfg, err)
 		}
 	})
+}
+
+// AC1: a bind mount of the root filesystem is not a data drive. The test
+// host root and its /data share a device, as such a bind mount would.
+func TestDefaultHomeBase_SameDeviceAsRoot(t *testing.T) {
+	isolateHomeDetection(t, "", "")
+	sys := &SystemInfo{OS: "ubuntu", StorageLayout: []MountPoint{{Device: "/dev/sda1", MountPath: "/data", FSType: "ext4"}}}
+	deviceOf = statDevice
+	if got := defaultHomeBase(sys); got != "/home" {
+		t.Errorf("same device as /: got %q, want /home", got)
+	}
+	deviceOf = func(string) (uint64, bool) { return 0, false }
+	if got := defaultHomeBase(sys); got != "/home" {
+		t.Errorf("unreadable device: got %q, want /home", got)
+	}
 }
 
 func TestDefaultHomeBase_LastMountEntryWins(t *testing.T) {
