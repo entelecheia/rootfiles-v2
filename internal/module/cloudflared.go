@@ -3,6 +3,7 @@ package module
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -117,8 +118,11 @@ func resolveTunnelToken(rc *RunContext) (string, error) {
 	// Stat and read through one descriptor so the checked file is the one
 	// read, and refuse a symlink in place of the file.
 	f, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW, 0)
+	if errors.Is(err, syscall.ELOOP) {
+		return "", fmt.Errorf("tunnel_token_file %s: is a symlink, point it at the file itself", path)
+	}
 	if err != nil {
-		return "", fmt.Errorf("tunnel_token_file %s: %w (must be a regular file, not a symlink)", path, err)
+		return "", fmt.Errorf("tunnel_token_file: %w", err)
 	}
 	defer f.Close()
 	fi, err := f.Stat()
