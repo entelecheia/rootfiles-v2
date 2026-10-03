@@ -171,6 +171,9 @@ type SSHConfig struct {
 	Port                int  `yaml:"port,omitempty"`
 	// MaxAuthTries limits authentication attempts per connection.
 	MaxAuthTries int `yaml:"max_auth_tries,omitempty"`
+	// PasswordAuthUsers keep password login while disable_password_auth is
+	// on (a Match User block), so password auth can be retired per user.
+	PasswordAuthUsers []string `yaml:"password_auth_users,omitempty"`
 }
 
 // IsModuleEnabled returns whether a given module name is enabled in this config.

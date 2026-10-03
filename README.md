@@ -65,7 +65,8 @@ In interactive mode, `apply` presents each configurable setting (SSH, firewall, 
 
 `apply` is designed to be safe to re-run on a live server:
 
-- **No SSH lockout** — password auth is only disabled when at least one account can log in with a key (declared accounts count); enabling UFW always admits the SSH port; `sshd -t` validates the config and a failing change is reverted; a port change on socket-activated Ubuntu restarts `ssh.socket`. `--force` overrides the key check.
+- **No SSH lockout** — password auth is only disabled when at least one account can log in with a key (declared accounts count) and no other account would be left with only a password; enabling UFW always admits the SSH port; `sshd -t` validates the config
+  - Accounts that still log in with passwords are listed by `check` and `doctor`. Give them keys, or keep password login for them while keys are rolled out with `ssh.password_auth_users: [alice, bob]` (a `Match User` block in the drop-in) and a failing change is reverted; a port change on socket-activated Ubuntu restarts `ssh.socket`. `--force` overrides the key check.
 - **No data loss** — existing directories are never `rm -rf`'d (a populated path blocks a symlink instead), `daemon.json` is merged key by key, `user rehome` keeps the old home as a backup.
 - **Backups & rollback** — every file a run overwrites or removes is saved under `/var/lib/rootfiles/backups/<id>`; `rootfiles rollback <id>` restores it.
 - **One run at a time** — mutating commands need root and take `/run/rootfiles.lock`; Ctrl-C cancels in-flight commands.
@@ -123,7 +124,7 @@ All modules are idempotent and support `--dry-run`.
 | `system` | Hostname, swapfile (only when no swap), sysctl, journald cap, Ubuntu APT mirror |
 | `packages` | APT package installation (non-interactive, waits for the dpkg lock) |
 | `users` | Custom home base, declared `users.accounts` (keys, groups), backup/restore |
-| `ssh` | sshd hardening (root login, password + keyboard-interactive auth, port, MaxAuthTries) with lockout guard |
+| `ssh` | sshd hardening (root login, password + keyboard-interactive auth, port, MaxAuthTries) with lockout guard; per-user password exceptions (`ssh.password_auth_users`) |
 | `security` | Security-only unattended upgrades (no reboot, NVIDIA/CUDA excluded), fail2ban sshd jail, NTP |
 | `docker` | Docker CE + daemon.json merge + storage relocation |
 | `nvidia` | NVIDIA Container Toolkit, Docker runtime, nvidia-persistenced / fabric manager |

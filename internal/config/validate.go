@@ -37,6 +37,18 @@ func (c *Config) Validate() error {
 	if c.SSH.MaxAuthTries < 0 || c.SSH.MaxAuthTries > 100 {
 		add("ssh.max_auth_tries: %d out of range", c.SSH.MaxAuthTries)
 	}
+	seenPwUser := map[string]bool{}
+	for _, u := range c.SSH.PasswordAuthUsers {
+		switch {
+		case u == "root":
+			add("ssh.password_auth_users: root is governed by disable_root_login, not listed here")
+		case !validAccountName.MatchString(u):
+			add("ssh.password_auth_users: %q is not a valid account name", u)
+		case seenPwUser[u]:
+			add("ssh.password_auth_users: %q listed twice", u)
+		}
+		seenPwUser[u] = true
+	}
 
 	sys := c.Modules.System
 	if sys.Hostname != "" && !validHostname.MatchString(sys.Hostname) {

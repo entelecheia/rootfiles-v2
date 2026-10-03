@@ -83,7 +83,18 @@ func doctorSSH(ctx context.Context, rc *RunContext) []Finding {
 		f.Detail = fmt.Sprintf("key login for %s; password auth %s; root login %s",
 			strings.Join(keyed, ", "), eff["passwordauthentication"], eff["permitrootlogin"])
 	}
-	return []Finding{f}
+	out := []Finding{f}
+	if eff["passwordauthentication"] != "no" {
+		if pwOnly, known := passwordOnlyAccounts(); len(pwOnly) > 0 {
+			detail := "password-only accounts (no authorized key): " + strings.Join(pwOnly, ", ")
+			if !known {
+				detail = "accounts without an authorized key (password state unknown, run as root): " + strings.Join(pwOnly, ", ")
+			}
+			out = append(out, Finding{Check: "ssh password-only", Level: LevelWarn, Detail: detail,
+				Hint: "add their keys before disabling password auth, or list them in ssh.password_auth_users"})
+		}
+	}
+	return out
 }
 
 func doctorFirewall(ctx context.Context, rc *RunContext) Finding {

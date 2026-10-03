@@ -35,6 +35,11 @@ func TestSSHModule_BuildConfig(t *testing.T) {
 			cfg:     config.SSHConfig{},
 			mustNot: []string{"PermitRootLogin", "PasswordAuthentication", "Port"},
 		},
+		{
+			name:    "password exceptions ignored while password auth is on",
+			cfg:     config.SSHConfig{PasswordAuthUsers: []string{"bob"}},
+			mustNot: []string{"Match"},
+		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -67,13 +72,14 @@ func TestSSHModule_ApplyDryRun(t *testing.T) {
 
 // fakePasswd points the lockout guard at a temp passwd file whose accounts
 // live under dir. keyed lists accounts that get a non-empty authorized_keys.
+// Every password starts locked; withPasswords gives some a usable one.
 func fakePasswd(t *testing.T, keyed ...string) {
 	t.Helper()
 	dir := t.TempDir()
 	accounts := []struct {
 		name string
 		uid  int
-	}{{"root", 0}, {"daemon", 1}, {"alice", 1000}}
+	}{{"root", 0}, {"daemon", 1}, {"alice", 1000}, {"bob", 1001}}
 	var b strings.Builder
 	for _, a := range accounts {
 		home := filepath.Join(dir, a.name)
@@ -87,9 +93,28 @@ func fakePasswd(t *testing.T, keyed ...string) {
 	}
 	p := filepath.Join(dir, "passwd")
 	os.WriteFile(p, []byte(b.String()), 0644)
-	old := passwdPath
-	passwdPath = p
-	t.Cleanup(func() { passwdPath = old })
+	old, oldShadow := passwdPath, shadowPath
+	passwdPath, shadowPath = p, filepath.Join(dir, "shadow")
+	t.Cleanup(func() { passwdPath, shadowPath = old, oldShadow })
+	withPasswords(t)
+}
+
+// withPasswords rewrites the fake shadow so only names have a usable hash.
+func withPasswords(t *testing.T, names ...string) {
+	t.Helper()
+	var b strings.Builder
+	for _, n := range []string{"root", "daemon", "alice", "bob"} {
+		hash := "!"
+		for _, w := range names {
+			if w == n {
+				hash = "$6$salt$hash"
+			}
+		}
+		fmt.Fprintf(&b, "%s:%s:19000:0:99999:7:::\n", n, hash)
+	}
+	if err := os.WriteFile(shadowPath, []byte(b.String()), 0600); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestSSHModule_LockoutGuard(t *testing.T) {
@@ -107,6 +132,36 @@ func TestSSHModule_LockoutGuard(t *testing.T) {
 		{"user key", config.SSHConfig{DisablePasswordAuth: true, DisableRootLogin: true}, []string{"alice"}, nil, false},
 		{"system account key ignored", config.SSHConfig{DisablePasswordAuth: true, DisableRootLogin: true}, []string{"daemon"}, nil, true},
 		{"declared account with key", config.SSHConfig{DisablePasswordAuth: true, DisableRootLogin: true}, nil, []string{"bob"}, false},
+	}
+	pwCases := []struct {
+		name    string
+		cfg     config.SSHConfig
+		pending []string
+		wantErr bool
+	}{
+		{"password-only user stranded", config.SSHConfig{DisablePasswordAuth: true}, nil, true},
+		{"password-only user excepted", config.SSHConfig{DisablePasswordAuth: true, PasswordAuthUsers: []string{"bob"}}, nil, false},
+		{"password-only user gets a declared key", config.SSHConfig{DisablePasswordAuth: true}, []string{"bob"}, false},
+		{"password auth kept", config.SSHConfig{}, nil, false},
+	}
+	for _, c := range pwCases {
+		t.Run(c.name, func(t *testing.T) {
+			fakePasswd(t, "alice")
+			withPasswords(t, "alice", "bob")
+			rc := newDryRunRC(t)
+			rc.Config.SSH = c.cfg
+			rc.Config.Modules.Users.Enabled = true
+			for _, n := range c.pending {
+				rc.Config.Users.Accounts = append(rc.Config.Users.Accounts, config.AccountConfig{Name: n, SSHPubkeys: []string{"ssh-ed25519 AAAA k"}})
+			}
+			err := NewSSHModule().lockoutGuard(rc)
+			if (err != nil) != c.wantErr {
+				t.Errorf("lockoutGuard() err = %v, wantErr %v", err, c.wantErr)
+			}
+			if err != nil && !strings.Contains(err.Error(), "bob") {
+				t.Errorf("error should name the stranded account: %v", err)
+			}
+		})
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -181,4 +236,41 @@ func TestPortLine(t *testing.T) {
 
 func sshCfg(noPassword bool, maxTries int) config.SSHConfig {
 	return config.SSHConfig{DisablePasswordAuth: noPassword, MaxAuthTries: maxTries}
+}
+
+func TestSSHModule_BuildConfigPasswordExceptionsLast(t *testing.T) {
+	got := NewSSHModule().buildConfig(config.SSHConfig{DisablePasswordAuth: true, Port: 2222, PasswordAuthUsers: []string{"bob", "carol"}})
+	match := strings.Index(got, "Match User bob,carol\n")
+	if match < 0 {
+		t.Fatalf("missing Match block:\n%s", got)
+	}
+	if strings.Index(got, "PasswordAuthentication no") > match || strings.Index(got, "Port 2222") > match {
+		t.Errorf("global directives must precede the Match block:\n%s", got)
+	}
+	tail := got[match:]
+	for _, s := range []string{"\tPasswordAuthentication yes\n", "\tKbdInteractiveAuthentication yes\n"} {
+		if !strings.Contains(tail, s) {
+			t.Errorf("Match block missing %q:\n%s", s, tail)
+		}
+	}
+}
+
+func TestPasswordOnlyAccounts(t *testing.T) {
+	fakePasswd(t, "alice")
+	withPasswords(t, "alice", "bob")
+	got, known := passwordOnlyAccounts()
+	if !known || strings.Join(got, ",") != "bob" {
+		t.Errorf("passwordOnlyAccounts() = %v, %v; want [bob], true", got, known)
+	}
+
+	withPasswords(t, "alice")
+	if got, _ := passwordOnlyAccounts(); len(got) != 0 {
+		t.Errorf("locked password should not count, got %v", got)
+	}
+
+	// Unreadable shadow (not root): every keyless account is listed.
+	shadowPath = filepath.Join(t.TempDir(), "absent")
+	if got, known := passwordOnlyAccounts(); known || strings.Join(got, ",") != "bob" {
+		t.Errorf("unknown shadow: got %v, %v; want [bob], false", got, known)
+	}
 }

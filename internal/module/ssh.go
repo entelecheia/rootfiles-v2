@@ -107,13 +107,37 @@ func (m *SSHModule) lockoutGuard(rc *RunContext) error {
 	if !cfg.DisablePasswordAuth {
 		return nil
 	}
-	if len(keyLoginAccounts(!cfg.DisableRootLogin)) > 0 || len(declaredKeyAccounts(rc)) > 0 {
-		return nil
+	if len(keyLoginAccounts(!cfg.DisableRootLogin)) == 0 && len(declaredKeyAccounts(rc)) == 0 {
+		if cfg.DisableRootLogin {
+			return fmt.Errorf("disabling password auth and root login, but no non-root account has an SSH authorized key")
+		}
+		return fmt.Errorf("disabling password auth, but no account has an SSH authorized key")
 	}
-	if cfg.DisableRootLogin {
-		return fmt.Errorf("disabling password auth and root login, but no non-root account has an SSH authorized key")
+	if stranded := strandedPasswordAccounts(rc); len(stranded) > 0 {
+		return fmt.Errorf("disabling password auth would lock out password-only accounts: %s (add their keys or list them in ssh.password_auth_users)",
+			strings.Join(stranded, ", "))
 	}
-	return fmt.Errorf("disabling password auth, but no account has an SSH authorized key")
+	return nil
+}
+
+// strandedPasswordAccounts lists password-only accounts that neither get a
+// declared key nor stay on the password_auth_users exception list.
+func strandedPasswordAccounts(rc *RunContext) []string {
+	keep := map[string]bool{}
+	for _, n := range declaredKeyAccounts(rc) {
+		keep[n] = true
+	}
+	for _, n := range rc.Config.SSH.PasswordAuthUsers {
+		keep[n] = true
+	}
+	pwOnly, _ := passwordOnlyAccounts()
+	var out []string
+	for _, n := range pwOnly {
+		if !keep[n] {
+			out = append(out, n)
+		}
+	}
+	return out
 }
 
 // declaredKeyAccounts lists users.accounts entries with SSH keys. The
@@ -214,6 +238,13 @@ func (m *SSHModule) buildConfig(cfg config.SSHConfig) string {
 	}
 	if cfg.Port > 0 {
 		b.WriteString(fmt.Sprintf("Port %d\n", cfg.Port))
+	}
+	// A Match block runs to the end of the file, so it must stay last.
+	if cfg.DisablePasswordAuth && len(cfg.PasswordAuthUsers) > 0 {
+		b.WriteString("# Password login kept for these users while keys are rolled out\n")
+		b.WriteString("Match User " + strings.Join(cfg.PasswordAuthUsers, ",") + "\n")
+		b.WriteString("\tPasswordAuthentication yes\n")
+		b.WriteString("\tKbdInteractiveAuthentication yes\n")
 	}
 
 	return b.String()
