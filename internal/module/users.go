@@ -80,7 +80,7 @@ func checkHomeBase(base string) error {
 	if base == "" || filepath.Clean(base) == "/home" {
 		return nil
 	}
-	if err := config.RootOnlyBase(homeBaseRoot, base, homeBaseOwner); err != nil {
+	if err := config.RootOnlyHomeBase(homeBaseRoot, base, homeBaseOwner); err != nil {
 		return fmt.Errorf("refusing home base %s: %w; / and every existing directory down to the base must be owned by root and not writable by group or others", base, err)
 	}
 	return nil

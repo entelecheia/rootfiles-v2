@@ -661,10 +661,39 @@ func TestDefaultHomeBase_SameDeviceAsRoot(t *testing.T) {
 	}
 }
 
+// #38: a btrfs subvolume of the root filesystem or a ZFS dataset in the root
+// pool has its own st_dev but is not a data drive.
+func TestDefaultHomeBase_RootFilesystemSubvolumes(t *testing.T) {
+	mp := func(dev, path, fs string) MountPoint { return MountPoint{Device: dev, MountPath: path, FSType: fs} }
+	cases := []struct {
+		name   string
+		root   MountPoint
+		mounts []MountPoint
+		want   string
+	}{
+		{"btrfs subvolume of root", mp("/dev/sda2", "/", "btrfs"), []MountPoint{mp("/dev/sda2", "/data", "btrfs")}, "/home"},
+		{"separate btrfs", mp("/dev/sda2", "/", "btrfs"), []MountPoint{mp("/dev/sdb1", "/data", "btrfs")}, "/data/home"},
+		{"zfs dataset in the root pool", mp("rpool/ROOT/ubuntu", "/", "zfs"), []MountPoint{mp("rpool/data", "/data", "zfs")}, "/home"},
+		{"zfs dataset in another pool", mp("rpool/ROOT/ubuntu", "/", "zfs"), []MountPoint{mp("tank/data", "/data", "zfs")}, "/data/home"},
+		{"btrfs data drive on an ext4 root", mp("/dev/sda2", "/", "ext4"), []MountPoint{mp("/dev/sdb1", "/data", "btrfs")}, "/data/home"},
+		{"nested home subvolume of root", mp("/dev/sda2", "/", "btrfs"), []MountPoint{mp("/dev/sdb1", "/data", "btrfs"), mp("/dev/sda2", "/data/home", "btrfs")}, "/home"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			isolateHomeDetection(t, "", "")
+			root := tc.root
+			sys := &SystemInfo{OS: "ubuntu", RootMount: &root, StorageLayout: tc.mounts}
+			if got := defaultHomeBase(sys); got != tc.want {
+				t.Errorf("defaultHomeBase = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 // AC2 relies on detectStorage keeping the mount options.
 func TestDetectStorage_KeepsMountOptions(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "mounts")
-	mounts := "/dev/sdb1 /data ext4 rw,relatime 0 0\n/dev/sdc1 /raid xfs ro,noatime 0 0\nproc /proc proc rw 0 0\n"
+	mounts := "/dev/sda2 / btrfs rw 0 0\n/dev/sdb1 /data ext4 rw,relatime 0 0\n/dev/sdc1 /raid xfs ro,noatime 0 0\nproc /proc proc rw 0 0\n"
 	if err := os.WriteFile(path, []byte(mounts), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -679,6 +708,9 @@ func TestDetectStorage_KeepsMountOptions(t *testing.T) {
 	}
 	if !reflect.DeepEqual(info.StorageLayout, want) {
 		t.Errorf("StorageLayout = %+v, want %+v", info.StorageLayout, want)
+	}
+	if r := info.RootMount; r == nil || r.Device != "/dev/sda2" || r.FSType != "btrfs" {
+		t.Errorf("RootMount = %+v, want /dev/sda2 btrfs", r)
 	}
 }
 
