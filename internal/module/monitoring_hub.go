@@ -246,7 +246,7 @@ func validateMonitoringDataDir(path string) (bool, error) {
 		return false, fmt.Errorf("cannot inspect monitoring hub data directory %s", path)
 	}
 	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
-		return false, fmt.Errorf("monitoring hub data path %s must be a real directory", path)
+		return false, fmt.Errorf("monitoring hub data path %s must be a real directory (symlinks are forbidden)", path)
 	}
 	stat, ok := info.Sys().(*syscall.Stat_t)
 	if !ok || stat.Uid != 0 {
@@ -316,7 +316,7 @@ func validateTrustedMonitoringDirectoryPath(path string) (bool, error) {
 			return false, fmt.Errorf("cannot inspect directory component %s", component)
 		}
 		if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
-			return false, fmt.Errorf("directory component %s must be a real directory", component)
+			return false, fmt.Errorf("directory component %s must be a real directory (symlinks are forbidden)", component)
 		}
 		stat, ok := info.Sys().(*syscall.Stat_t)
 		if !ok || stat.Uid != 0 {

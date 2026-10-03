@@ -56,6 +56,26 @@ install -m 0600 -o rockyfixture -g rockyfixture /tmp/preserved-key.pub /home/roc
 install -d -m 0700 /root/.ssh
 install -m 0600 /tmp/root-key.pub /root/.ssh/authorized_keys
 
+# Ubuntu Docker hosts can auto-attach their unix-chkpwd AppArmor profile to
+# Rocky's helper, denying the DAC capability needed for Rocky's mode-000
+# shadow file. Relocate the identical helper only in this disposable fixture,
+# and only after observing that specific host-policy denial. Keep PAM and
+# shadow permissions unchanged; production code never performs this step.
+if ! /usr/sbin/unix_chkpwd rockyfixture chkexpiry >/dev/null 2>&1; then
+    if dmesg 2>/dev/null | grep -E 'apparmor="DENIED".*profile="unix-chkpwd".*capname="dac_(override|read_search)"' >/dev/null; then
+        install -d -m 0755 /usr/local/libexec
+        helper=/usr/local/libexec/rootfiles-fixture-unix-chkpwd
+        install -o root -g root -m 4755 /usr/sbin/unix_chkpwd "$helper"
+        [[ "$(sha256sum /usr/sbin/unix_chkpwd | awk '{print $1}')" == "$(sha256sum "$helper" | awk '{print $1}')" ]] || fail "fixture PAM helper bytes changed"
+        mv /usr/sbin/unix_chkpwd /usr/sbin/unix_chkpwd.fixture-original
+        ln -s "$helper" /usr/sbin/unix_chkpwd
+        /usr/sbin/unix_chkpwd rockyfixture chkexpiry >/dev/null || fail "fixture helper relocation did not restore account lookup"
+        pass "identical PAM helper isolated from foreign host AppArmor profile"
+    else
+        fail "stock PAM account lookup failed without the known host AppArmor denial"
+    fi
+fi
+
 # Start stock sshd first, so the native SSH module must preserve a real
 # existing key-based login while applying its drop-in.
 ssh-keygen -A >/dev/null
