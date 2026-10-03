@@ -4,7 +4,9 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -61,6 +63,9 @@ func LoadUsersDB(rc *RunContext) (*UsersDB, error) {
 	return &db, nil
 }
 
+// useraddDefaultsFile holds useradd's default HOME; tests redirect it.
+var useraddDefaultsFile = "/etc/default/useradd"
+
 func (m *UsersModule) Check(ctx context.Context, rc *RunContext) (*CheckResult, error) {
 	var changes []Change
 	cfg := rc.Config.Users
@@ -81,13 +86,15 @@ func (m *UsersModule) Check(ctx context.Context, rc *RunContext) (*CheckResult, 
 		}
 	}
 
-	// Check /etc/default/useradd HOME setting
-	if cfg.HomeBase != "" && cfg.HomeBase != "/home" {
-		data, _ := rc.Runner.ReadFile("/etc/default/useradd")
-		if !strings.Contains(string(data), "HOME="+cfg.HomeBase) {
+	// Check /etc/default/useradd HOME setting. /home is written too: it is
+	// how home-base detection keeps a /home choice on a host with a data drive.
+	if cfg.HomeBase != "" {
+		want := filepath.Clean(cfg.HomeBase)
+		data, _ := rc.Runner.ReadFile(useraddDefaultsFile)
+		if config.UseraddHome(data) != want {
 			changes = append(changes, Change{
-				Description: fmt.Sprintf("Set default useradd HOME to %s", cfg.HomeBase),
-				Command:     fmt.Sprintf("update HOME=%s in /etc/default/useradd", cfg.HomeBase),
+				Description: fmt.Sprintf("Set default useradd HOME to %s", want),
+				Command:     fmt.Sprintf("update HOME=%s in %s", want, useraddDefaultsFile),
 			})
 		}
 	}
@@ -133,30 +140,37 @@ func (m *UsersModule) Apply(ctx context.Context, rc *RunContext) (*ApplyResult, 
 	}
 
 	// Update /etc/default/useradd
-	if cfg.HomeBase != "" && cfg.HomeBase != "/home" {
-		content := fmt.Sprintf("HOME=%s\n", cfg.HomeBase)
-		data, _ := rc.Runner.ReadFile("/etc/default/useradd")
-		if !strings.Contains(string(data), "HOME="+cfg.HomeBase) {
+	if cfg.HomeBase != "" {
+		want := filepath.Clean(cfg.HomeBase)
+		data, err := rc.Runner.ReadFile(useraddDefaultsFile)
+		if err != nil && !errors.Is(err, fs.ErrNotExist) {
+			// Rewriting from an unread file would drop its other defaults.
+			return nil, fmt.Errorf("reading %s: %w", useraddDefaultsFile, err)
+		}
+		if config.UseraddHome(data) != want {
 			// Replace or append HOME= line
-			lines := strings.Split(string(data), "\n")
+			var lines []string
+			if trimmed := strings.TrimRight(string(data), "\n"); trimmed != "" {
+				lines = strings.Split(trimmed, "\n")
+			}
 			var newLines []string
 			found := false
 			for _, line := range lines {
 				if strings.HasPrefix(line, "HOME=") {
-					newLines = append(newLines, "HOME="+cfg.HomeBase)
+					newLines = append(newLines, "HOME="+want)
 					found = true
 				} else {
 					newLines = append(newLines, line)
 				}
 			}
 			if !found {
-				newLines = append(newLines, "HOME="+cfg.HomeBase)
+				newLines = append(newLines, "HOME="+want)
 			}
-			content = strings.Join(newLines, "\n")
-			if err := rc.Runner.WriteFile("/etc/default/useradd", []byte(content), 0644); err != nil {
-				return nil, fmt.Errorf("writing /etc/default/useradd: %w", err)
+			content := strings.Join(newLines, "\n") + "\n"
+			if err := rc.Runner.WriteFile(useraddDefaultsFile, []byte(content), 0644); err != nil {
+				return nil, fmt.Errorf("writing %s: %w", useraddDefaultsFile, err)
 			}
-			messages = append(messages, "updated /etc/default/useradd")
+			messages = append(messages, "updated "+useraddDefaultsFile)
 			changed = true
 		}
 	}

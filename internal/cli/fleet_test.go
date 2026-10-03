@@ -105,7 +105,7 @@ func TestFleetTargetsPushValidatesPathAndGuardsParentsBeforeWrites(t *testing.T)
 	inventory := filepath.Join(dir, "fleet.yaml")
 	site := filepath.Join(dir, "site.yaml")
 	writeInventory := func(target string) {
-		content := "modules:\n  monitoring:\n    enabled: true\n    hub:\n      enabled: true\n      targets_file: " + target + "\n"
+		content := "users:\n  home_base: /home\nmodules:\n  monitoring:\n    enabled: true\n    hub:\n      enabled: true\n      targets_file: " + target + "\n"
 		if err := os.WriteFile(site, []byte(content), 0600); err != nil {
 			t.Fatal(err)
 		}

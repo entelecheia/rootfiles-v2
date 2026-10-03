@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -56,9 +57,9 @@ func TestResolveProfile_Minimal(t *testing.T) {
 	if !cfg.Modules.Cloudflared.Enabled {
 		t.Error("cloudflared module should be enabled in minimal")
 	}
-	// Users config
-	if cfg.Users.HomeBase != "/home" {
-		t.Errorf("home_base = %q, want /home", cfg.Users.HomeBase)
+	// Users config: home_base is left unset so Load can detect a data drive
+	if cfg.Users.HomeBase != "" {
+		t.Errorf("home_base = %q, want unset", cfg.Users.HomeBase)
 	}
 	if cfg.Users.DefaultShell != "/usr/bin/zsh" {
 		t.Errorf("default_shell = %q, want /usr/bin/zsh", cfg.Users.DefaultShell)
@@ -115,8 +116,8 @@ func TestResolveProfile_GPUServer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if cfg.Users.HomeBase != "/data/home" {
-		t.Errorf("home_base = %q, want /data/home", cfg.Users.HomeBase)
+	if cfg.Users.HomeBase != "" {
+		t.Errorf("home_base = %q, want unset", cfg.Users.HomeBase)
 	}
 	if !cfg.Modules.Docker.Enabled {
 		t.Error("docker should be enabled")
@@ -412,5 +413,262 @@ func TestValidate_PasswordAuthUsers(t *testing.T) {
 	ok := &Config{SSH: SSHConfig{DisablePasswordAuth: true, PasswordAuthUsers: []string{"bob", "carol.k"}}}
 	if err := ok.Validate(); err != nil {
 		t.Errorf("valid exception list rejected: %v", err)
+	}
+}
+
+// TestMain keeps home-base detection off the host for every Load here.
+func TestMain(m *testing.M) {
+	dir, err := os.MkdirTemp("", "rootfiles-config-test")
+	if err != nil {
+		panic(err)
+	}
+	useraddDefaultsPath = filepath.Join(dir, "useradd")
+	hostRoot = filepath.Join(dir, "root")
+	code := m.Run()
+	os.RemoveAll(dir)
+	os.Exit(code)
+}
+
+// isolateHomeDetection points home-base detection at a temp host root owned
+// by the test user, who stands in for root. /home, /raid, /data and /nvme
+// exist with mode 0755. managed, when set, is a home base that already
+// holds .rootfiles. It returns the host root.
+func isolateHomeDetection(t *testing.T, useradd, managed string) string {
+	t.Helper()
+	dir := t.TempDir()
+	oldUseradd, oldRoot, oldUID := useraddDefaultsPath, hostRoot, rootUID
+	t.Cleanup(func() { useraddDefaultsPath, hostRoot, rootUID = oldUseradd, oldRoot, oldUID })
+	useraddDefaultsPath = filepath.Join(dir, "useradd")
+	hostRoot = filepath.Join(dir, "root")
+	rootUID = uint32(os.Getuid())
+	mkdir := func(rel string) {
+		t.Helper()
+		p := filepath.Join(hostRoot, rel)
+		if err := os.MkdirAll(p, 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(p, 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, d := range []string{"/", "/home", "/raid", "/data", "/nvme"} {
+		mkdir(d)
+	}
+	if useradd != "" {
+		if err := os.WriteFile(useraddDefaultsPath, []byte(useradd), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if managed != "" {
+		mkdir(managed)
+		mkdir(filepath.Join(managed, ".rootfiles"))
+	}
+	return hostRoot
+}
+
+func TestDefaultHomeBase(t *testing.T) {
+	mounts := func(m ...MountPoint) *SystemInfo { return &SystemInfo{OS: "ubuntu", StorageLayout: m} }
+	data := MountPoint{Device: "/dev/sdb1", MountPath: "/data", FSType: "ext4"}
+	cases := []struct {
+		name    string
+		sys     *SystemInfo
+		useradd string
+		managed string
+		want    string
+	}{
+		{"no system info", nil, "", "", "/home"},
+		{"no data drive", mounts(), "", "", "/home"},
+		{"data drive", mounts(data), "", "", "/data/home"},
+		{"raid preferred over data", mounts(data, MountPoint{"/dev/md0", "/raid", "xfs"}), "", "", "/raid/home"},
+		{"network filesystem skipped", mounts(MountPoint{"nas:/x", "/data", "nfs4"}), "", "", "/home"},
+		{"ephemeral /mnt skipped", mounts(MountPoint{"/dev/sdb1", "/mnt", "ext4"}), "", "", "/home"},
+		{"nested mount skipped", mounts(MountPoint{"/dev/sdb1", "/data/ssd", "ext4"}), "", "", "/home"},
+		{"custom useradd HOME kept", mounts(data), "SHELL=/bin/sh\nHOME=/srv/home\n", "", "/srv/home"},
+		{"useradd HOME=/home kept", mounts(data), "HOME=/home\n", "", "/home"},
+		{"stale custom HOME rewritten to /home kept", mounts(data), "HOME=/data/home\nHOME=/home\n", "", "/home"},
+		{"commented useradd HOME ignored", mounts(data), "# HOME=/srv/home\n", "", "/data/home"},
+		{"users already managed under /home", mounts(data), "", "/home", "/home"},
+		{"users managed under old gpu-server pin", mounts(), "", "/data/home", "/data/home"},
+		{"dgx os data drive", &SystemInfo{OS: "dgx-os", StorageLayout: []MountPoint{data}}, "", "", "/data/home"},
+		{"rocky keeps /home", &SystemInfo{OS: "rocky", Version: "9.4", StorageLayout: []MountPoint{data}}, "", "", "/home"},
+		{"useradd HOME cleaned", mounts(data), "HOME=/srv/home/\n", "", "/srv/home"},
+		{"relative useradd HOME ignored", mounts(data), "HOME=home\n", "", "/data/home"},
+		{"indented HOME ignored like useradd", mounts(data), "  HOME=/srv/home\n", "", "/data/home"},
+		{"unsupported distro keeps /home", &SystemInfo{OS: "debian", StorageLayout: []MountPoint{data}}, "", "", "/home"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			isolateHomeDetection(t, tc.useradd, tc.managed)
+			if got := defaultHomeBase(tc.sys); got != tc.want {
+				t.Errorf("defaultHomeBase = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// AC2b: a base an unprivileged user could control is never chosen.
+func TestDefaultHomeBase_UntrustedBases(t *testing.T) {
+	sys := &SystemInfo{OS: "ubuntu", StorageLayout: []MountPoint{{Device: "/dev/sdb1", MountPath: "/data", FSType: "ext4"}}}
+	cases := []struct {
+		name    string
+		managed string
+		setup   func(t *testing.T, root string)
+	}{
+		{"world-writable mount root", "", func(t *testing.T, root string) {
+			chmod(t, filepath.Join(root, "data"), 0o1777)
+		}},
+		{"pre-created group-writable base", "", func(t *testing.T, root string) {
+			mkdirMode(t, filepath.Join(root, "data", "home"), 0o775)
+		}},
+		{"base is a symlink", "", func(t *testing.T, root string) {
+			target := t.TempDir()
+			if err := os.Symlink(target, filepath.Join(root, "data", "home")); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"not owned by root", "", func(t *testing.T, root string) {
+			rootUID = uint32(os.Getuid()) + 1
+		}},
+		{"managed base in world-writable mount", "/data/home", func(t *testing.T, root string) {
+			chmod(t, filepath.Join(root, "data"), 0o1777)
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := isolateHomeDetection(t, "", tc.managed)
+			tc.setup(t, root)
+			if got := defaultHomeBase(sys); got != "/home" {
+				t.Errorf("defaultHomeBase = %q, want /home", got)
+			}
+		})
+	}
+}
+
+// AC4b: metadata under another base stops detection instead of guessing.
+func TestLoad_AmbiguousHomeBase(t *testing.T) {
+	sys := &SystemInfo{OS: "dgx-os"}
+	writeMeta := func(t *testing.T, root, base, name string) {
+		t.Helper()
+		dir := filepath.Join(root, base, ".rootfiles")
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			t.Fatal(err)
+		}
+		chmod(t, filepath.Join(root, base), 0755)
+		chmod(t, dir, 0755)
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("{}"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, name := range []string{"users.json", "gpu-allocations.json"} {
+		t.Run(name, func(t *testing.T) {
+			root := isolateHomeDetection(t, "HOME=/raid/home\n", "")
+			t.Setenv("ROOTFILES_HOME_BASE", "")
+			writeMeta(t, root, "/home", name)
+			_, err := Load("minimal", "", sys)
+			if !errors.Is(err, ErrAmbiguousHomeBase) || !strings.Contains(err.Error(), "/home/.rootfiles/"+name) {
+				t.Fatalf("Load error = %v, want ambiguous home base naming %s", err, name)
+			}
+			cfg, err := LoadWithHomeBase("minimal", "", sys, "/raid/home")
+			if err != nil || cfg.Users.HomeBase != "/raid/home" {
+				t.Errorf("--home-base: got %v, err=%v", cfg, err)
+			}
+			t.Setenv("ROOTFILES_HOME_BASE", "/home")
+			if cfg, err = Load("minimal", "", sys); err != nil || cfg.Users.HomeBase != "/home" {
+				t.Errorf("env override: got %v, err=%v", cfg, err)
+			}
+		})
+	}
+	t.Run("metadata only under the detected base", func(t *testing.T) {
+		root := isolateHomeDetection(t, "HOME=/raid/home\n", "")
+		t.Setenv("ROOTFILES_HOME_BASE", "")
+		mkdirMode(t, filepath.Join(root, "raid", "home"), 0755)
+		writeMeta(t, root, "/raid/home", "users.json")
+		if cfg, err := Load("minimal", "", sys); err != nil || cfg.Users.HomeBase != "/raid/home" {
+			t.Errorf("got %v, err=%v", cfg, err)
+		}
+	})
+	t.Run("legacy flat .rootfiles file", func(t *testing.T) {
+		root := isolateHomeDetection(t, "HOME=/raid/home\n", "")
+		t.Setenv("ROOTFILES_HOME_BASE", "")
+		if err := os.WriteFile(filepath.Join(root, "home", ".rootfiles"), []byte("{}"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Load("minimal", "", sys); !errors.Is(err, ErrAmbiguousHomeBase) {
+			t.Errorf("Load error = %v, want ambiguous home base", err)
+		}
+	})
+	t.Run("untrusted base ignored", func(t *testing.T) {
+		root := isolateHomeDetection(t, "", "")
+		t.Setenv("ROOTFILES_HOME_BASE", "")
+		writeMeta(t, root, "/data/home", "users.json")
+		chmod(t, filepath.Join(root, "data"), 0o1777)
+		if cfg, err := Load("minimal", "", sys); err != nil || cfg.Users.HomeBase != "/home" {
+			t.Errorf("got %v, err=%v", cfg, err)
+		}
+	})
+}
+
+func TestDefaultHomeBase_LastMountEntryWins(t *testing.T) {
+	isolateHomeDetection(t, "", "")
+	local := MountPoint{Device: "/dev/sdb1", MountPath: "/data", FSType: "ext4"}
+	nfs := MountPoint{Device: "nas:/x", MountPath: "/data", FSType: "nfs4"}
+	if got := defaultHomeBase(&SystemInfo{OS: "ubuntu", StorageLayout: []MountPoint{local, nfs}}); got != "/home" {
+		t.Errorf("local disk under NFS: got %q, want /home", got)
+	}
+	if got := defaultHomeBase(&SystemInfo{OS: "ubuntu", StorageLayout: []MountPoint{nfs, local}}); got != "/data/home" {
+		t.Errorf("NFS under local disk: got %q, want /data/home", got)
+	}
+	nestedNFS := MountPoint{Device: "nas:/home", MountPath: "/data/home", FSType: "nfs4"}
+	if got := defaultHomeBase(&SystemInfo{OS: "ubuntu", StorageLayout: []MountPoint{local, nestedNFS}}); got != "/home" {
+		t.Errorf("NFS mounted at /data/home: got %q, want /home", got)
+	}
+}
+
+func chmod(t *testing.T, path string, mode os.FileMode) {
+	t.Helper()
+	if err := os.Chmod(path, mode); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func mkdirMode(t *testing.T, path string, mode os.FileMode) {
+	t.Helper()
+	if err := os.Mkdir(path, mode); err != nil {
+		t.Fatal(err)
+	}
+	chmod(t, path, mode)
+}
+
+func TestLoad_HomeBaseDetectionOnlyWhenUnset(t *testing.T) {
+	isolateHomeDetection(t, "", "")
+	t.Setenv("ROOTFILES_HOME_BASE", "")
+	sys := &SystemInfo{OS: "ubuntu", StorageLayout: []MountPoint{{Device: "/dev/sdb1", MountPath: "/data", FSType: "xfs"}}}
+
+	cfg, err := Load("minimal", "", sys)
+	if err != nil || cfg.Users.HomeBase != "/data/home" {
+		t.Fatalf("unset home_base: got %q, err=%v; want /data/home", cfg.Users.HomeBase, err)
+	}
+
+	explicit := filepath.Join(t.TempDir(), "site.yaml")
+	if err := os.WriteFile(explicit, []byte("extends: minimal\nusers:\n  home_base: /home\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if cfg, err = Load("", explicit, sys); err != nil || cfg.Users.HomeBase != "/home" {
+		t.Errorf("explicit home_base: got %q, err=%v; want /home", cfg.Users.HomeBase, err)
+	}
+
+	t.Setenv("ROOTFILES_HOME_BASE", "/env/home")
+	if cfg, err = Load("minimal", "", sys); err != nil || cfg.Users.HomeBase != "/env/home" {
+		t.Errorf("env override: got %q, err=%v; want /env/home", cfg.Users.HomeBase, err)
+	}
+}
+
+func TestLoadSite_RequiresExplicitHomeBase(t *testing.T) {
+	site := filepath.Join(t.TempDir(), "site.yaml")
+	if err := os.WriteFile(site, []byte("extends: minimal\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := LoadSite(site); err == nil || !strings.Contains(err.Error(), "users.home_base") {
+		t.Errorf("site config without home_base: want users.home_base error, got %v", err)
 	}
 }

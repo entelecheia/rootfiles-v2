@@ -1,7 +1,6 @@
 extends: minimal
 
 users:
-  home_base: /data/home
   default_groups:
     - sudo
     - docker

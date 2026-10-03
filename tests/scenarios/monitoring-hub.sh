@@ -288,6 +288,8 @@ if [[ "$ssh_ready" != 1 ]]; then
 fi
 
 cat >"$PUSH_DIR/hub.yaml" <<'YAML'
+users:
+  home_base: /home
 modules:
   monitoring:
     enabled: true
@@ -298,6 +300,8 @@ modules:
       listen_address: 127.0.0.1
 YAML
 cat >"$PUSH_DIR/target-up.yaml" <<'YAML'
+users:
+  home_base: /home
 modules:
   monitoring:
     enabled: true
@@ -305,6 +309,8 @@ modules:
     node_exporter_port: 9090
 YAML
 cat >"$PUSH_DIR/target-down.yaml" <<'YAML'
+users:
+  home_base: /home
 modules:
   monitoring:
     enabled: true

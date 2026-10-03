@@ -294,6 +294,8 @@ docker exec "$BAD" touch /run/rootfiles-fleet-fail-apply
 
 cat > "$TMP/site.yaml" <<'EOF'
 extends: base
+users:
+  home_base: /home
 EOF
 cat > "$TMP/rollout.yaml" <<EOF
 defaults:

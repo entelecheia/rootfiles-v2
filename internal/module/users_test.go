@@ -25,13 +25,149 @@ func TestUsersModule_CheckDefaultHomeBaseIsSatisfied(t *testing.T) {
 	sudoersDir = t.TempDir()
 	t.Cleanup(func() { sudoersDir = oldSudoersDir })
 	rc := newDryRunRC(t)
-	// HomeBase "" or "/home" means no custom setup required.
+	// HomeBase "" means no home-base setup.
 	result, err := NewUsersModule().Check(context.Background(), rc)
 	if err != nil {
 		t.Fatalf("Check: %v", err)
 	}
 	if !result.Satisfied {
 		t.Errorf("Check with default HomeBase should be satisfied, got %+v", result.Changes)
+	}
+}
+
+// useraddFixture points useraddDefaultsFile at a temp file with content.
+func useraddFixture(t *testing.T, content string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "useradd")
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	old := useraddDefaultsFile
+	useraddDefaultsFile = path
+	t.Cleanup(func() { useraddDefaultsFile = old })
+	return path
+}
+
+func TestUsersModule_CheckSyncsUseraddHome(t *testing.T) {
+	cases := []struct {
+		name, useradd, homeBase string
+		want                    bool
+	}{
+		{"stock Ubuntu comment", "SHELL=/bin/sh\n# HOME=/home\n", "/home", true},
+		{"stock Rocky", "GROUP=100\nHOME=/home\n", "/home", false},
+		{"stale data drive", "HOME=/data/home\n", "/home", true},
+		{"prefix is not a match", "HOME=/raid/home2\n", "/raid/home", true},
+		{"in sync", "HOME=/raid/home\n", "/raid/home", false},
+		{"trailing slash in config", "HOME=/raid/home\n", "/raid/home/", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			oldSudoersDir := sudoersDir
+			sudoersDir = t.TempDir()
+			t.Cleanup(func() { sudoersDir = oldSudoersDir })
+			path := useraddFixture(t, tc.useradd)
+			rc := newDryRunRC(t)
+			rc.Config.Users = config.UsersConfig{HomeBase: tc.homeBase}
+			result, err := NewUsersModule().Check(context.Background(), rc)
+			if err != nil {
+				t.Fatalf("Check: %v", err)
+			}
+			got := false
+			for _, c := range result.Changes {
+				if strings.HasPrefix(c.Command, "update HOME=") && strings.HasSuffix(c.Command, " in "+path) {
+					got = true
+				}
+			}
+			if got != tc.want {
+				t.Errorf("useradd change = %v, want %v (changes %+v)", got, tc.want, result.Changes)
+			}
+		})
+	}
+}
+
+// Applying /home rewrites a stale HOME= so home-base detection keeps /home,
+// and writes nothing under /home itself.
+func TestUsersModule_ApplyWritesHomeToUseradd(t *testing.T) {
+	oldSudoersDir := sudoersDir
+	sudoersDir = t.TempDir()
+	t.Cleanup(func() { sudoersDir = oldSudoersDir })
+	path := useraddFixture(t, "SHELL=/bin/sh\n# HOME=/home\nHOME=/data/home\n")
+	rc := newDryRunRC(t)
+	rc.DryRun = false
+	rc.Runner = exec.NewRunner(false, rc.Runner.Logger)
+	rc.Config.Users = config.UsersConfig{HomeBase: "/home"}
+	if _, err := NewUsersModule().Apply(context.Background(), rc); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := config.UseraddHome(data); got != "/home" {
+		t.Errorf("useradd HOME = %q, want /home:\n%s", got, data)
+	}
+	if want := "SHELL=/bin/sh\n# HOME=/home\nHOME=/home\n"; string(data) != want {
+		t.Errorf("useradd = %q, want %q", data, want)
+	}
+	result, err := NewUsersModule().Check(context.Background(), rc)
+	if err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+	if !result.Satisfied {
+		t.Errorf("Check after Apply not satisfied: %+v", result.Changes)
+	}
+}
+
+// An unreadable useradd file is not rewritten from nothing.
+func TestUsersModule_ApplyRefusesUnreadableUseradd(t *testing.T) {
+	oldSudoersDir := sudoersDir
+	sudoersDir = t.TempDir()
+	t.Cleanup(func() { sudoersDir = oldSudoersDir })
+	old := useraddDefaultsFile
+	useraddDefaultsFile = t.TempDir() // a directory: ReadFile fails with EISDIR
+	t.Cleanup(func() { useraddDefaultsFile = old })
+	rc := newDryRunRC(t)
+	rc.DryRun = false
+	rc.Runner = exec.NewRunner(false, rc.Runner.Logger)
+	rc.Config.Users = config.UsersConfig{HomeBase: "/home"}
+	if _, err := NewUsersModule().Apply(context.Background(), rc); err == nil || !strings.Contains(err.Error(), "reading") {
+		t.Fatalf("Apply error = %v, want a read error", err)
+	}
+}
+
+// A home base written with a trailing slash still converges.
+func TestUsersModule_ApplySettlesUncleanHomeBase(t *testing.T) {
+	oldSudoersDir := sudoersDir
+	sudoersDir = t.TempDir()
+	t.Cleanup(func() { sudoersDir = oldSudoersDir })
+	path := useraddFixture(t, "# HOME=/home\n")
+	rc := newDryRunRC(t)
+	rc.DryRun = false
+	rc.Runner = exec.NewRunner(false, rc.Runner.Logger)
+	base := t.TempDir()
+	rc.Config.Users = config.UsersConfig{HomeBase: base + "/"}
+	for i, wantChanged := range []bool{true, false} {
+		result, err := NewUsersModule().Apply(context.Background(), rc)
+		if err != nil {
+			t.Fatalf("Apply %d: %v", i, err)
+		}
+		if result.Changed != wantChanged {
+			t.Errorf("Apply %d changed = %v, want %v (%v)", i, result.Changed, wantChanged, result.Messages)
+		}
+	}
+	check, err := NewUsersModule().Check(context.Background(), rc)
+	if err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+	if !check.Satisfied {
+		t.Errorf("Check after Apply not satisfied: %+v", check.Changes)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "# HOME=/home\nHOME=" + base + "\n"; string(data) != want {
+		t.Errorf("useradd = %q, want %q", data, want)
 	}
 }
 

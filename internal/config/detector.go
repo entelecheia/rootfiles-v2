@@ -1,11 +1,15 @@
 package config
 
 import (
+	"errors"
+	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
 )
 
 // SystemInfo holds detected system information.
@@ -133,6 +137,127 @@ func detectMemory(info *SystemInfo) {
 			break
 		}
 	}
+}
+
+// Host state consulted when users.home_base is unset; tests redirect it.
+var (
+	useraddDefaultsPath        = "/etc/default/useradd"
+	hostRoot                   = "/"
+	rootUID             uint32 = 0
+)
+
+// managedHomeBases are checked for an existing <base>/.rootfiles, which
+// means rootfiles already manages users there.
+var managedHomeBases = []string{"/home", "/raid/home", "/data/home", "/nvme/home"}
+
+// dataDriveMounts are tried in order. /mnt is excluded: cloud VMs mount
+// ephemeral scratch disks there.
+var dataDriveMounts = []string{"/raid", "/data", "/nvme"}
+
+// homeFS lists local filesystems trusted to hold home directories.
+var homeFS = map[string]bool{"ext4": true, "xfs": true, "btrfs": true, "zfs": true}
+
+// defaultHomeBase picks users.home_base when a config leaves it unset. An
+// existing layout wins so a host is never silently re-homed: an uncommented
+// HOME= in /etc/default/useradd (the users module writes it on apply, /home
+// included), then a base where rootfiles already manages users. Otherwise a
+// separate local data drive gets <mount>/home, on APT hosts only: Rocky has
+// no SELinux home labeling for paths outside /home.
+func defaultHomeBase(sys *SystemInfo) string {
+	data, _ := os.ReadFile(useraddDefaultsPath)
+	if hb := UseraddHome(data); hb != "" {
+		return hb
+	}
+	for _, hb := range managedHomeBases {
+		if _, err := os.Lstat(filepath.Join(hostRoot, hb, ".rootfiles")); err == nil && rootOnlyBase(hb) {
+			return hb
+		}
+	}
+	if ResolveDistro(sys).PackageBackend == "apt" {
+		for _, mount := range dataDriveMounts {
+			fsType, homeType := lastMountFS(sys, mount), lastMountFS(sys, mount+"/home")
+			if homeFS[fsType] && (homeType == "" || homeFS[homeType]) && rootOnlyBase(mount+"/home") {
+				return mount + "/home"
+			}
+		}
+	}
+	return "/home"
+}
+
+// lastMountFS returns the filesystem type of the visible (last) mount at
+// path, or "" when nothing is mounted there.
+func lastMountFS(sys *SystemInfo, path string) string {
+	fsType := ""
+	for _, m := range sys.StorageLayout {
+		if m.MountPath == path {
+			fsType = m.FSType
+		}
+	}
+	return fsType
+}
+
+// ErrAmbiguousHomeBase means detection found rootfiles metadata under a
+// base other than the one it picked.
+var ErrAmbiguousHomeBase = errors.New("ambiguous home base")
+
+// detectHomeBase is defaultHomeBase, refusing to guess when another
+// root-controlled base already holds rootfiles user or GPU metadata.
+func detectHomeBase(sys *SystemInfo) (string, error) {
+	hb := defaultHomeBase(sys)
+	for _, other := range managedHomeBases {
+		if other == hb || !rootOnlyBase(other) {
+			continue
+		}
+		// A regular .rootfiles file is the legacy flat users DB.
+		for _, path := range []string{
+			filepath.Join(other, ".rootfiles", "users.json"),
+			filepath.Join(other, ".rootfiles", "gpu-allocations.json"),
+			filepath.Join(other, ".rootfiles"),
+		} {
+			fi, err := os.Lstat(filepath.Join(hostRoot, path))
+			if err == nil && fi.Mode().IsRegular() {
+				return "", fmt.Errorf("users.home_base: %w: detected %s, but %s exists; set users.home_base, ROOTFILES_HOME_BASE or --home-base", ErrAmbiguousHomeBase, hb, path)
+			}
+		}
+	}
+	return hb, nil
+}
+
+// rootOnlyBase reports whether only root controls base: its parent and, if
+// present, base itself are real directories owned by root that group and
+// others cannot write. Otherwise a user could pre-create the directory new
+// homes go under, for example on a world-writable scratch mount.
+func rootOnlyBase(base string) bool {
+	if !rootOnlyDir(filepath.Join(hostRoot, filepath.Dir(base))) {
+		return false
+	}
+	_, err := os.Lstat(filepath.Join(hostRoot, base))
+	return os.IsNotExist(err) || rootOnlyDir(filepath.Join(hostRoot, base))
+}
+
+func rootOnlyDir(path string) bool {
+	fi, err := os.Lstat(path)
+	if err != nil || !fi.IsDir() || fi.Mode().Perm()&0o022 != 0 {
+		return false
+	}
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	return ok && st.Uid == rootUID
+}
+
+// UseraddHome returns the last HOME= value of an /etc/default/useradd
+// file, cleaned, or "" when it is unset or relative. Like useradd, it only
+// reads lines that start with HOME=.
+func UseraddHome(data []byte) string {
+	hb := ""
+	for _, line := range strings.Split(string(data), "\n") {
+		if v, ok := strings.CutPrefix(line, "HOME="); ok {
+			hb = strings.TrimSuffix(v, "\r")
+		}
+	}
+	if !filepath.IsAbs(hb) {
+		return ""
+	}
+	return filepath.Clean(hb)
 }
 
 func detectStorage(info *SystemInfo) {

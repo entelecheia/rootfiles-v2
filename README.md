@@ -314,6 +314,8 @@ sudo rootfiles apply --config /raid/backup/rootfiles-backup-*/config-snapshot.ya
 
 Users are created at a custom home base (e.g., `/raid/home/`) that survives OS reinstalls.
 
+When `users.home_base` is unset (the built-in profiles except `dgx` leave it unset), it is detected on the host: an uncommented `HOME=` in `/etc/default/useradd` is kept (stock Ubuntu and DGX OS leave it commented out), a base where rootfiles already manages users (`.rootfiles` under `/home`, `/raid/home`, `/data/home` or `/nvme/home`) is kept, and otherwise, on Ubuntu and DGX OS, the first separate local data drive mounted at `/raid`, `/data` or `/nvme` (ext4, xfs, btrfs or zfs) gets `<mount>/home`. Rocky keeps `/home` because rootfiles does not label homes outside `/home` for SELinux. `/mnt` and network filesystems are never chosen, nor is a base whose parent or existing directory is a symlink, not owned by root, or writable by group or others (a world-writable scratch mount keeps `/home`). With no data drive the home base is `/home`. The users module writes the applied home base, `/home` included, as `HOME=` in `/etc/default/useradd`, so a later run keeps it. If another of those bases already holds `.rootfiles/users.json` or `gpu-allocations.json` (for example `user` or `gpu` commands run without `--profile` on a `dgx` host), detection stops with an error naming the file instead of guessing; set `home_base`, `ROOTFILES_HOME_BASE` or `--home-base` to choose. A fleet rollout is not blocked by it, because its site config sets `home_base`. Only new users are affected; existing homes are not moved (`rootfiles user rehome` does that). Fleet site configs must set `home_base` explicitly.
+
 ```bash
 sudo rootfiles user add yjlee --pubkey "ssh-ed25519 AAAA..."
 ```
@@ -506,7 +508,7 @@ All flags can be set via environment variables for unattended operation:
 |----------|-------------|---------|
 | `ROOTFILES_PROFILE` | Profile name | `minimal` |
 | `ROOTFILES_YES` | Skip all prompts | `false` |
-| `ROOTFILES_HOME_BASE` | Custom home directory | `/home` |
+| `ROOTFILES_HOME_BASE` | Custom home directory | detected (see [User management](#user-management)) |
 | `ROOTFILES_USER` | Username to create | — |
 | `ROOTFILES_TUNNEL_TOKEN` | Cloudflare tunnel token | — |
 | `ROOTFILES_VLAN_ADDRESS` | VLAN private IP | — |
@@ -570,7 +572,7 @@ MIT
 
 ## Fleet controller
 
-The fleet controller reads an operator-owned inventory file. Start with [`docs/fleet.example.yaml`](docs/fleet.example.yaml), copy it outside the repository, and edit the SSH aliases, scrape addresses, groups, and site config paths. Site config paths are relative to the inventory and are fully validated before the controller opens SSH connections.
+The fleet controller reads an operator-owned inventory file. Start with [`docs/fleet.example.yaml`](docs/fleet.example.yaml), copy it outside the repository, and edit the SSH aliases, scrape addresses, groups, and site config paths. Site config paths are relative to the inventory and are fully validated before the controller opens SSH connections. Each site config must set `users.home_base` explicitly, because the controller fingerprints it without seeing the host; add it to the monitoring examples below when you use them as site configs.
 
 ```sh
 rootfiles fleet status --inventory ~/.config/rootfiles/fleet.yaml --all

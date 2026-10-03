@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -24,9 +25,12 @@ func newTunnelCmd() *cobra.Command {
 		Use:   "install",
 		Short: "Install cloudflared binary",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			rc := buildRunContext(cmd)
+			rc, err := buildRunContext(cmd)
+			if err != nil {
+				return err
+			}
 			m := module.NewCloudflaredModule()
-			_, err := m.Apply(cmd.Context(), rc)
+			_, err = m.Apply(cmd.Context(), rc)
 			return err
 		},
 	})
@@ -36,7 +40,10 @@ func newTunnelCmd() *cobra.Command {
 		Short: "Setup tunnel + VLAN private network",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			rc := buildRunContext(cmd)
+			rc, err := buildRunContext(cmd)
+			if err != nil {
+				return err
+			}
 			token := ""
 			if len(args) > 0 {
 				token = args[0]
@@ -59,7 +66,10 @@ func newTunnelCmd() *cobra.Command {
 		Use:   "status",
 		Short: "Show tunnel service and VLAN status",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			rc := buildRunContext(cmd)
+			rc, err := buildRunContext(cmd)
+			if err != nil {
+				return err
+			}
 			return module.TunnelStatus(cmd.Context(), rc)
 		},
 	})
@@ -68,8 +78,11 @@ func newTunnelCmd() *cobra.Command {
 		Use:   "restart",
 		Short: "Restart cloudflared service",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			rc := buildRunContext(cmd)
-			_, err := rc.Runner.Run(cmd.Context(), "systemctl", "restart", "cloudflared")
+			rc, err := buildRunContext(cmd)
+			if err != nil {
+				return err
+			}
+			_, err = rc.Runner.Run(cmd.Context(), "systemctl", "restart", "cloudflared")
 			if err != nil {
 				return fmt.Errorf("restarting cloudflared: %w", err)
 			}
@@ -90,7 +103,10 @@ don't run the tunnel just update the binary.
 Use --check to see the current installed version vs. the latest upstream tag
 without downloading or restarting anything.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			rc := buildRunContext(cmd)
+			rc, err := buildRunContext(cmd)
+			if err != nil {
+				return err
+			}
 			ctx := cmd.Context()
 
 			checkOnly, _ := cmd.Flags().GetBool("check")
@@ -110,7 +126,10 @@ without downloading or restarting anything.`,
 		Use:   "uninstall",
 		Short: "Remove tunnel service, VLAN, and binary",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			rc := buildRunContext(cmd)
+			rc, err := buildRunContext(cmd)
+			if err != nil {
+				return err
+			}
 			return module.TunnelUninstall(cmd.Context(), rc)
 		},
 	})
@@ -167,7 +186,7 @@ func tunnelUpdateCheck(ctx context.Context, rc *module.RunContext) error {
 // pair will report inconsistent paths, which scenario tests will catch.
 const cloudflaredPath = "/usr/local/bin/cloudflared"
 
-func buildRunContext(cmd *cobra.Command) *module.RunContext {
+func buildRunContext(cmd *cobra.Command) (*module.RunContext, error) {
 	dryRun, _ := cmd.Flags().GetBool("dry-run")
 	yes, _ := cmd.Flags().GetBool("yes")
 	if os.Getenv("ROOTFILES_YES") == "true" {
@@ -189,7 +208,12 @@ func buildRunContext(cmd *cobra.Command) *module.RunContext {
 	if sysErr != nil {
 		logger.Warn("system detection failed, using defaults", "err", sysErr)
 	}
-	cfg, cfgErr := config.Load(profileName, "", sysInfo)
+	cfg, cfgErr := config.LoadWithHomeBase(profileName, "", sysInfo, homeBaseFlag(cmd))
+	if errors.Is(cfgErr, config.ErrAmbiguousHomeBase) || (cfgErr != nil && homeBaseFlag(cmd) != "") {
+		// Guessing, or dropping the profile under an explicit --home-base,
+		// would read and write the wrong user and GPU databases.
+		return nil, cfgErr
+	}
 	if cfgErr != nil {
 		// Falling back to zero-value config would surprise users by silently
 		// masking corrupt YAML or a missing profile. Surface it so the subcommand
@@ -211,5 +235,5 @@ func buildRunContext(cmd *cobra.Command) *module.RunContext {
 		DryRun: dryRun,
 		Yes:    yes,
 		Force:  force,
-	}
+	}, nil
 }

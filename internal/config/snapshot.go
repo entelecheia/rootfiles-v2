@@ -286,16 +286,9 @@ func detectUsersConfig() UsersConfig {
 	}
 
 	// Detect home_base from /etc/default/useradd or common paths
-	data, err := os.ReadFile("/etc/default/useradd")
-	if err == nil {
-		for _, line := range strings.Split(string(data), "\n") {
-			if strings.HasPrefix(line, "HOME=") {
-				hb := strings.TrimPrefix(line, "HOME=")
-				if hb != "/home" && hb != "" {
-					cfg.HomeBase = hb
-				}
-			}
-		}
+	data, _ := os.ReadFile(useraddDefaultsPath)
+	if hb := UseraddHome(data); hb != "" {
+		cfg.HomeBase = hb
 	}
 
 	// Fallback: check common custom home paths

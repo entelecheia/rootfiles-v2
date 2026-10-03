@@ -47,7 +47,10 @@ func newUserAddCmd() *cobra.Command {
 		Short: "Create a user with custom home directory",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			rc := buildRunContext(cmd)
+			rc, err := buildRunContext(cmd)
+			if err != nil {
+				return err
+			}
 			username := ""
 			if len(args) > 0 {
 				username = args[0]
@@ -95,7 +98,10 @@ func newUserListCmd() *cobra.Command {
 		Use:   "list",
 		Short: "List managed users (or system users with --system)",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			rc := buildRunContext(cmd)
+			rc, err := buildRunContext(cmd)
+			if err != nil {
+				return err
+			}
 			system, _ := cmd.Flags().GetBool("system")
 			namesOnly, _ := cmd.Flags().GetBool("names")
 			if system {
@@ -120,7 +126,10 @@ func newUserBackupCmd() *cobra.Command {
 		Use:   "backup",
 		Short: "Backup user list and metadata to JSON",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			rc := buildRunContext(cmd)
+			rc, err := buildRunContext(cmd)
+			if err != nil {
+				return err
+			}
 			output, _ := cmd.Flags().GetString("output")
 			return module.BackupUsers(rc, output)
 		},
@@ -135,7 +144,10 @@ func newUserRestoreCmd() *cobra.Command {
 		Short: "Restore users from backup (reconnect existing home dirs)",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			rc := buildRunContext(cmd)
+			rc, err := buildRunContext(cmd)
+			if err != nil {
+				return err
+			}
 			backupPath := ""
 			if len(args) > 0 {
 				backupPath = args[0]
@@ -153,7 +165,10 @@ func newUserRehomeCmd() *cobra.Command {
 			"leave a symlink at the old path. The original is kept as <old>.rootfiles-bak-<ts> unless --remove-old.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			rc := buildRunContext(cmd)
+			rc, err := buildRunContext(cmd)
+			if err != nil {
+				return err
+			}
 			removeOld, _ := cmd.Flags().GetBool("remove-old")
 			return module.RehomeUser(cmd.Context(), rc, args[0], removeOld)
 		},
@@ -168,7 +183,10 @@ func newUserIDCmd() *cobra.Command {
 		Short: "Show UID, GID, and groups for a user",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			rc := buildRunContext(cmd)
+			rc, err := buildRunContext(cmd)
+			if err != nil {
+				return err
+			}
 			return module.ShowUserID(cmd.Context(), rc, args[0])
 		},
 	}
@@ -180,7 +198,10 @@ func newUserGroupsCmd() *cobra.Command {
 		Short: "List groups (all groups or for a specific user)",
 		Args:  cobra.MaximumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			rc := buildRunContext(cmd)
+			rc, err := buildRunContext(cmd)
+			if err != nil {
+				return err
+			}
 			if len(args) > 0 {
 				return module.ListUserGroups(cmd.Context(), rc, args[0])
 			}
@@ -195,7 +216,10 @@ func newUserGroupAddCmd() *cobra.Command {
 		Short: "Add a user to groups",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			rc := buildRunContext(cmd)
+			rc, err := buildRunContext(cmd)
+			if err != nil {
+				return err
+			}
 			groups := collectGroupFlags(cmd)
 			if len(groups) == 0 {
 				return fmt.Errorf("specify groups with --groups, --docker, or --sudo")
@@ -213,7 +237,10 @@ func newUserGroupDelCmd() *cobra.Command {
 		Short: "Remove a user from groups",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			rc := buildRunContext(cmd)
+			rc, err := buildRunContext(cmd)
+			if err != nil {
+				return err
+			}
 			groups := collectGroupFlags(cmd)
 			if len(groups) == 0 {
 				return fmt.Errorf("specify groups with --groups, --docker, or --sudo")
@@ -250,7 +277,10 @@ func newUserPasswdCmd() *cobra.Command {
 		Use:   "passwd [USERNAME...]",
 		Short: "Set passwords for users (batch)",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			rc := buildRunContext(cmd)
+			rc, err := buildRunContext(cmd)
+			if err != nil {
+				return err
+			}
 			suffix, _ := cmd.Flags().GetString("suffix")
 			password, _ := cmd.Flags().GetString("password")
 			filePath, _ := cmd.Flags().GetString("file")

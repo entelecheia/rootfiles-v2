@@ -57,7 +57,7 @@ func runApply(cmd *cobra.Command, _ []string) error {
 	}
 
 	// Load config
-	cfg, err := config.Load(profileName, configPath, sysInfo)
+	cfg, err := config.LoadWithHomeBase(profileName, configPath, sysInfo, homeBaseFlag(cmd))
 	if err != nil {
 		return fmt.Errorf("loading config: %w", err)
 	}
@@ -180,10 +180,16 @@ func selectProfile(profileName, configPath string, sysInfo *config.SystemInfo, y
 	return ui.Select("Select profile", config.AvailableProfiles(), suggested, false)
 }
 
+// homeBaseFlag returns --home-base, which config loading applies before
+// home-base detection.
+func homeBaseFlag(cmd *cobra.Command) string {
+	v, _ := cmd.Flags().GetString("home-base")
+	return v
+}
+
+// applyFlagOverrides applies the remaining CLI flags; --home-base is applied
+// by config.LoadWithHomeBase before home-base detection.
 func applyFlagOverrides(cmd *cobra.Command, cfg *config.Config) {
-	if v, _ := cmd.Flags().GetString("home-base"); v != "" {
-		cfg.Users.HomeBase = v
-	}
 	if v, _ := cmd.Flags().GetString("tunnel-token"); v != "" {
 		cfg.Modules.Cloudflared.TunnelToken = v
 	}

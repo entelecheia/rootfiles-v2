@@ -18,7 +18,10 @@ func newUserDelCmd() *cobra.Command {
 			"then removed) or --remove-home is given.",
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			rc := buildRunContext(cmd)
+			rc, err := buildRunContext(cmd)
+			if err != nil {
+				return err
+			}
 			archive, _ := cmd.Flags().GetBool("archive")
 			remove, _ := cmd.Flags().GetBool("remove-home")
 			mode := module.KeepHome
@@ -50,7 +53,11 @@ func newUserLockCmd() *cobra.Command {
 		Short: "Block all logins (password and SSH key)",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return module.LockUser(cmd.Context(), buildRunContext(cmd), args[0])
+			rc, err := buildRunContext(cmd)
+			if err != nil {
+				return err
+			}
+			return module.LockUser(cmd.Context(), rc, args[0])
 		},
 	}
 }
@@ -61,7 +68,11 @@ func newUserUnlockCmd() *cobra.Command {
 		Short: "Re-enable logins for a locked user",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return module.UnlockUser(cmd.Context(), buildRunContext(cmd), args[0])
+			rc, err := buildRunContext(cmd)
+			if err != nil {
+				return err
+			}
+			return module.UnlockUser(cmd.Context(), rc, args[0])
 		},
 	}
 }
@@ -72,7 +83,11 @@ func newUserExpireCmd() *cobra.Command {
 		Short: "Set or clear the account expiry date",
 		Args:  cobra.ExactArgs(2),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return module.SetExpiry(cmd.Context(), buildRunContext(cmd), args[0], args[1])
+			rc, err := buildRunContext(cmd)
+			if err != nil {
+				return err
+			}
+			return module.SetExpiry(cmd.Context(), rc, args[0], args[1])
 		},
 	}
 }
@@ -88,7 +103,11 @@ func newUserKeyCmd() *cobra.Command {
 			Short: "List authorized keys (numbered)",
 			Args:  cobra.ExactArgs(1),
 			RunE: func(cmd *cobra.Command, args []string) error {
-				return module.ListKeys(buildRunContext(cmd), args[0])
+				rc, err := buildRunContext(cmd)
+				if err != nil {
+					return err
+				}
+				return module.ListKeys(rc, args[0])
 			},
 		},
 		&cobra.Command{
@@ -96,7 +115,11 @@ func newUserKeyCmd() *cobra.Command {
 			Short: "Add an authorized key",
 			Args:  cobra.ExactArgs(2),
 			RunE: func(cmd *cobra.Command, args []string) error {
-				return module.AddKey(cmd.Context(), buildRunContext(cmd), args[0], args[1])
+				rc, err := buildRunContext(cmd)
+				if err != nil {
+					return err
+				}
+				return module.AddKey(cmd.Context(), rc, args[0], args[1])
 			},
 		},
 		&cobra.Command{
@@ -104,7 +127,11 @@ func newUserKeyCmd() *cobra.Command {
 			Short: "Remove authorized key(s) by list index, key or comment",
 			Args:  cobra.ExactArgs(2),
 			RunE: func(cmd *cobra.Command, args []string) error {
-				return module.RemoveKey(cmd.Context(), buildRunContext(cmd), args[0], args[1])
+				rc, err := buildRunContext(cmd)
+				if err != nil {
+					return err
+				}
+				return module.RemoveKey(cmd.Context(), rc, args[0], args[1])
 			},
 		},
 	)
@@ -116,7 +143,11 @@ func newUserDuCmd() *cobra.Command {
 		Use:   "du",
 		Short: "Show home directory disk usage per user (largest first)",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			rows, err := module.HomesUsage(cmd.Context(), buildRunContext(cmd))
+			rc, err := buildRunContext(cmd)
+			if err != nil {
+				return err
+			}
+			rows, err := module.HomesUsage(cmd.Context(), rc)
 			if err != nil {
 				return err
 			}
@@ -137,7 +168,11 @@ func newUserAuditCmd() *cobra.Command {
 		Use:   "audit",
 		Short: "Compare users.json metadata with the accounts on this system",
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			findings, err := module.AuditUsers(cmd.Context(), buildRunContext(cmd))
+			rc, err := buildRunContext(cmd)
+			if err != nil {
+				return err
+			}
+			findings, err := module.AuditUsers(cmd.Context(), rc)
 			if err != nil {
 				return err
 			}
@@ -178,7 +213,11 @@ func newUserQuotaCmd() *cobra.Command {
 			Short: "Set a hard limit, e.g. 500G (recorded and re-applied on user restore)",
 			Args:  cobra.ExactArgs(2),
 			RunE: func(cmd *cobra.Command, args []string) error {
-				return module.SetQuota(cmd.Context(), buildRunContext(cmd), args[0], args[1])
+				rc, err := buildRunContext(cmd)
+				if err != nil {
+					return err
+				}
+				return module.SetQuota(cmd.Context(), rc, args[0], args[1])
 			},
 		},
 		&cobra.Command{
@@ -186,14 +225,22 @@ func newUserQuotaCmd() *cobra.Command {
 			Short: "Remove a user's limit",
 			Args:  cobra.ExactArgs(1),
 			RunE: func(cmd *cobra.Command, args []string) error {
-				return module.SetQuota(cmd.Context(), buildRunContext(cmd), args[0], "0")
+				rc, err := buildRunContext(cmd)
+				if err != nil {
+					return err
+				}
+				return module.SetQuota(cmd.Context(), rc, args[0], "0")
 			},
 		},
 		&cobra.Command{
 			Use:   "show",
 			Short: "Show the quota report",
 			RunE: func(cmd *cobra.Command, _ []string) error {
-				return module.ShowQuotas(cmd.Context(), buildRunContext(cmd))
+				rc, err := buildRunContext(cmd)
+				if err != nil {
+					return err
+				}
+				return module.ShowQuotas(cmd.Context(), rc)
 			},
 		},
 	)

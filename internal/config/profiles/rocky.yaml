@@ -41,7 +41,6 @@ packages:
   - dnf-automatic
 
 users:
-  home_base: /home
   default_shell: /usr/bin/zsh
   default_groups:
     - wheel

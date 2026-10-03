@@ -44,7 +44,7 @@ func runCheck(cmd *cobra.Command, _ []string) error {
 	}
 	profileName, configPath := resolveTarget(cmd, sysInfo)
 
-	cfg, err := config.Load(profileName, configPath, sysInfo)
+	cfg, err := config.LoadWithHomeBase(profileName, configPath, sysInfo, homeBaseFlag(cmd))
 	if err != nil {
 		return fmt.Errorf("loading config: %w", err)
 	}
