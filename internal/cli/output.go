@@ -1,10 +1,17 @@
 package cli
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
+	"log/slog"
 	"os"
+	"path/filepath"
+	"syscall"
 
 	"github.com/spf13/cobra"
 
@@ -83,7 +90,9 @@ func resolveTarget(cmd *cobra.Command, sys *config.SystemInfo) (profile, configP
 		return profile, configPath
 	}
 	if last, err := state.Last(); err == nil && last != nil {
-		if last.ConfigPath != "" && last.ConfigPath != "-" {
+		// Only an absolute recorded path names the applied file; a relative
+		// one would resolve against the current directory.
+		if filepath.IsAbs(last.ConfigPath) {
 			if _, err := os.Stat(last.ConfigPath); err == nil {
 				return "", last.ConfigPath
 			}
@@ -93,4 +102,94 @@ func resolveTarget(cmd *cobra.Command, sys *config.SystemInfo) (profile, configP
 		}
 	}
 	return sys.SuggestProfile(), ""
+}
+
+// Where the ownership walk of a reused config starts and the uid that must
+// own it; tests stub both.
+var (
+	configTrustRoot        = "/"
+	configOwnerUID  uint32 = 0
+)
+
+// resolveRunTarget picks the config for the user, gpu, tunnel, schedule and
+// backup subcommands: flags or env first; then the resolved copy the last
+// recorded apply kept (from a profile or a config file, with whatever that
+// apply added), reused only when it is that run's config, root alone
+// controls it and this process can read it; otherwise minimal with
+// home-base detection. A config they were not given decides what root does
+// (sudoers, groups, tunnel settings), so they never re-read the file or
+// re-resolve the profile the apply named, and never take the profile
+// detection suggests, which on DGX pins /raid/home and a private network.
+func resolveRunTarget(cmd *cobra.Command, logger *slog.Logger) (profile, configPath string) {
+	profile, _ = cmd.Flags().GetString("profile")
+	configPath, _ = cmd.Flags().GetString("config")
+	if profile == "" {
+		profile = os.Getenv("ROOTFILES_PROFILE")
+	}
+	if profile != "" || configPath != "" {
+		return profile, configPath
+	}
+	if last, _ := state.Last(); last != nil {
+		snap := state.AppliedConfigPath()
+		err := reusableConfig(snap)
+		if err == nil {
+			err = sameRun(snap, last.ConfigSHA256)
+		}
+		if err == nil {
+			return "", snap
+		}
+		// A non-root user cannot read the root-only copy; that is expected for
+		// read-only commands, but a dry run of a mutating one would preview
+		// another config than the real run, so it is warned about.
+		log := logger.Warn
+		if errors.Is(err, fs.ErrPermission) && cmd.Annotations[annotMutates] != "true" {
+			log = logger.Debug
+		}
+		log("not reusing the last applied config; pass --config or --profile to choose, or run as root", "config", snap, "err", err)
+	}
+	// As before the copy existed: the home base is detected from what apply
+	// wrote (HOME= in /etc/default/useradd).
+	return "minimal", ""
+}
+
+// sameRun reports whether the kept copy is the config of the recorded run:
+// its bytes hash to the run's fingerprint, since both drop extends and the
+// inline token before encoding. A copy left by another run, for example by
+// an older version that applied a different config, is not reused.
+func sameRun(path, fingerprint string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	if sum := sha256.Sum256(data); hex.EncodeToString(sum[:]) != fingerprint {
+		return fmt.Errorf("%s is not the config of the last recorded run", path)
+	}
+	return nil
+}
+
+// reusableConfig reports why path may not be reused: a directory from the
+// root down to it, or the file itself, is not root-owned, is writable by
+// group or others, or is a symlink, or this process cannot read the file.
+func reusableConfig(path string) error {
+	if err := config.RootOnlyBase(configTrustRoot, filepath.Dir(path), configOwnerUID); err != nil {
+		return err
+	}
+	fi, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	switch {
+	case !fi.Mode().IsRegular():
+		return fmt.Errorf("%s is not a regular file", path)
+	case !ok || st.Uid != configOwnerUID:
+		return fmt.Errorf("%s is not owned by root", path)
+	case fi.Mode().Perm()&0o022 != 0:
+		return fmt.Errorf("%s is writable by group or others", path)
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	return f.Close()
 }

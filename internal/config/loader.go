@@ -84,6 +84,26 @@ func LoadWithHomeBase(profileName, customPath string, sysInfo *SystemInfo, homeB
 	return cfg, nil
 }
 
+// Fallback is the config a command uses when loading fails and it can go
+// on without the profile: system info, env overrides and an explicit
+// --home-base. Users.HomeBase stays empty when neither sets it, since no
+// home base is known.
+func Fallback(sysInfo *SystemInfo, homeBase string) *Config {
+	cfg := &Config{System: sysInfo}
+	applyEnvOverrides(cfg)
+	if homeBase != "" {
+		cfg.Users.HomeBase = homeBase
+	}
+	// Relative paths fail validation; keep them from resolving against the
+	// current directory.
+	for _, p := range []*string{&cfg.Users.HomeBase, &cfg.Modules.Docker.StorageDir, &cfg.Modules.Storage.DataDir} {
+		if !filepath.IsAbs(*p) {
+			*p = ""
+		}
+	}
+	return cfg
+}
+
 // AvailableProfiles returns the list of built-in profile names.
 func AvailableProfiles() []string {
 	return []string{"base", "minimal", "dgx", "gpu-server", "full", "rocky"}

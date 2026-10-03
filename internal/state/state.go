@@ -81,6 +81,29 @@ func Record(run Run) error {
 	return err
 }
 
+// AppliedConfigPath holds the resolved config of the last recorded apply,
+// from a profile or a config file, which subcommands reuse.
+func AppliedConfigPath() string { return filepath.Join(Dir(), "applied-config.yaml") }
+
+// SaveAppliedConfig stores data, mode 0600, at AppliedConfigPath, or removes
+// that file when data is nil.
+func SaveAppliedConfig(data []byte) error {
+	if data == nil {
+		if err := os.Remove(AppliedConfigPath()); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+		return nil
+	}
+	if err := os.MkdirAll(Dir(), 0755); err != nil {
+		return err
+	}
+	tmp := AppliedConfigPath() + ".tmp"
+	if err := os.WriteFile(tmp, data, 0600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, AppliedConfigPath())
+}
+
 // Last returns the most recently recorded run, or nil when none exists.
 func Last() (*Run, error) {
 	data, err := os.ReadFile(statePath())

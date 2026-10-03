@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"path/filepath"
+
 	"github.com/entelecheia/rootfiles-v2/internal/config"
 	"github.com/entelecheia/rootfiles-v2/internal/exec"
 	"github.com/entelecheia/rootfiles-v2/internal/state"
@@ -16,7 +18,7 @@ func appliedFingerprint(cfg *config.Config, profile, path string) (string, error
 	if last == nil || !last.Success || last.ConfigSHA256 == "" {
 		return "", nil
 	}
-	if last.Profile != profile || last.ConfigPath != path {
+	if last.Profile != profile || last.ConfigPath != recordedConfigPath(path) {
 		return "", nil
 	}
 	current, err := cfg.Fingerprint()
@@ -27,6 +29,19 @@ func appliedFingerprint(cfg *config.Config, profile, path string) (string, error
 		return "", nil
 	}
 	return current, nil
+}
+
+// recordedConfigPath is the form apply records for --config: absolute, so a
+// later run from another directory cannot pick up a different file. Stdin
+// ("-") and an empty path are kept.
+func recordedConfigPath(path string) string {
+	if path == "" || path == "-" {
+		return path
+	}
+	if abs, err := filepath.Abs(path); err == nil {
+		return abs
+	}
+	return path
 }
 
 // Reporting still works on hosts with unsupported configuration: capability
