@@ -508,7 +508,7 @@ All flags can be set via environment variables for unattended operation:
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `ROOTFILES_PROFILE` | Profile name | `apply`: detected (prompted without `--yes`); other commands: last applied, else detected |
+| `ROOTFILES_PROFILE` | Profile name | `apply`: detected (prompted without `--yes`); `status`, `check`: last applied, else detected; `user`, `gpu`, `tunnel`, `schedule`, `backup`: last applied, else `minimal` |
 | `ROOTFILES_YES` | Skip all prompts | `false` |
 | `ROOTFILES_HOME_BASE` | Custom home directory | detected (see [User management](#user-management)) |
 | `ROOTFILES_USER` | Username to create | — |
