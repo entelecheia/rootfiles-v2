@@ -82,6 +82,9 @@ func parseSize(s string) (int64, error) {
 
 // SetQuota sets (size "0" removes) a hard block limit for username's home.
 func SetQuota(ctx context.Context, rc *RunContext, username, size string) error {
+	if err := requireTrustedMetadata(rc); err != nil {
+		return err
+	}
 	u, err := lookupManaged(username)
 	if err != nil {
 		return err
