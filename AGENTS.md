@@ -48,6 +48,7 @@ type Module interface {
 - File writes/removals go through `rc.Runner` (never `os.*` directly) so dry-run and backups apply; never `rm -rf` user data
 - `Check()` and `Apply()` must agree: Apply only acts on what Check reports and returns `Changed` only for real work; non-fatal problems go in `ApplyResult.Warnings`
 - Tests must not touch the host: override package-level path vars and stub commands on PATH (`fakeBin`) instead of calling real systemctl/apt
+- Discovery directory mounts must contain only the configured targets file. Validate real root-owned ancestors and directory contents before launch to prevent sibling-secret exposure.
 
 ## Fleet and distro boundaries
 
