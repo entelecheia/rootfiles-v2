@@ -49,6 +49,9 @@ func updateUserMeta(rc *RunContext, name string, fn func(*UserMeta) bool) error 
 	if err != nil {
 		return err
 	}
+	if err := refuseSymlink(path); err != nil {
+		return err
+	}
 	return rc.Runner.WriteFile(path, out, 0600)
 }
 
@@ -79,6 +82,9 @@ const (
 // DeleteUser removes an account and everything rootfiles attached to it
 // (sudoers drop-in, GPU allocation, metadata entry).
 func DeleteUser(ctx context.Context, rc *RunContext, name string, mode DeleteHomeMode) error {
+	if err := requireTrustedMetadata(rc); err != nil {
+		return err
+	}
 	u, err := lookupManaged(name)
 	if err != nil {
 		return err
@@ -195,6 +201,9 @@ func ListKeys(rc *RunContext, name string) error {
 
 // AddKey appends a public key (no-op if already present).
 func AddKey(ctx context.Context, rc *RunContext, name, key string) error {
+	if err := requireTrustedMetadata(rc); err != nil {
+		return err
+	}
 	u, err := lookupManaged(name)
 	if err != nil {
 		return err
@@ -228,6 +237,9 @@ func AddKey(ctx context.Context, rc *RunContext, name, key string) error {
 // RemoveKey removes keys matching sel: a 1-based index from ListKeys, the
 // key itself, or its comment.
 func RemoveKey(ctx context.Context, rc *RunContext, name, sel string) error {
+	if err := requireTrustedMetadata(rc); err != nil {
+		return err
+	}
 	u, err := lookupManaged(name)
 	if err != nil {
 		return err
@@ -322,6 +334,7 @@ type AuditFinding struct {
 // missing on the system (restore candidates after an OS reinstall), UID
 // drift, and accounts under home_base that rootfiles does not track.
 func AuditUsers(ctx context.Context, rc *RunContext) ([]AuditFinding, error) {
+	WarnUntrustedMetadata(rc)
 	db, err := LoadUsersDB(rc)
 	if err != nil {
 		return nil, err

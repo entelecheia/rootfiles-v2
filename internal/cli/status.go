@@ -67,6 +67,9 @@ func runStatus(cmd *cobra.Command, _ []string) error {
 		Yes:    true,
 	}
 
+	if rc.Config.Users.HomeBase != "" {
+		module.WarnUntrustedMetadata(rc) // on stderr, so JSON stays clean
+	}
 	if format == "json" {
 		return writeJSON(out, collectStatus(ctx, rc, sysInfo, active, configPath, cfgErr, last))
 	}

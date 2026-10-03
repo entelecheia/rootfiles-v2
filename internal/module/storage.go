@@ -13,7 +13,7 @@ func NewStorageModule() *StorageModule { return &StorageModule{} }
 func (m *StorageModule) Name() string  { return "storage" }
 
 func (m *StorageModule) Check(_ context.Context, rc *RunContext) (*CheckResult, error) {
-	if err := checkHomeBase(rc.Config.Users.HomeBase); err != nil {
+	if err := requireTrustedMetadata(rc); err != nil {
 		return nil, err
 	}
 	var changes []Change
@@ -78,7 +78,7 @@ func (m *StorageModule) Check(_ context.Context, rc *RunContext) (*CheckResult, 
 }
 
 func (m *StorageModule) Apply(ctx context.Context, rc *RunContext) (*ApplyResult, error) {
-	if err := checkHomeBase(rc.Config.Users.HomeBase); err != nil {
+	if err := requireTrustedMetadata(rc); err != nil {
 		return nil, err
 	}
 	cfg := rc.Config.Modules.Storage

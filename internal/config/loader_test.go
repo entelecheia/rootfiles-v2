@@ -698,6 +698,21 @@ func TestDefaultHomeBase_RootFilesystemSubvolumes(t *testing.T) {
 		{"btrfs data drive on an ext4 root", mp("/dev/sda2", "/", "ext4"), []MountPoint{mp("/dev/sdb1", "/data", "btrfs")}, "/data/home"},
 		{"nested home subvolume of root", mp("/dev/sda2", "/", "btrfs"), []MountPoint{mp("/dev/sdb1", "/data", "btrfs"), mp("/dev/sda2", "/data/home", "btrfs")}, "/home"},
 	}
+	// Two names of one device, as /dev/disk/by-uuid/... and /dev/sda2 are.
+	dev := filepath.Join(t.TempDir(), "sda2")
+	if err := os.WriteFile(dev, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	byUUID := filepath.Join(t.TempDir(), "by-uuid")
+	if err := os.Symlink(dev, byUUID); err != nil {
+		t.Fatal(err)
+	}
+	cases = append(cases, struct {
+		name   string
+		root   MountPoint
+		mounts []MountPoint
+		want   string
+	}{"btrfs subvolume of root under another device name", mp(byUUID, "/", "btrfs"), []MountPoint{mp(dev, "/data", "btrfs")}, "/home"})
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			isolateHomeDetection(t, "", "")
