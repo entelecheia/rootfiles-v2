@@ -6,12 +6,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"os/user"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/entelecheia/rootfiles-v2/internal/config"
@@ -86,10 +88,86 @@ func checkHomeBase(base string) error {
 	return nil
 }
 
+// warnOut receives the warnings of read-only reports; tests capture it.
+var warnOut io.Writer = os.Stderr
+
+// metaHomeBase is the configured home base, /home when unset.
+func metaHomeBase(rc *RunContext) string {
+	if hb := rc.Config.Users.HomeBase; hb != "" {
+		return hb
+	}
+	return "/home"
+}
+
+// requireTrustedMetadata refuses the user and GPU databases under the home
+// base when a user other than root could control them: checkHomeBase
+// rejects the base, or <base>/.rootfiles (a directory, or the legacy flat
+// users database) or anything in it is a symlink, a special file, owned by
+// another uid, or writable by group or others. Such a user could plant a
+// symlink at a database path so root overwrites another file, or edit what
+// the databases grant; fixing the directory modes alone would not remove
+// what was planted while they were open.
+func requireTrustedMetadata(rc *RunContext) error {
+	base := metaHomeBase(rc)
+	if err := checkHomeBase(base); err != nil {
+		return err
+	}
+	meta := filepath.Join(base, ".rootfiles")
+	if _, err := os.Lstat(meta); os.IsNotExist(err) {
+		return nil
+	}
+	if err := rootOnlyTree(meta, homeBaseOwner); err != nil {
+		return fmt.Errorf("refusing rootfiles metadata in %s: %w", meta, err)
+	}
+	return nil
+}
+
+// rootOnlyTree reports the first entry under path, path included, that is a
+// symlink, not a regular file or directory, owned by a uid other than uid,
+// or writable by group or others. Symlinks are never followed.
+func rootOnlyTree(path string, uid uint32) error {
+	return filepath.WalkDir(path, func(p string, _ fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		fi, err := os.Lstat(p)
+		if err != nil {
+			return err
+		}
+		st, ok := fi.Sys().(*syscall.Stat_t)
+		switch {
+		case fi.Mode()&os.ModeSymlink != 0:
+			return fmt.Errorf("%s is a symlink", p)
+		case !fi.IsDir() && !fi.Mode().IsRegular():
+			return fmt.Errorf("%s is not a regular file or directory", p)
+		case !ok || st.Uid != uid:
+			return fmt.Errorf("%s is not owned by root", p)
+		case fi.Mode().Perm()&0o022 != 0:
+			return fmt.Errorf("%s is writable by group or others", p)
+		}
+		return nil
+	})
+}
+
+// WarnUntrustedMetadata lets a read-only report go on, naming the reason.
+func WarnUntrustedMetadata(rc *RunContext) {
+	if err := requireTrustedMetadata(rc); err != nil {
+		fmt.Fprintf(warnOut, "⚠ untrusted rootfiles metadata (%v); this report reads it anyway\n", err)
+	}
+}
+
+// refuseSymlink stops a database write that would follow a symlink.
+func refuseSymlink(path string) error {
+	if fi, err := os.Lstat(path); err == nil && fi.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("refusing to write %s: it is a symlink", path)
+	}
+	return nil
+}
+
 func (m *UsersModule) Check(ctx context.Context, rc *RunContext) (*CheckResult, error) {
 	var changes []Change
 	cfg := rc.Config.Users
-	if err := checkHomeBase(cfg.HomeBase); err != nil {
+	if err := requireTrustedMetadata(rc); err != nil {
 		return nil, err
 	}
 
@@ -146,7 +224,7 @@ func (m *UsersModule) Check(ctx context.Context, rc *RunContext) (*CheckResult, 
 
 func (m *UsersModule) Apply(ctx context.Context, rc *RunContext) (*ApplyResult, error) {
 	cfg := rc.Config.Users
-	if err := checkHomeBase(cfg.HomeBase); err != nil {
+	if err := requireTrustedMetadata(rc); err != nil {
 		return nil, err
 	}
 	var messages, warnings []string
@@ -362,7 +440,7 @@ func AddUser(ctx context.Context, rc *RunContext, username string, pubkeys []str
 	if homeBase == "" {
 		homeBase = "/home"
 	}
-	if err := checkHomeBase(homeBase); err != nil {
+	if err := requireTrustedMetadata(rc); err != nil {
 		return err
 	}
 	homeDir := filepath.Join(homeBase, username)
@@ -441,10 +519,13 @@ func BackupUsers(rc *RunContext, outputPath string) error {
 		homeBase = "/home"
 	}
 
-	// Load existing managed users DB (if any)
+	// Load existing managed users DB (if any). A backup is a restore input,
+	// so the DB of an untrusted base is left out, not just warned about.
 	var db UsersDB
 	dbPath := filepath.Join(homeBase, ".rootfiles", "users.json")
-	if data, err := rc.Runner.ReadFile(dbPath); err == nil {
+	if err := requireTrustedMetadata(rc); err != nil {
+		fmt.Fprintf(warnOut, "⚠ %v; leaving the users database out of the backup\n", err)
+	} else if data, err := rc.Runner.ReadFile(dbPath); err == nil {
 		json.Unmarshal(data, &db)
 	}
 
@@ -588,7 +669,7 @@ func RestoreUsers(ctx context.Context, rc *RunContext, backupPath string) error 
 	// Auto-detect backup path. Its accounts, sudo rights and keys are
 	// trusted only from a base that root alone controls.
 	if backupPath == "" {
-		if err := checkHomeBase(homeBase); err != nil {
+		if err := requireTrustedMetadata(rc); err != nil {
 			return err
 		}
 		backupPath = filepath.Join(homeBase, ".rootfiles", "users.json")
@@ -779,6 +860,7 @@ func RehomeUser(ctx context.Context, rc *RunContext, username string, removeOld 
 
 // ListUsers shows managed users from metadata.
 func ListUsers(rc *RunContext) error {
+	WarnUntrustedMetadata(rc)
 	cfg := rc.Config.Users
 	homeBase := cfg.HomeBase
 	if homeBase == "" {
@@ -1094,6 +1176,9 @@ func saveUserMeta(rc *RunContext, username, home, shell string, groups []string,
 
 	data, err := json.MarshalIndent(db, "", "  ")
 	if err != nil {
+		return err
+	}
+	if err := refuseSymlink(dbPath); err != nil {
 		return err
 	}
 	return rc.Runner.WriteFile(dbPath, data, 0600)

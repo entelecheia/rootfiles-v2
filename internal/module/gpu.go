@@ -38,6 +38,9 @@ func NewGPUModule() *GPUModule    { return &GPUModule{} }
 func (m *GPUModule) Name() string { return "gpu" }
 
 func (m *GPUModule) Check(_ context.Context, rc *RunContext) (*CheckResult, error) {
+	if err := requireTrustedMetadata(rc); err != nil {
+		return nil, err
+	}
 	db, err := loadGPUDB(rc)
 	if err != nil || len(db.Allocations) == 0 {
 		return &CheckResult{Satisfied: true}, nil
@@ -93,6 +96,9 @@ func (m *GPUModule) Check(_ context.Context, rc *RunContext) (*CheckResult, erro
 }
 
 func (m *GPUModule) Apply(ctx context.Context, rc *RunContext) (*ApplyResult, error) {
+	if err := requireTrustedMetadata(rc); err != nil {
+		return nil, err
+	}
 	db, err := loadGPUDB(rc)
 	if err != nil || len(db.Allocations) == 0 {
 		// Remove wrapper if it exists but no allocations remain
@@ -174,6 +180,9 @@ func systemdReload(ctx context.Context, rc *RunContext) string {
 
 // AssignGPUs assigns GPUs to a user and applies immediately.
 func AssignGPUs(ctx context.Context, rc *RunContext, username string, gpus []int, method string) error {
+	if err := requireTrustedMetadata(rc); err != nil {
+		return err
+	}
 	if _, err := user.Lookup(username); err != nil {
 		return fmt.Errorf("user %s not found", username)
 	}
@@ -215,6 +224,9 @@ func AssignGPUs(ctx context.Context, rc *RunContext, username string, gpus []int
 
 // RevokeGPUs removes GPU assignment for a user.
 func RevokeGPUs(ctx context.Context, rc *RunContext, username string) error {
+	if err := requireTrustedMetadata(rc); err != nil {
+		return err
+	}
 	var method string
 	var allocationsRemaining int
 	if err := withGPUDBLock(rc, func(db *GPUAllocationsDB) error {
@@ -291,6 +303,7 @@ func RevokeGPUs(ctx context.Context, rc *RunContext, username string) error {
 
 // ListGPUAllocations prints the current GPU allocation table.
 func ListGPUAllocations(rc *RunContext) error {
+	WarnUntrustedMetadata(rc)
 	db, err := loadGPUDB(rc)
 	if err != nil || len(db.Allocations) == 0 {
 		ui.WriteSection(os.Stdout, "GPU Allocations")
@@ -330,6 +343,7 @@ type gpuSMIInfo struct {
 
 // ShowGPUStatus shows nvidia-smi output cross-referenced with allocations.
 func ShowGPUStatus(ctx context.Context, rc *RunContext) error {
+	WarnUntrustedMetadata(rc)
 	totalGPUs := countGPUDevices()
 	if totalGPUs == 0 {
 		return fmt.Errorf("no NVIDIA GPU devices found in /dev")
