@@ -2,7 +2,6 @@ package cli
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -66,7 +65,7 @@ func newTunnelCmd() *cobra.Command {
 		Use:   "status",
 		Short: "Show tunnel service and VLAN status",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			rc, err := buildRunContext(cmd)
+			rc, err := buildConfigFreeRunContext(cmd)
 			if err != nil {
 				return err
 			}
@@ -78,7 +77,7 @@ func newTunnelCmd() *cobra.Command {
 		Use:   "restart",
 		Short: "Restart cloudflared service",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			rc, err := buildRunContext(cmd)
+			rc, err := buildConfigFreeRunContext(cmd)
 			if err != nil {
 				return err
 			}
@@ -103,7 +102,7 @@ don't run the tunnel just update the binary.
 Use --check to see the current installed version vs. the latest upstream tag
 without downloading or restarting anything.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			rc, err := buildRunContext(cmd)
+			rc, err := buildConfigFreeRunContext(cmd)
 			if err != nil {
 				return err
 			}
@@ -186,7 +185,21 @@ func tunnelUpdateCheck(ctx context.Context, rc *module.RunContext) error {
 // pair will report inconsistent paths, which scenario tests will catch.
 const cloudflaredPath = "/usr/local/bin/cloudflared"
 
+// buildRunContext loads the profile config and returns any load error. A
+// zero config would read and write user and GPU state under /home, skipping
+// home-base detection, and drop the profile's user defaults.
 func buildRunContext(cmd *cobra.Command) (*module.RunContext, error) {
+	return loadRunContext(cmd, false)
+}
+
+// buildConfigFreeRunContext is buildRunContext for commands that need no
+// profile config, such as `tunnel status`: a load error is logged and an
+// empty config is used.
+func buildConfigFreeRunContext(cmd *cobra.Command) (*module.RunContext, error) {
+	return loadRunContext(cmd, true)
+}
+
+func loadRunContext(cmd *cobra.Command, tolerateLoadErr bool) (*module.RunContext, error) {
 	dryRun, _ := cmd.Flags().GetBool("dry-run")
 	yes, _ := cmd.Flags().GetBool("yes")
 	if os.Getenv("ROOTFILES_YES") == "true" {
@@ -209,17 +222,11 @@ func buildRunContext(cmd *cobra.Command) (*module.RunContext, error) {
 		logger.Warn("system detection failed, using defaults", "err", sysErr)
 	}
 	cfg, cfgErr := config.LoadWithHomeBase(profileName, "", sysInfo, homeBaseFlag(cmd))
-	if errors.Is(cfgErr, config.ErrAmbiguousHomeBase) || (cfgErr != nil && homeBaseFlag(cmd) != "") {
-		// Guessing, or dropping the profile under an explicit --home-base,
-		// would read and write the wrong user and GPU databases.
-		return nil, cfgErr
-	}
 	if cfgErr != nil {
-		// Falling back to zero-value config would surprise users by silently
-		// masking corrupt YAML or a missing profile. Surface it so the subcommand
-		// can still proceed (some paths like `tunnel status` tolerate a bare cfg),
-		// but the user sees why their profile customizations are not being applied.
-		logger.Warn("loading profile config failed, continuing with fallback", "profile", profileName, "err", cfgErr)
+		if !tolerateLoadErr {
+			return nil, cfgErr
+		}
+		logger.Warn("loading profile config failed, continuing without it", "profile", profileName, "err", cfgErr)
 		cfg = &config.Config{System: sysInfo}
 	}
 
