@@ -115,3 +115,20 @@ func TestBuildConfigFreeRunContext_ToleratesLoadError(t *testing.T) {
 		t.Fatalf("buildConfigFreeRunContext = %v, %v; want a run context", rc, err)
 	}
 }
+
+// AC2 wiring: config-free commands run their action without a loadable
+// profile. Dry runs keep them off the host.
+func TestConfigFreeCommandsRunWithoutProfile(t *testing.T) {
+	for _, args := range [][]string{{"tunnel", "restart"}, {"schedule", "disable"}} {
+		t.Run(strings.Join(args, " "), func(t *testing.T) {
+			noHostCommands(t)
+			root := NewRootCmd("test", "abc")
+			root.SetArgs(append(args, "--profile", "nope", "--dry-run"))
+			root.SetOut(io.Discard)
+			root.SetErr(io.Discard)
+			if err := root.Execute(); err != nil {
+				t.Errorf("err = %v, want the command to run without a profile", err)
+			}
+		})
+	}
+}
