@@ -33,7 +33,14 @@ func TestNewTunnelCmd_Subcommands(t *testing.T) {
 	}
 }
 
+// noHostCommands empties PATH so system detection in buildRunContext cannot
+// run host binaries such as nvidia-smi.
+func noHostCommands(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+}
+
 func TestBuildRunContext_DefaultsToMinimalProfile(t *testing.T) {
+	noHostCommands(t)
 	// Build a root command so buildRunContext can resolve persistent flags.
 	root := NewRootCmd("test", "abc")
 	// Find the tunnel status subcommand (simple, no args)
@@ -75,6 +82,7 @@ func TestBuildRunContext_LoadErrorStopsStatefulCommands(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
+			noHostCommands(t)
 			t.Setenv("ROOTFILES_HOME_BASE", tc.homeBase)
 			root := NewRootCmd("test", "abc")
 			root.SetArgs(append(tc.args, "--dry-run"))
@@ -89,6 +97,7 @@ func TestBuildRunContext_LoadErrorStopsStatefulCommands(t *testing.T) {
 
 // AC2: config-free commands such as `tunnel status` still run.
 func TestBuildConfigFreeRunContext_ToleratesLoadError(t *testing.T) {
+	noHostCommands(t)
 	t.Setenv("ROOTFILES_HOME_BASE", "home")
 	root := NewRootCmd("test", "abc")
 	sub, _, err := root.Find([]string{"tunnel", "status"})
