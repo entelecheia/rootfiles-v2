@@ -66,9 +66,28 @@ func LoadUsersDB(rc *RunContext) (*UsersDB, error) {
 // useraddDefaultsFile holds useradd's default HOME; tests redirect it.
 var useraddDefaultsFile = "/etc/default/useradd"
 
+// homeBaseOwner is the uid that must own a custom home base; tests stub it.
+var homeBaseOwner uint32 = 0
+
+// checkHomeBase refuses a custom home base that a user other than root
+// could control, by the same rule as home-base detection: that user could
+// replace the homes created under it. /home is the distribution's own.
+func checkHomeBase(base string) error {
+	if base == "" || filepath.Clean(base) == "/home" {
+		return nil
+	}
+	if err := config.RootOnlyBase(base, homeBaseOwner); err != nil {
+		return fmt.Errorf("refusing home base %s: %w; make it a root-owned directory that group and others cannot write", base, err)
+	}
+	return nil
+}
+
 func (m *UsersModule) Check(ctx context.Context, rc *RunContext) (*CheckResult, error) {
 	var changes []Change
 	cfg := rc.Config.Users
+	if err := checkHomeBase(cfg.HomeBase); err != nil {
+		return nil, err
+	}
 
 	if cfg.HomeBase != "" && cfg.HomeBase != "/home" {
 		if !rc.Runner.FileExists(cfg.HomeBase) {
@@ -123,6 +142,9 @@ func (m *UsersModule) Check(ctx context.Context, rc *RunContext) (*CheckResult, 
 
 func (m *UsersModule) Apply(ctx context.Context, rc *RunContext) (*ApplyResult, error) {
 	cfg := rc.Config.Users
+	if err := checkHomeBase(cfg.HomeBase); err != nil {
+		return nil, err
+	}
 	var messages, warnings []string
 	changed := false
 
@@ -335,6 +357,9 @@ func AddUser(ctx context.Context, rc *RunContext, username string, pubkeys []str
 	homeBase := cfg.HomeBase
 	if homeBase == "" {
 		homeBase = "/home"
+	}
+	if err := checkHomeBase(homeBase); err != nil {
+		return err
 	}
 	homeDir := filepath.Join(homeBase, username)
 	shell := cfg.DefaultShell
@@ -583,6 +608,11 @@ func RestoreUsers(ctx context.Context, rc *RunContext, backupPath string) error 
 			continue
 		}
 
+		if err := checkHomeBase(filepath.Dir(u.Home)); err != nil {
+			failed = append(failed, fmt.Sprintf("%s: %v", u.Name, err))
+			continue
+		}
+
 		// Check if home dir exists (preserved from previous install)
 		homeExists := rc.Runner.FileExists(u.Home)
 
@@ -668,6 +698,9 @@ func RehomeUser(ctx context.Context, rc *RunContext, username string, removeOld 
 	homeBase := cfg.HomeBase
 	if homeBase == "" {
 		return fmt.Errorf("home_base not configured")
+	}
+	if err := checkHomeBase(homeBase); err != nil {
+		return err
 	}
 
 	u, err := user.Lookup(username)

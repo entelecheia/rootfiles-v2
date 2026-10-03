@@ -187,6 +187,125 @@ func TestUsersModule_ApplyCustomHomeBaseDryRun(t *testing.T) {
 	}
 }
 
+// AC1, AC2: a custom home base that a user other than root could control is
+// reported by Check and refused by Apply and the home-creating commands
+// before anything changes.
+func TestUsersModule_RefusesUntrustedHomeBase(t *testing.T) {
+	cases := []struct {
+		name  string
+		setup func(t *testing.T, parent string) string
+		want  string
+	}{
+		{"group-writable base", func(t *testing.T, parent string) string {
+			base := filepath.Join(parent, "home")
+			if err := os.Mkdir(base, 0o775); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(base, 0o775); err != nil {
+				t.Fatal(err)
+			}
+			return base
+		}, "writable by group or others"},
+		{"world-writable parent", func(t *testing.T, parent string) string {
+			if err := os.Chmod(parent, 0o1777); err != nil {
+				t.Fatal(err)
+			}
+			return filepath.Join(parent, "home")
+		}, "writable by group or others"},
+		{"symlinked base", func(t *testing.T, parent string) string {
+			base := filepath.Join(parent, "home")
+			if err := os.Symlink(t.TempDir(), base); err != nil {
+				t.Fatal(err)
+			}
+			return base
+		}, "is a symlink"},
+		{"not owned by root", func(t *testing.T, parent string) string {
+			old := homeBaseOwner
+			homeBaseOwner = old + 1
+			t.Cleanup(func() { homeBaseOwner = old })
+			return filepath.Join(parent, "home")
+		}, "not owned by root"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			oldSudoersDir := sudoersDir
+			sudoersDir = t.TempDir()
+			t.Cleanup(func() { sudoersDir = oldSudoersDir })
+			path := useraddFixture(t, "# HOME=/home\n")
+			parent := t.TempDir()
+			if err := os.Chmod(parent, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			base := tc.setup(t, parent)
+			rc := newDryRunRC(t)
+			rc.DryRun = false
+			rc.Runner = exec.NewRunner(false, rc.Runner.Logger)
+			rc.Config.Users = config.UsersConfig{HomeBase: base}
+			ctx := context.Background()
+			wantErr := func(what string, err error) {
+				t.Helper()
+				if err == nil || !strings.Contains(err.Error(), tc.want) {
+					t.Errorf("%s error = %v, want %q", what, err, tc.want)
+				}
+			}
+			_, err := NewUsersModule().Check(ctx, rc)
+			wantErr("users Check", err)
+			_, err = NewUsersModule().Apply(ctx, rc)
+			wantErr("users Apply", err)
+			_, err = NewStorageModule().Check(ctx, rc)
+			wantErr("storage Check", err)
+			_, err = NewStorageModule().Apply(ctx, rc)
+			wantErr("storage Apply", err)
+			dry := newDryRunRC(t)
+			dry.Config.Users = rc.Config.Users
+			wantErr("AddUser", AddUser(ctx, dry, "rootfiles-test-nobody", nil, nil, true))
+			wantErr("RehomeUser", RehomeUser(ctx, dry, "rootfiles-test-nobody", false))
+			backup := filepath.Join(t.TempDir(), "users.json")
+			db, _ := json.Marshal(UsersDB{Users: []UserMeta{{Name: "rootfiles-test-nobody", Shell: "/bin/sh", Home: filepath.Join(base, "rootfiles-test-nobody")}}})
+			if err := os.WriteFile(backup, db, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			wantErr("RestoreUsers", RestoreUsers(ctx, dry, backup))
+
+			if data, _ := os.ReadFile(path); string(data) != "# HOME=/home\n" {
+				t.Errorf("useradd defaults changed: %q", data)
+			}
+			if _, err := os.Lstat(filepath.Join(base, ".rootfiles")); !os.IsNotExist(err) {
+				t.Errorf("metadata dir created under refused base: %v", err)
+			}
+		})
+	}
+}
+
+// AC3: a root-owned 0755 base is unaffected.
+func TestUsersModule_AcceptsRootOwnedHomeBase(t *testing.T) {
+	oldSudoersDir := sudoersDir
+	sudoersDir = t.TempDir()
+	t.Cleanup(func() { sudoersDir = oldSudoersDir })
+	useraddFixture(t, "# HOME=/home\n")
+	parent := t.TempDir()
+	base := filepath.Join(parent, "home")
+	for _, dir := range []string{parent, base} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rc := newDryRunRC(t)
+	rc.DryRun = false
+	rc.Runner = exec.NewRunner(false, rc.Runner.Logger)
+	rc.Config.Users = config.UsersConfig{HomeBase: base}
+	result, err := NewUsersModule().Apply(context.Background(), rc)
+	if err != nil || !result.Changed {
+		t.Fatalf("Apply = %+v, %v; want a change", result, err)
+	}
+	if check, err := NewUsersModule().Check(context.Background(), rc); err != nil || !check.Satisfied {
+		t.Errorf("Check after Apply = %+v, %v; want satisfied", check, err)
+	}
+}
+
 func TestListUserNames(t *testing.T) {
 	// Create temp dir with a users.json
 	tmpDir := t.TempDir()
