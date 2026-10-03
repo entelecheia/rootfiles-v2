@@ -252,7 +252,7 @@ func TestVerifyRockyUpdateinfoUsesCacheAndRequestsMissingMetadataRefresh(t *test
 	if ready, gaps, err := verifyRockyUpdateinfo(context.Background(), newDryRunRC(t), false); err != nil || !ready || strings.Join(gaps, ",") != "extras,epel" {
 		t.Errorf("optional repo gaps should not block required coverage: ready=%t gaps=%v err=%v", ready, gaps, err)
 	}
-	if !strings.Contains(rockyUpdateinfoCheck, "base.conf.cacheonly = True") || !strings.Contains(rockyUpdateinfoCheck, `required = set(("baseos", "appstream"))`) || !strings.Contains(rockyUpdateinfoCheck, `if strict and repo._repo.isExpired():`) || !strings.Contains(rockyUpdateinfoCheck, `repo.get_metadata_content("updateinfo")`) || !strings.Contains(rockyUpdateinfoCheck, `ET.fromstring(content)`) || !strings.Contains(rockyUpdateinfoCheck, `path.endswith(".solvx")`) {
+	if !strings.Contains(rockyUpdateinfoCheck, "base.conf.cacheonly = True") || !strings.Contains(rockyUpdateinfoCheck, "base.conf.substitutions.update_from_etc(base.conf.installroot)") || !strings.Contains(rockyUpdateinfoCheck, `required = set(("baseos", "appstream"))`) || !strings.Contains(rockyUpdateinfoCheck, `if strict and repo._repo.isExpired():`) || !strings.Contains(rockyUpdateinfoCheck, `repo.get_metadata_content("updateinfo")`) || !strings.Contains(rockyUpdateinfoCheck, `ET.fromstring(content)`) || !strings.Contains(rockyUpdateinfoCheck, `path.endswith(".solvx")`) {
 		t.Fatal("DNF proof must bind and parse the enabled repository's updateinfo metadata")
 	}
 }

@@ -21,6 +21,7 @@ import xml.etree.ElementTree as ET
 required = set(("baseos", "appstream"))
 base = dnf.Base()
 base.conf.cacheonly = True
+base.conf.substitutions.update_from_etc(base.conf.installroot)
 strict = len(sys.argv) > 1 and sys.argv[1] == "strict"
 base.read_all_repos()
 repos = list(base.repos.iter_enabled())

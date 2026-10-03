@@ -7,6 +7,11 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)"
+CONTROLLER_BIN="${ROOTFILES_TEST_BINARY:-$REPO_ROOT/rootfiles}"
+if [[ ! -x "$CONTROLLER_BIN" ]]; then
+    echo "ROOTFILES_TEST_BINARY must name an executable rootfiles controller binary" >&2
+    exit 2
+fi
 FIXTURE_ARG="${1:-hub-fixtures}"
 if [[ "$FIXTURE_ARG" = /* ]]; then
     FIXTURE_ROOT="$(cd "$FIXTURE_ARG" && pwd -P)"
@@ -25,7 +30,7 @@ RECEIVER="$CONFIG_DIR/receiver.yaml"
 TARGETS="$CONFIG_DIR/discovery/targets.json"
 DATA_DIR="$FIXTURE_ROOT/var/lib/rootfiles/monitoring"
 
-for command in docker curl python3; do
+for command in docker curl python3 ssh ssh-keygen; do
     command -v "$command" >/dev/null 2>&1 || { echo "required command not found: $command" >&2; exit 2; }
 done
 docker compose version >/dev/null
@@ -84,6 +89,8 @@ YAML
 fi
 
 PROJECT="rootfiles-monitoring-scenario-$$-${RANDOM}"
+SSH_IMAGE="rootfiles-monitoring-target-push:scenario-$$-${RANDOM}"
+SSH_CONTAINER="rootfiles-monitoring-target-push-hub-$$-${RANDOM}"
 WORK_TMP="$(mktemp -d)"
 COMPOSE_CMD=(docker compose --project-name "$PROJECT" --file "$COMPOSE")
 cleanup() {
@@ -92,16 +99,29 @@ cleanup() {
         "${COMPOSE_CMD[@]}" logs --no-color >&2 2>/dev/null || true
     fi
     "${COMPOSE_CMD[@]}" down --remove-orphans >/dev/null 2>&1 || true
+    docker rm -f "$SSH_CONTAINER" >/dev/null 2>&1 || true
+    docker image rm "$SSH_IMAGE" >/dev/null 2>&1 || true
     rm -rf "$WORK_TMP"
     return "$status"
 }
 trap cleanup EXIT
 
 # Rendered hub services run as container root with capabilities dropped. Set
-# only their disposable data tree to root ownership for writes.
+# only disposable hub data/config files to root ownership for reads and writes.
 mkdir -p "$DATA_DIR/prometheus" "$DATA_DIR/alertmanager" "$DATA_DIR/grafana"
-docker run --rm --volume "$DATA_DIR:/scenario-data" busybox:1.36.1 sh -c \
-    'chown -R 0:0 /scenario-data && chmod 0755 /scenario-data /scenario-data/prometheus /scenario-data/alertmanager /scenario-data/grafana'
+docker run --rm \
+    --volume "$DATA_DIR:/scenario-data" \
+    --volume "$CONFIG_DIR/discovery:/scenario-discovery" \
+    --volume "$RECEIVER:/receiver" \
+    --volume "$CONFIG_DIR/grafana-admin-password:/grafana-password" \
+    --volume "$CONFIG_DIR/telegram-bot-token:/telegram-token" \
+    busybox:1.36.1 sh -c '
+      chown -R 0:0 /scenario-data /scenario-discovery
+      chown 0:0 /receiver /grafana-password /telegram-token
+      chmod 0755 /scenario-data /scenario-data/prometheus /scenario-data/alertmanager /scenario-data/grafana /scenario-discovery
+      chmod 0600 /receiver /grafana-password /telegram-token
+      chmod 0644 /scenario-discovery/targets.json
+    '
 
 "${COMPOSE_CMD[@]}" config --quiet
 "${COMPOSE_CMD[@]}" pull
@@ -181,21 +201,139 @@ echo "PASS: generated file-discovery target is healthy with host/exporter labels
 PROM_CONTAINER_BEFORE=$("${COMPOSE_CMD[@]}" ps -q prometheus)
 [[ -n "$PROM_CONTAINER_BEFORE" ]] || { echo "Prometheus container ID is unavailable" >&2; exit 1; }
 PROM_STARTED_BEFORE=$(docker inspect --format '{{.State.StartedAt}}' "$PROM_CONTAINER_BEFORE")
-UPDATED_TARGETS="$(mktemp "$CONFIG_DIR/discovery/targets.json.tmp.XXXXXX")"
-cat >"$UPDATED_TARGETS" <<'JSON'
-[
-  {
-    "targets": ["prometheus:9090"],
-    "labels": {"host": "monitoring-scenario-prometheus-updated", "exporter": "scenario"}
-  },
-  {
-    "targets": ["prometheus-unreachable.invalid:9090"],
-    "labels": {"host": "monitoring-scenario-unreachable", "exporter": "scenario"}
-  }
-]
-JSON
-chmod 0644 "$UPDATED_TARGETS"
-mv -f "$UPDATED_TARGETS" "$TARGETS"
+
+# Exercise the real fleet targets --push SSH code path against a disposable
+# OpenSSH container. Its discovery mount is the same host directory Prometheus
+# uses, and the inventory transports as root so the production path guard runs.
+PUSH_DIR="$WORK_TMP/fleet-target-push"
+SSH_HOME="$PUSH_DIR/home"
+SSH_CONFIG="$SSH_HOME/.ssh/config"
+SSH_KNOWN_HOSTS="$SSH_HOME/.ssh/known_hosts"
+SSH_KEY="$SSH_HOME/.ssh/id_ed25519"
+SSH_BIN_DIR="$PUSH_DIR/bin"
+SSH_ARGS_LOG="$PUSH_DIR/ssh-args.log"
+mkdir -p "$SSH_HOME/.ssh" "$SSH_BIN_DIR" "$PUSH_DIR/config/rootfiles" "$PUSH_DIR/state"
+chmod 0700 "$SSH_HOME/.ssh"
+ssh-keygen -q -t ed25519 -N '' -f "$SSH_KEY"
+cat >"$WORK_TMP/Dockerfile.ssh" <<'DOCKERFILE'
+FROM ubuntu:24.04
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update -qq && apt-get install -y -qq openssh-server && rm -rf /var/lib/apt/lists/* \
+    && mkdir -p /run/sshd /root/.ssh /etc/rootfiles/monitoring/discovery \
+    && chmod 0700 /root/.ssh
+EXPOSE 22
+CMD ["/bin/sh", "-c", "ssh-keygen -A && exec /usr/sbin/sshd -D -e -o PermitRootLogin=prohibit-password -o PasswordAuthentication=no -o PubkeyAuthentication=yes"]
+DOCKERFILE
+docker build -q -t "$SSH_IMAGE" -f "$WORK_TMP/Dockerfile.ssh" "$WORK_TMP" >/dev/null
+docker run -d --name "$SSH_CONTAINER" -p 127.0.0.1::22 \
+    --volume "$CONFIG_DIR/discovery:/etc/rootfiles/monitoring/discovery" \
+    "$SSH_IMAGE" >/dev/null
+host_key_ready=0
+for _ in $(seq 1 30); do
+    if docker exec "$SSH_CONTAINER" test -s /etc/ssh/ssh_host_ed25519_key.pub 2>/dev/null; then
+        host_key_ready=1
+        break
+    fi
+    sleep 1
+done
+[[ "$host_key_ready" == 1 ]] || { echo "SSH fixture did not generate its ED25519 host key" >&2; exit 1; }
+docker cp "$SSH_KEY.pub" "$SSH_CONTAINER:/root/.ssh/authorized_keys" >/dev/null
+docker exec "$SSH_CONTAINER" chown root:root /root/.ssh/authorized_keys
+docker exec "$SSH_CONTAINER" chmod 0600 /root/.ssh/authorized_keys
+SSH_PORT=$(docker port "$SSH_CONTAINER" 22/tcp | awk -F: '{print $NF}')
+KNOWN_HOST_NAMES="monitoring-hub,[monitoring-hub]:$SSH_PORT,[127.0.0.1]:$SSH_PORT"
+docker exec "$SSH_CONTAINER" cat /etc/ssh/ssh_host_ed25519_key.pub |
+    awk -v names="$KNOWN_HOST_NAMES" 'NF >= 2 { print names, $1, $2 }' >"$SSH_KNOWN_HOSTS"
+REAL_SSH=$(command -v ssh)
+cat >"$SSH_CONFIG" <<EOF
+Host monitoring-hub
+  HostName 127.0.0.1
+  Port $SSH_PORT
+  User root
+  IdentityFile $SSH_KEY
+  IdentityAgent none
+  IdentitiesOnly yes
+  HostKeyAlias monitoring-hub
+  StrictHostKeyChecking yes
+  UserKnownHostsFile $SSH_KNOWN_HOSTS
+EOF
+chmod 0600 "$SSH_CONFIG" "$SSH_KNOWN_HOSTS" "$SSH_KEY"
+cat >"$SSH_BIN_DIR/ssh" <<EOF
+#!/bin/sh
+printf '%s\\n' "\$*" >>"$SSH_ARGS_LOG"
+exec "$REAL_SSH" -F "$SSH_CONFIG" "\$@"
+EOF
+chmod 0755 "$SSH_BIN_DIR/ssh"
+ssh_ready=0
+for _ in $(seq 1 30); do
+    if [[ "$("$REAL_SSH" -F "$SSH_CONFIG" -o BatchMode=yes -o ConnectTimeout=2 monitoring-hub id -u 2>/dev/null || true)" == 0 ]]; then
+        ssh_ready=1
+        break
+    fi
+    sleep 1
+done
+if [[ "$ssh_ready" != 1 ]]; then
+    echo "trusted root SSH fixture did not authenticate as UID 0" >&2
+    exit 1
+fi
+
+cat >"$PUSH_DIR/hub.yaml" <<'YAML'
+modules:
+  monitoring:
+    enabled: true
+    hub:
+      enabled: true
+      data_dir: /var/lib/rootfiles/monitoring
+      targets_file: /etc/rootfiles/monitoring/discovery/targets.json
+      listen_address: 127.0.0.1
+YAML
+cat >"$PUSH_DIR/target-up.yaml" <<'YAML'
+modules:
+  monitoring:
+    enabled: true
+    node_exporter: true
+    node_exporter_port: 9090
+YAML
+cat >"$PUSH_DIR/target-down.yaml" <<'YAML'
+modules:
+  monitoring:
+    enabled: true
+    node_exporter: true
+    node_exporter_port: 1
+YAML
+cat >"$PUSH_DIR/fleet.yaml" <<'YAML'
+defaults:
+  sudo: root
+  parallel: 1
+hosts:
+  hub:
+    ssh: monitoring-hub
+    sudo: root
+    config: hub.yaml
+  monitoring-scenario-prometheus-updated:
+    ssh: unused-target-up
+    address: 127.0.0.1
+    groups: [scenario]
+    config: target-up.yaml
+  monitoring-scenario-unreachable:
+    ssh: unused-target-down
+    address: 127.0.0.1
+    groups: [scenario]
+    config: target-down.yaml
+YAML
+if ! PATH="$SSH_BIN_DIR:$PATH" HOME="$SSH_HOME" XDG_CONFIG_HOME="$PUSH_DIR/config" \
+    XDG_STATE_HOME="$PUSH_DIR/state" "$CONTROLLER_BIN" fleet targets \
+    --inventory "$PUSH_DIR/fleet.yaml" --push hub --yes >"$PUSH_DIR/targets-push.log" 2>&1; then
+    cat "$PUSH_DIR/targets-push.log" >&2
+    echo "rootfiles fleet targets --push failed through the trusted SSH fixture" >&2
+    exit 1
+fi
+grep -q 'monitoring-hub' "$SSH_ARGS_LOG" || { echo "fleet targets --push did not call the SSH adapter" >&2; exit 1; }
+echo "PASS: rootfiles fleet targets --push completed through real key-authenticated SSH as root"
+REMOTE_OWNER_MODE=$(docker exec "$SSH_CONTAINER" stat -c '%u:%g:%a' /etc/rootfiles/monitoring/discovery/targets.json)
+[[ "$REMOTE_OWNER_MODE" == 0:0:644 ]] || { echo "pushed discovery file has unexpected owner/mode: $REMOTE_OWNER_MODE" >&2; exit 1; }
+docker exec "$SSH_CONTAINER" cat /etc/rootfiles/monitoring/discovery/targets.json >"$PUSH_DIR/remote-targets.json"
+cmp -s "$TARGETS" "$PUSH_DIR/remote-targets.json" || { echo "SSH target does not share Prometheus' mounted discovery directory" >&2; exit 1; }
 
 file_sd_updated=0
 for _ in $(seq 1 90); do
@@ -214,6 +352,28 @@ if [[ "$PROM_CONTAINER_AFTER" != "$PROM_CONTAINER_BEFORE" || "$PROM_STARTED_AFTE
     exit 1
 fi
 echo "PASS: atomic file-discovery replacement appeared without restarting Prometheus"
+
+# Exercise the real generated FleetTargetDown rule against the unreachable
+# target. The rule's production `for: 5m` hold and Alertmanager delivery are
+# observed live; the separate promtool test above keeps the virtual-time check.
+fleet_down_alert_verified=0
+for _ in $(seq 1 210); do
+    curl --silent --show-error --fail 'http://127.0.0.1:9090/api/v1/alerts' >"$WORK_TMP/prom-alerts.json" || true
+    prom_firing=$(python3 -c 'import json,sys; p=json.load(open(sys.argv[1])); alerts=p.get("data",{}).get("alerts",[]); print("yes" if any(a.get("labels",{}).get("alertname")=="FleetTargetDown" and a.get("labels",{}).get("host")=="monitoring-scenario-unreachable" and a.get("state")=="firing" for a in alerts) else "no")' "$WORK_TMP/prom-alerts.json" 2>/dev/null || true)
+    if [[ "$prom_firing" == yes ]]; then
+        curl --silent --show-error --fail 'http://127.0.0.1:9093/api/v2/alerts' >"$WORK_TMP/am-alerts.json" || true
+        if python3 -c 'import json,sys; alerts=json.load(open(sys.argv[1])); sys.exit(0 if any(a.get("labels",{}).get("alertname")=="FleetTargetDown" and a.get("labels",{}).get("host")=="monitoring-scenario-unreachable" for a in alerts) else 1)' "$WORK_TMP/am-alerts.json" 2>/dev/null; then
+            fleet_down_alert_verified=1
+            break
+        fi
+    fi
+    sleep 2
+done
+[[ "$fleet_down_alert_verified" == 1 ]] || {
+    echo "FleetTargetDown did not fire and reach Alertmanager for monitoring-scenario-unreachable within seven minutes" >&2
+    exit 1
+}
+echo "PASS: live FleetTargetDown exceeded its five-minute hold and reached Alertmanager for the unreachable target"
 
 alert_fired=0
 for _ in $(seq 1 90); do
@@ -240,4 +400,3 @@ done
 curl --silent --show-error --fail 'http://127.0.0.1:3000/api/health' >"$WORK_TMP/grafana-health.json"
 echo "PASS: generated Prometheus, Alertmanager, and Grafana configs are running; synthetic alert reached the no-op receiver"
 echo "NOTE: file discovery targets Prometheus itself as a fixture only; it does not simulate GPU or DCGM telemetry."
-echo "NOTE: this acceptance verifies Prometheus file-SD refresh directly; it does not exercise the SSH-backed fleet targets --push command."

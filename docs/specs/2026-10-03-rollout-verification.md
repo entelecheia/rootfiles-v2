@@ -25,10 +25,12 @@ Scope: #12, #13 and #15-#18. The owner authorized implementation and deployment 
 | Read-only sudo boundary | Exact-command rendering and actual allowed/refused sudo operations |
 | Operator support | Darwin controller tests/build and Linux cross-builds |
 | Exporters | Pre-mutation port ownership checks, collector syntax, real GPU metrics after release |
-| Hub | Generated Compose/config validation, readiness, targets and per-host rule evaluation |
+| Hub | Generated Compose/config validation, readiness, real SSH target push without restart, and five-minute target-down alert delivery |
 | Secrets and remote access | Root-owned 0600 files, loopback web ports, owner-only Access and DM receiver readback |
 
 Rocky fixtures on Ubuntu CI do not establish enforcement under a SELinux-enabled kernel. SELinux command and refusal paths have unit coverage; production non-default ports require the existing firewall and labeling prerequisites.
+
+Some Ubuntu Docker hosts attach their own `unix-chkpwd` AppArmor profile to Rocky's PAM helper and deny the DAC capability required by Rocky's mode-000 shadow file. The disposable fixture detects that specific denial before relocating an identical, checksummed helper with the same root ownership and setuid mode. PAM configuration, shadow permissions, and host AppArmor policy stay intact. Production code never relocates the helper.
 
 ## Deployment gates
 
