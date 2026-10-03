@@ -209,7 +209,7 @@ func loadRunContext(cmd *cobra.Command, tolerateLoadErr bool) (*module.RunContex
 	runner := newRunner(cmd, dryRun)
 	logger := runner.Logger
 
-	sysInfo, sysErr := config.DetectSystem()
+	sysInfo, sysErr := detectSystem()
 	if sysErr != nil {
 		logger.Warn("system detection failed, using defaults", "err", sysErr)
 	}

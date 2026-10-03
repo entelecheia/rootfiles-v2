@@ -81,8 +81,8 @@ func Record(run Run) error {
 	return err
 }
 
-// AppliedConfigPath holds the resolved config of the last recorded apply from
-// a config file, which subcommands reuse without re-reading that file.
+// AppliedConfigPath holds the resolved config of the last recorded apply,
+// from a profile or a config file, which subcommands reuse.
 func AppliedConfigPath() string { return filepath.Join(Dir(), "applied-config.yaml") }
 
 // SaveAppliedConfig stores data, mode 0600, at AppliedConfigPath, or removes

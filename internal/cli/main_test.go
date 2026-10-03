@@ -4,6 +4,8 @@ import (
 	"os"
 	"syscall"
 	"testing"
+
+	"github.com/entelecheia/rootfiles-v2/internal/config"
 )
 
 // TestMain pins the home base so config loading in these tests never runs
@@ -19,6 +21,8 @@ func TestMain(m *testing.M) {
 	}
 	os.Setenv("TMPDIR", tmp)
 	configTrustRoot, configOwnerUID = tmp, uint32(os.Getuid())
+	// Keep system detection (os-release, /proc/mounts, nvidia-smi) off the host.
+	detectSystem = func() (*config.SystemInfo, error) { return &config.SystemInfo{OS: "ubuntu", Version: "22.04"}, nil }
 	os.Setenv("ROOTFILES_HOME_BASE", "/home")
 	// Config selection falls back to the last applied run; keep it off the host.
 	stateDir, err := os.MkdirTemp("", "rootfiles-cli-state")
