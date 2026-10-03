@@ -147,7 +147,7 @@ func rockyFirewallAllowsSSH(ctx context.Context, rc *RunContext, port int) (bool
 		return true, nil
 	}
 	state, err := rc.Runner.Query(ctx, "firewall-cmd", "--state")
-	if state != nil && strings.TrimSpace(state.Stdout) == "not running" && err != nil && state.ExitCode == 252 {
+	if state != nil && strings.TrimSpace(state.Stdout+"\n"+state.Stderr) == "not running" && err != nil && state.ExitCode == 252 {
 		return true, nil
 	}
 	if err != nil {
