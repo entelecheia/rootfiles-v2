@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -131,6 +133,9 @@ func resolveRunTarget(cmd *cobra.Command, sys *config.SystemInfo, logger *slog.L
 		snap := state.AppliedConfigPath()
 		err := reusableConfig(snap)
 		if err == nil {
+			err = sameRun(snap, last.ConfigSHA256)
+		}
+		if err == nil {
 			return "", snap
 		}
 		// A non-root user cannot read the root-only copy; that is expected.
@@ -148,6 +153,21 @@ func resolveRunTarget(cmd *cobra.Command, sys *config.SystemInfo, logger *slog.L
 		return last.Profile, ""
 	}
 	return sys.SuggestProfile(), ""
+}
+
+// sameRun reports whether the kept copy is the config of the recorded run:
+// its bytes hash to the run's fingerprint, since both drop extends and the
+// inline token before encoding. A copy left by another run, for example by
+// an older version that applied a different config, is not reused.
+func sameRun(path, fingerprint string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	if sum := sha256.Sum256(data); hex.EncodeToString(sum[:]) != fingerprint {
+		return fmt.Errorf("%s is not the config of the last recorded run", path)
+	}
+	return nil
 }
 
 // reusableConfig reports why path may not be reused: a directory from the

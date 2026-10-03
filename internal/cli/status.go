@@ -386,8 +386,7 @@ func renderUsersSection(ctx context.Context, out io.Writer, rc *module.RunContex
 
 	homeBase := rc.Config.Users.HomeBase
 	if homeBase == "" {
-		ui.WriteKV(out, "Home base", ui.StyleHint.Render("unknown"))
-		ui.WriteHint(out, unknownHomeBaseHint)
+		ui.WriteKV(out, "Home base", ui.StyleHint.Render("unknown (see GPU Allocations)"))
 	} else {
 		ui.WriteKV(out, "Home base", homeBase)
 		db, _ := module.LoadUsersDB(rc)

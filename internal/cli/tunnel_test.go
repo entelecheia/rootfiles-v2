@@ -188,7 +188,11 @@ func TestBuildRunContext_ConfigSelection(t *testing.T) {
 	}
 	// AC3: without flags or env, the config last applied wins, through the
 	// copy apply kept; the recorded file is not read again.
-	if err := state.Record(state.Run{ConfigPath: site, Success: true}); err != nil {
+	fingerprint, err := rc.Config.Fingerprint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := state.Record(state.Run{ConfigPath: site, ConfigSHA256: fingerprint, Success: true}); err != nil {
 		t.Fatal(err)
 	}
 	if err := saveAppliedConfig(rc.Config, site); err != nil {
@@ -200,9 +204,19 @@ func TestBuildRunContext_ConfigSelection(t *testing.T) {
 		rc.Config.Users.DefaultShell != "/bin/sh" || strings.Contains(strings.Join(rc.Config.Users.DefaultGroups, ","), "tampered") {
 		t.Errorf("last applied config: got %+v, err=%v; want the kept copy", rc, err)
 	}
-	// The kept copy is reused only when root alone controls it and this
-	// process can read it; otherwise the subcommand falls back.
+	// The kept copy is reused only when it is the recorded run's config,
+	// root alone controls it and this process can read it; otherwise the
+	// subcommand falls back.
 	t.Setenv("ROOTFILES_HOME_BASE", "/home") // keep the fallback profile off host detection
+	if err := state.Record(state.Run{ConfigPath: site, ConfigSHA256: "another run", Success: true}); err != nil {
+		t.Fatal(err)
+	}
+	if rc, err := runContextFor(t, buildRunContext, userAdd); err != nil || rc.Config.Users.DefaultShell == "/bin/sh" {
+		t.Errorf("kept copy of another run: got %+v, err=%v; want the fallback profile", rc, err)
+	}
+	if err := state.Record(state.Run{ConfigPath: site, ConfigSHA256: fingerprint, Success: true}); err != nil {
+		t.Fatal(err)
+	}
 	snap := state.AppliedConfigPath()
 	for _, mode := range []os.FileMode{0o666, 0o000} {
 		if mode == 0 && os.Geteuid() == 0 {
