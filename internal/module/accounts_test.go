@@ -3,6 +3,7 @@ package module
 import (
 	"context"
 	"os"
+	"os/user"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -81,11 +82,20 @@ func TestSetPasswordRejectsSeparators(t *testing.T) {
 }
 
 func TestExistingGroups(t *testing.T) {
-	present, missing := existingGroups([]string{"root", "root", "rootfiles-no-such-group"})
-	if len(present) != 1 || present[0] != "root" {
+	// Stub the lookup: host groups differ (macOS has no "root" group).
+	old := lookupAccountGroup
+	t.Cleanup(func() { lookupAccountGroup = old })
+	lookupAccountGroup = func(name string) (*user.Group, error) {
+		if name == "staff" {
+			return &user.Group{Name: name, Gid: "50"}, nil
+		}
+		return nil, user.UnknownGroupError(name)
+	}
+	present, missing := existingGroups([]string{"staff", "staff", "rootfiles-no-such-group", ""})
+	if len(present) != 1 || present[0] != "staff" {
 		t.Errorf("present = %v", present)
 	}
-	if len(missing) != 1 {
+	if len(missing) != 1 || missing[0] != "rootfiles-no-such-group" {
 		t.Errorf("missing = %v", missing)
 	}
 }
