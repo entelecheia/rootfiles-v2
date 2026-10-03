@@ -81,7 +81,7 @@ func checkHomeBase(base string) error {
 		return nil
 	}
 	if err := config.RootOnlyBase(homeBaseRoot, base, homeBaseOwner); err != nil {
-		return fmt.Errorf("refusing home base %s: %w; make it a root-owned directory that group and others cannot write", base, err)
+		return fmt.Errorf("refusing home base %s: %w; / and every existing directory down to the base must be owned by root and not writable by group or others", base, err)
 	}
 	return nil
 }
