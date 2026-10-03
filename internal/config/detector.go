@@ -178,7 +178,11 @@ func defaultHomeBase(sys *SystemInfo) string {
 	if ResolveDistro(sys).PackageBackend == "apt" {
 		for _, mount := range dataDriveMounts {
 			m, home := lastMount(sys, mount), lastMount(sys, mount+"/home")
-			if homeMount(m) && (home == nil || homeMount(home)) && onSeparateDevice(mount) && rootOnlyBase(mount+"/home") {
+			homes := mount // the visible mount that holds the homes
+			if home != nil {
+				homes = mount + "/home"
+			}
+			if homeMount(m) && (home == nil || homeMount(home)) && onSeparateDevice(homes) && rootOnlyBase(mount+"/home") {
 				return mount + "/home"
 			}
 		}
@@ -204,11 +208,11 @@ func homeMount(m *MountPoint) bool {
 	return m != nil && homeFS[m.FSType] && !slices.Contains(strings.Split(m.Options, ","), "ro")
 }
 
-// onSeparateDevice reports whether mount is on a different device than /.
+// onSeparateDevice reports whether path is on a different device than /.
 // A bind mount of the root filesystem reports the root's filesystem type
 // but is not a data drive.
-func onSeparateDevice(mount string) bool {
-	dev, ok := deviceOf(mount)
+func onSeparateDevice(path string) bool {
+	dev, ok := deviceOf(path)
 	rootDev, rootOK := deviceOf("/")
 	return ok && rootOK && dev != rootDev
 }
@@ -292,8 +296,11 @@ func UseraddHome(data []byte) string {
 	return filepath.Clean(hb)
 }
 
+// procMountsPath is read by detectStorage; tests redirect it.
+var procMountsPath = "/proc/mounts"
+
 func detectStorage(info *SystemInfo) {
-	data, err := os.ReadFile("/proc/mounts")
+	data, err := os.ReadFile(procMountsPath)
 	if err != nil {
 		return
 	}

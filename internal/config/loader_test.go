@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -431,8 +432,9 @@ func TestMain(m *testing.M) {
 
 // isolateHomeDetection points home-base detection at a temp host root owned
 // by the test user, who stands in for root. /home, /raid, /data and /nvme
-// exist with mode 0755, and every mount is on a different device than /. managed, when set, is a home base that already
-// holds .rootfiles. It returns the host root.
+// exist with mode 0755, and every mount is on a different device than /.
+// managed, when set, is a home base that already holds .rootfiles. It
+// returns the host root.
 func isolateHomeDetection(t *testing.T, useradd, managed string) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -631,6 +633,49 @@ func TestDefaultHomeBase_SameDeviceAsRoot(t *testing.T) {
 	deviceOf = func(string) (uint64, bool) { return 0, false }
 	if got := defaultHomeBase(sys); got != "/home" {
 		t.Errorf("unreadable device: got %q, want /home", got)
+	}
+
+	// A mount at <mount>/home holds the homes, so its device decides.
+	nested := &SystemInfo{OS: "ubuntu", StorageLayout: []MountPoint{
+		{Device: "/dev/sdb1", MountPath: "/data", FSType: "ext4"},
+		{Device: "/dev/sda1", MountPath: "/data/home", FSType: "ext4"},
+	}}
+	for _, tc := range []struct {
+		name, rootDevPath, want string
+	}{
+		{"root bind mounted at /data/home", "/data/home", "/home"},
+		{"separate /data/home on a root bind at /data", "/data", "/data/home"},
+	} {
+		deviceOf = func(path string) (uint64, bool) {
+			if path == "/" || path == tc.rootDevPath {
+				return 1, true
+			}
+			return 2, true
+		}
+		if got := defaultHomeBase(nested); got != tc.want {
+			t.Errorf("%s: got %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+// AC2 relies on detectStorage keeping the mount options.
+func TestDetectStorage_KeepsMountOptions(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "mounts")
+	mounts := "/dev/sdb1 /data ext4 rw,relatime 0 0\n/dev/sdc1 /raid xfs ro,noatime 0 0\nproc /proc proc rw 0 0\n"
+	if err := os.WriteFile(path, []byte(mounts), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	old := procMountsPath
+	procMountsPath = path
+	t.Cleanup(func() { procMountsPath = old })
+	var info SystemInfo
+	detectStorage(&info)
+	want := []MountPoint{
+		{Device: "/dev/sdb1", MountPath: "/data", FSType: "ext4", Options: "rw,relatime"},
+		{Device: "/dev/sdc1", MountPath: "/raid", FSType: "xfs", Options: "ro,noatime"},
+	}
+	if !reflect.DeepEqual(info.StorageLayout, want) {
+		t.Errorf("StorageLayout = %+v, want %+v", info.StorageLayout, want)
 	}
 }
 
