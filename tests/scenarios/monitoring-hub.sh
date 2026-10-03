@@ -36,7 +36,7 @@ done
 docker compose version >/dev/null
 for file in "$COMPOSE" "$PROM_CONFIG" "$ALERT_RULES" "$TARGETS" \
     "$RECEIVER" "$CONFIG_DIR/grafana-admin-password" "$CONFIG_DIR/telegram-bot-token" \
-    "$FIXTURE_ROOT/fixture-root.txt"; do
+    "$FIXTURE_ROOT/fixture-root.txt" "$FIXTURE_ROOT/dcgm-image.txt"; do
     [[ -f "$file" ]] || { echo "missing generated fixture file: $file" >&2; exit 2; }
     [[ ! -L "$file" ]] || { echo "fixture files must not be symlinks: $file" >&2; exit 2; }
 done
@@ -105,6 +105,16 @@ cleanup() {
     return "$status"
 }
 trap cleanup EXIT
+
+# The production default must name a published NVIDIA image. This metadata
+# check avoids pulling GPU layers and catches a nonexistent pinned tag.
+DCGM_IMAGE=$(cat "$FIXTURE_ROOT/dcgm-image.txt")
+[[ "$DCGM_IMAGE" == nvcr.io/nvidia/k8s/dcgm-exporter:* && "$DCGM_IMAGE" != *[[:space:]]* ]] || {
+    echo "invalid production default DCGM image reference" >&2
+    exit 2
+}
+docker buildx imagetools inspect --raw "$DCGM_IMAGE" >"$WORK_TMP/dcgm-manifest.json"
+echo "PASS: production default DCGM image is published in the NVIDIA registry"
 
 # Rendered hub services run as container root with capabilities dropped. Set
 # only disposable hub data/config files to root ownership for reads and writes.

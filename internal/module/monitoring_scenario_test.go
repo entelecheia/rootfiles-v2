@@ -121,4 +121,7 @@ func TestWriteMonitoringScenarioFixtures(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "fixture-root.txt"), []byte(root+"\n"), 0644); err != nil {
 		t.Fatalf("write fixture root marker: %v", err)
 	}
+	if err := os.WriteFile(filepath.Join(root, "dcgm-image.txt"), []byte((config.MonitoringConfig{}).ExporterImage()+"\n"), 0644); err != nil {
+		t.Fatalf("write production default image selector: %v", err)
+	}
 }
