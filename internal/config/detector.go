@@ -26,6 +26,9 @@ type SystemInfo struct {
 	CPUCores      int          `json:"cpu_cores"`
 	MemoryGB      int          `json:"memory_gb"`
 	StorageLayout []MountPoint `json:"storage_layout"`
+	// RootMount is the visible mount at /, used to tell a subvolume or
+	// dataset of the root filesystem from a separate data drive.
+	RootMount *MountPoint `json:"root_mount,omitempty"`
 }
 
 // MountPoint represents a filesystem mount.
@@ -178,11 +181,12 @@ func defaultHomeBase(sys *SystemInfo) string {
 	if ResolveDistro(sys).PackageBackend == "apt" {
 		for _, mount := range dataDriveMounts {
 			m, home := lastMount(sys, mount), lastMount(sys, mount+"/home")
-			homes := mount // the visible mount that holds the homes
+			homes, holder := mount, m // the visible mount that holds the homes
 			if home != nil {
-				homes = mount + "/home"
+				homes, holder = mount+"/home", home
 			}
-			if homeMount(m) && (home == nil || homeMount(home)) && onSeparateDevice(homes) && rootOnlyBase(mount+"/home") {
+			if homeMount(m) && (home == nil || homeMount(home)) && onSeparateDevice(homes) &&
+				!sameFilesystemAsRoot(sys, holder) && rootOnlyBase(mount+"/home") {
 				return mount + "/home"
 			}
 		}
@@ -215,6 +219,36 @@ func onSeparateDevice(path string) bool {
 	dev, ok := deviceOf(path)
 	rootDev, rootOK := deviceOf("/")
 	return ok && rootOK && dev != rootDev
+}
+
+// sameFilesystemAsRoot reports whether m is a btrfs subvolume of the root
+// filesystem or a ZFS dataset in the root pool. Each of those has its own
+// st_dev, so onSeparateDevice alone counts it as a data drive. A btrfs
+// subvolume shows the root's device in /proc/mounts; a ZFS dataset's pool
+// is the part of its name before the first slash.
+func sameFilesystemAsRoot(sys *SystemInfo, m *MountPoint) bool {
+	root := sys.RootMount
+	if root == nil || m == nil || root.FSType != m.FSType {
+		return false
+	}
+	switch m.FSType {
+	case "btrfs":
+		return resolveDevice(m.Device) == resolveDevice(root.Device)
+	case "zfs":
+		pool, _, _ := strings.Cut(m.Device, "/")
+		rootPool, _, _ := strings.Cut(root.Device, "/")
+		return pool == rootPool
+	}
+	return false
+}
+
+// resolveDevice follows a device path such as /dev/disk/by-uuid/... to the
+// device node, so two names of one device compare equal.
+func resolveDevice(dev string) string {
+	if p, err := filepath.EvalSymlinks(dev); err == nil {
+		return p
+	}
+	return dev
 }
 
 // deviceOf returns the st_dev of path under hostRoot; tests stub it.
@@ -271,6 +305,18 @@ func rootOnlyBase(base string) bool {
 // homes go under, for example on a world-writable scratch mount. Missing
 // directories below the deepest existing one are created by root.
 func RootOnlyBase(root, base string, uid uint32) error {
+	return rootOnlyWalk(root, base, uid, false)
+}
+
+// RootOnlyHomeBase is RootOnlyBase for a configured home base: a symlinked
+// <root>/home, which some hosts point at a data drive, is followed once to
+// a target that must itself pass RootOnlyBase. Detection keeps the strict
+// rule, so /home and its target are never both counted as managed bases.
+func RootOnlyHomeBase(root, base string, uid uint32) error {
+	return rootOnlyWalk(root, base, uid, true)
+}
+
+func rootOnlyWalk(root, base string, uid uint32, followHome bool) error {
 	root, base = filepath.Clean(root), filepath.Clean(base)
 	var dirs []string
 	for d := base; ; d = filepath.Dir(d) {
@@ -290,6 +336,28 @@ func RootOnlyBase(root, base string, uid uint32) error {
 		}
 		if err != nil {
 			return err
+		}
+		if followHome && fi.Mode()&os.ModeSymlink != 0 && dir == filepath.Join(root, "home") {
+			link, err := os.Readlink(dir)
+			if err != nil {
+				return err
+			}
+			// A ".." after a symlinked component resolves differently in the
+			// kernel than in filepath.Join, so the checked path could differ.
+			if slices.Contains(strings.Split(link, "/"), "..") {
+				return fmt.Errorf("%s points to %s, which contains ..", dir, link)
+			}
+			target := filepath.Join(filepath.Dir(dir), link)
+			if filepath.IsAbs(link) {
+				target = filepath.Join(root, link)
+			}
+			// Walk the rest of the base below the resolved target, never
+			// through the link, so every checked path is the real one.
+			rest, _ := filepath.Rel(dir, base)
+			if err := RootOnlyBase(root, filepath.Join(target, rest), uid); err != nil {
+				return fmt.Errorf("%s points to %s: %w", dir, target, err)
+			}
+			return nil
 		}
 		st, ok := fi.Sys().(*syscall.Stat_t)
 		switch {
@@ -337,6 +405,11 @@ func detectStorage(info *SystemInfo) {
 			continue
 		}
 		mountPath := fields[1]
+		if mountPath == "/" {
+			mp := MountPoint{Device: fields[0], MountPath: "/", FSType: fields[2]}
+			info.RootMount = &mp // the last entry is the visible one
+			continue
+		}
 		for _, prefix := range interesting {
 			if strings.HasPrefix(mountPath, prefix) {
 				mp := MountPoint{
