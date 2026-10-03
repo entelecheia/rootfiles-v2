@@ -161,6 +161,125 @@ func TestRockySSHInvalidCandidateRestoresMainAndDropIn(t *testing.T) {
 	}
 }
 
+func writeRockyFirewallFake(t *testing.T, dir, script string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, "firewall-cmd"), []byte(script), 0755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+}
+
+func TestRockyFirewallAllowsSSHFailClosedOnUnknownStatus(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		script string
+	}{
+		{name: "state command error", script: "#!/bin/sh\nexit 1\n"},
+		{name: "unrecognized state", script: "#!/bin/sh\necho maybe\n"},
+		{name: "inactive text with unexpected error", script: "#!/bin/sh\necho 'not running'\nexit 2\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			writeRockyFirewallFake(t, dir, tc.script)
+			allowed, err := rockyFirewallAllowsSSH(context.Background(), newDryRunRC(t), 2222)
+			if err == nil || allowed {
+				t.Fatalf("unknown firewall state returned allowed=%t err=%v", allowed, err)
+			}
+		})
+	}
+}
+
+func TestRockyFirewallAllowsSSHKnownInactiveAndExistingAllowance(t *testing.T) {
+	t.Run("known inactive", func(t *testing.T) {
+		dir := t.TempDir()
+		writeRockyFirewallFake(t, dir, "#!/bin/sh\necho 'not running'\nexit 252\n")
+		allowed, err := rockyFirewallAllowsSSH(context.Background(), newDryRunRC(t), 2222)
+		if err != nil || !allowed {
+			t.Fatalf("known inactive firewalld returned allowed=%t err=%v", allowed, err)
+		}
+	})
+	t.Run("active zone allows requested port", func(t *testing.T) {
+		dir := t.TempDir()
+		script := "#!/bin/sh\ncase \"$1:$2:$3\" in\n--state::) echo running;;\n--get-active-zones::) echo 'public (default, active)';;\n--zone:public:--query-port) echo yes;;\nesac\n"
+		writeRockyFirewallFake(t, dir, script)
+		allowed, err := rockyFirewallAllowsSSH(context.Background(), newDryRunRC(t), 2222)
+		if err != nil || !allowed {
+			t.Fatalf("existing firewalld allowance returned allowed=%t err=%v", allowed, err)
+		}
+	})
+}
+
+func TestRockyFirewallAllowsSSHRejectsUntrustedBooleanOutput(t *testing.T) {
+	dir := t.TempDir()
+	script := "#!/bin/sh\ncase \"$1:$2:$3\" in\n--state::) echo running;;\n--get-active-zones::) echo 'public (default, active)';;\n--zone:public:--query-port) echo no; exit 2;;\nesac\n"
+	writeRockyFirewallFake(t, dir, script)
+	allowed, err := rockyFirewallAllowsSSH(context.Background(), newDryRunRC(t), 2222)
+	if err == nil || allowed {
+		t.Fatalf("no output with unexpected exit status returned allowed=%t err=%v", allowed, err)
+	}
+}
+
+func TestRockyFirewallAllowsSSHFailClosedOnUnknownUFWStatus(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		script string
+	}{
+		{name: "status command error", script: "#!/bin/sh\nexit 1\n"},
+		{name: "unrecognized status", script: "#!/bin/sh\necho 'Status: maybe'\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, "ufw"), []byte(tc.script), 0755); err != nil {
+				t.Fatal(err)
+			}
+			t.Setenv("PATH", dir)
+			allowed, err := rockyFirewallAllowsSSH(context.Background(), newDryRunRC(t), 2222)
+			if err == nil || allowed {
+				t.Fatalf("unknown UFW status returned allowed=%t err=%v", allowed, err)
+			}
+		})
+	}
+}
+
+func TestRockyFirewallAllowsSSHExistingUFWAllowance(t *testing.T) {
+	dir := t.TempDir()
+	script := "#!/bin/sh\nprintf 'Status: active\\nTo Action From\\n2222/tcp ALLOW Anywhere\\n'\n"
+	if err := os.WriteFile(filepath.Join(dir, "ufw"), []byte(script), 0755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", dir)
+	allowed, err := rockyFirewallAllowsSSH(context.Background(), newDryRunRC(t), 2222)
+	if err != nil || !allowed {
+		t.Fatalf("existing UFW allowance returned allowed=%t err=%v", allowed, err)
+	}
+}
+
+func TestRockySSHUnknownFirewallBlocksCheckAndApplyBeforeWrites(t *testing.T) {
+	dir := rockySSHTestPaths(t)
+	main := []byte("Include " + sshdConfigDir + "/*.conf\nPort 22\n")
+	if err := os.WriteFile(sshdConfigPath, main, 0644); err != nil {
+		t.Fatal(err)
+	}
+	writeRockyFirewallFake(t, dir, "#!/bin/sh\necho unavailable\nexit 0\n")
+	rc := newRealRC(t)
+	rc.Config.System = &config.SystemInfo{OS: "rocky", Version: "9.8"}
+	rc.Config.SSH = config.SSHConfig{Port: 2222}
+	module := NewSSHModule()
+	if _, err := module.Check(context.Background(), rc); err == nil {
+		t.Fatal("Check accepted unrecognized active firewall state")
+	}
+	if _, err := module.Apply(context.Background(), rc); err == nil {
+		t.Fatal("Apply accepted unrecognized active firewall state")
+	}
+	mainAfter, err := os.ReadFile(sshdConfigPath)
+	if err != nil || string(mainAfter) != string(main) {
+		t.Fatalf("main sshd config changed before firewall proof: %q, %v", mainAfter, err)
+	}
+	if _, err := os.Stat(sshdDropInPath); !os.IsNotExist(err) {
+		t.Fatalf("managed drop-in was written before firewall proof: %v", err)
+	}
+}
+
 func TestParseFirewalldZones(t *testing.T) {
 	got := parseFirewalldZones("public (default, active)\n  interfaces: eth0\ntrusted\n  sources: 10.0.0.0/8\n")
 	if strings.Join(got, ",") != "public,trusted" {

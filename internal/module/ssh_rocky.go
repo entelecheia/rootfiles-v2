@@ -125,8 +125,18 @@ func portInRangeList(groups []string, port int) bool {
 
 func rockyFirewallAllowsSSH(ctx context.Context, rc *RunContext, port int) (bool, error) {
 	if rc.Runner.CommandExists("ufw") {
-		state, installed := queryUFW(ctx, rc)
-		if installed && state.Active && !state.Allowed[port] {
+		res, err := rc.Runner.Query(ctx, "ufw", "status")
+		if err != nil {
+			return false, fmt.Errorf("cannot inspect installed UFW status before changing SSH port: %w", err)
+		}
+		if res == nil {
+			return false, fmt.Errorf("installed UFW returned no status before changing SSH port")
+		}
+		active, known := parseUFWActivity(res.Stdout)
+		if !known {
+			return false, fmt.Errorf("installed UFW returned an unrecognized status before changing SSH port")
+		}
+		if active && !parseUFWStatus(res.Stdout).Allowed[port] {
 			return false, nil
 		}
 	}
@@ -134,12 +144,21 @@ func rockyFirewallAllowsSSH(ctx context.Context, rc *RunContext, port int) (bool
 		return true, nil
 	}
 	state, err := rc.Runner.Query(ctx, "firewall-cmd", "--state")
-	if err != nil || strings.TrimSpace(state.Stdout) != "running" {
+	if state != nil && strings.TrimSpace(state.Stdout) == "not running" && err != nil && state.ExitCode == 252 {
 		return true, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("cannot determine installed firewalld state before changing SSH port: %w", err)
+	}
+	if state == nil || strings.TrimSpace(state.Stdout) != "running" {
+		return false, fmt.Errorf("installed firewalld returned an unrecognized state before changing SSH port")
 	}
 	zones, err := rc.Runner.Query(ctx, "firewall-cmd", "--get-active-zones")
 	if err != nil {
 		return false, fmt.Errorf("cannot inspect active firewalld zones before changing SSH port: %w", err)
+	}
+	if zones == nil {
+		return false, fmt.Errorf("firewalld returned no active-zone status before changing SSH port")
 	}
 	activeZones := parseFirewalldZones(zones.Stdout)
 	if len(activeZones) == 0 {
@@ -147,21 +166,83 @@ func rockyFirewallAllowsSSH(ctx context.Context, rc *RunContext, port int) (bool
 		if err != nil {
 			return false, fmt.Errorf("cannot inspect firewalld default zone before changing SSH port: %w", err)
 		}
-		activeZones = []string{strings.TrimSpace(defaultZone.Stdout)}
+		if defaultZone == nil {
+			return false, fmt.Errorf("firewalld returned no default-zone status before changing SSH port")
+		}
+		zone := strings.TrimSpace(defaultZone.Stdout)
+		if zone == "" {
+			return false, fmt.Errorf("firewalld returned an empty default zone before changing SSH port")
+		}
+		activeZones = []string{zone}
 	}
 	for _, zone := range activeZones {
-		res, err := rc.Runner.Query(ctx, "firewall-cmd", "--zone", zone, "--query-port", strconv.Itoa(port)+"/tcp")
-		if err == nil && strings.TrimSpace(res.Stdout) == "yes" {
+		allowed, err := queryFirewalldBoolean(ctx, rc, "--zone", zone, "--query-port", strconv.Itoa(port)+"/tcp")
+		if err != nil {
+			return false, fmt.Errorf("cannot verify firewalld allowance for SSH port %d in zone %s: %w", port, zone, err)
+		}
+		if allowed {
 			return true, nil
 		}
 		if port == 22 {
-			service, serviceErr := rc.Runner.Query(ctx, "firewall-cmd", "--zone", zone, "--query-service", "ssh")
-			if serviceErr == nil && strings.TrimSpace(service.Stdout) == "yes" {
+			serviceAllowed, serviceErr := queryFirewalldBoolean(ctx, rc, "--zone", zone, "--query-service", "ssh")
+			if serviceErr != nil {
+				return false, fmt.Errorf("cannot verify firewalld SSH service in zone %s: %w", zone, serviceErr)
+			}
+			if serviceAllowed {
 				return true, nil
 			}
 		}
 	}
 	return false, nil
+}
+
+func parseUFWActivity(out string) (active, known bool) {
+	for _, line := range strings.Split(out, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "Status:") {
+			continue
+		}
+		switch strings.TrimSpace(strings.TrimPrefix(line, "Status:")) {
+		case "active":
+			return true, true
+		case "inactive":
+			return false, true
+		default:
+			return false, false
+		}
+	}
+	return false, false
+}
+
+func queryFirewalldBoolean(ctx context.Context, rc *RunContext, args ...string) (bool, error) {
+	res, err := rc.Runner.Query(ctx, "firewall-cmd", args...)
+	if res != nil {
+		switch strings.TrimSpace(res.Stdout) {
+		case "yes":
+			if err != nil || res.ExitCode != 0 {
+				if err == nil {
+					return false, fmt.Errorf("firewalld returned yes with exit status %d", res.ExitCode)
+				}
+				return false, err
+			}
+			return true, nil
+		case "no":
+			if (err == nil && res.ExitCode == 0) || (err != nil && res.ExitCode == 1) {
+				return false, nil
+			}
+			if err != nil {
+				return false, err
+			}
+			return false, fmt.Errorf("firewalld returned no with unexpected exit status %d", res.ExitCode)
+		}
+	}
+	if err != nil {
+		return false, err
+	}
+	if res == nil {
+		return false, fmt.Errorf("firewalld returned no query result")
+	}
+	return false, fmt.Errorf("unexpected firewalld query output %q", strings.TrimSpace(res.Stdout))
 }
 
 func parseFirewalldZones(out string) []string {
