@@ -416,21 +416,22 @@ func TestValidate_PasswordAuthUsers(t *testing.T) {
 }
 
 // isolateHomeDetection points home-base detection at temp files instead of
-// the host's /etc/default/useradd and /home/.rootfiles.
-func isolateHomeDetection(t *testing.T, useradd string, managedUnderHome bool) {
+// the host's /etc/default/useradd and <base>/.rootfiles directories.
+// managed, when set, is a home base that already holds .rootfiles.
+func isolateHomeDetection(t *testing.T, useradd, managed string) {
 	t.Helper()
 	dir := t.TempDir()
-	oldUseradd, oldMeta := useraddDefaultsPath, homeMetaDir
-	t.Cleanup(func() { useraddDefaultsPath, homeMetaDir = oldUseradd, oldMeta })
+	oldUseradd, oldRoot := useraddDefaultsPath, metaRoot
+	t.Cleanup(func() { useraddDefaultsPath, metaRoot = oldUseradd, oldRoot })
 	useraddDefaultsPath = filepath.Join(dir, "useradd")
-	homeMetaDir = filepath.Join(dir, "home-rootfiles")
+	metaRoot = filepath.Join(dir, "root")
 	if useradd != "" {
 		if err := os.WriteFile(useraddDefaultsPath, []byte(useradd), 0644); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if managedUnderHome {
-		if err := os.Mkdir(homeMetaDir, 0755); err != nil {
+	if managed != "" {
+		if err := os.MkdirAll(filepath.Join(metaRoot, managed, ".rootfiles"), 0755); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -443,23 +444,24 @@ func TestDefaultHomeBase(t *testing.T) {
 		name    string
 		sys     *SystemInfo
 		useradd string
-		managed bool
+		managed string
 		want    string
 	}{
-		{"no system info", nil, "", false, "/home"},
-		{"no data drive", mounts(), "", false, "/home"},
-		{"data drive", mounts(data), "", false, "/data/home"},
-		{"raid preferred over data", mounts(data, MountPoint{"/dev/md0", "/raid", "xfs"}), "", false, "/raid/home"},
-		{"network filesystem skipped", mounts(MountPoint{"nas:/x", "/data", "nfs4"}), "", false, "/home"},
-		{"ephemeral /mnt skipped", mounts(MountPoint{"/dev/sdb1", "/mnt", "ext4"}), "", false, "/home"},
-		{"nested mount skipped", mounts(MountPoint{"/dev/sdb1", "/data/ssd", "ext4"}), "", false, "/home"},
-		{"custom useradd HOME kept", mounts(data), "SHELL=/bin/sh\nHOME=/srv/home\n", false, "/srv/home"},
-		{"stock useradd HOME=/home ignored", mounts(data), "HOME=/home\n", false, "/data/home"},
-		{"commented useradd HOME ignored", mounts(data), "# HOME=/srv/home\n", false, "/data/home"},
-		{"users already managed under /home", mounts(data), "", true, "/home"},
-		{"dgx os data drive", &SystemInfo{OS: "dgx-os", StorageLayout: []MountPoint{data}}, "", false, "/data/home"},
-		{"rocky keeps /home", &SystemInfo{OS: "rocky", Version: "9.4", StorageLayout: []MountPoint{data}}, "HOME=/home\n", false, "/home"},
-		{"unsupported distro keeps /home", &SystemInfo{OS: "debian", StorageLayout: []MountPoint{data}}, "", false, "/home"},
+		{"no system info", nil, "", "", "/home"},
+		{"no data drive", mounts(), "", "", "/home"},
+		{"data drive", mounts(data), "", "", "/data/home"},
+		{"raid preferred over data", mounts(data, MountPoint{"/dev/md0", "/raid", "xfs"}), "", "", "/raid/home"},
+		{"network filesystem skipped", mounts(MountPoint{"nas:/x", "/data", "nfs4"}), "", "", "/home"},
+		{"ephemeral /mnt skipped", mounts(MountPoint{"/dev/sdb1", "/mnt", "ext4"}), "", "", "/home"},
+		{"nested mount skipped", mounts(MountPoint{"/dev/sdb1", "/data/ssd", "ext4"}), "", "", "/home"},
+		{"custom useradd HOME kept", mounts(data), "SHELL=/bin/sh\nHOME=/srv/home\n", "", "/srv/home"},
+		{"stock useradd HOME=/home ignored", mounts(data), "HOME=/home\n", "", "/data/home"},
+		{"commented useradd HOME ignored", mounts(data), "# HOME=/srv/home\n", "", "/data/home"},
+		{"users already managed under /home", mounts(data), "", "/home", "/home"},
+		{"users managed under old gpu-server pin", mounts(), "", "/data/home", "/data/home"},
+		{"dgx os data drive", &SystemInfo{OS: "dgx-os", StorageLayout: []MountPoint{data}}, "", "", "/data/home"},
+		{"rocky keeps /home", &SystemInfo{OS: "rocky", Version: "9.4", StorageLayout: []MountPoint{data}}, "HOME=/home\n", "", "/home"},
+		{"unsupported distro keeps /home", &SystemInfo{OS: "debian", StorageLayout: []MountPoint{data}}, "", "", "/home"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -472,7 +474,7 @@ func TestDefaultHomeBase(t *testing.T) {
 }
 
 func TestLoad_HomeBaseDetectionOnlyWhenUnset(t *testing.T) {
-	isolateHomeDetection(t, "", false)
+	isolateHomeDetection(t, "", "")
 	sys := &SystemInfo{OS: "ubuntu", StorageLayout: []MountPoint{{Device: "/dev/sdb1", MountPath: "/data", FSType: "xfs"}}}
 
 	cfg, err := Load("minimal", "", sys)

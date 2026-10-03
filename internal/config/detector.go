@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
@@ -138,8 +139,12 @@ func detectMemory(info *SystemInfo) {
 // Paths consulted when users.home_base is unset; tests redirect them.
 var (
 	useraddDefaultsPath = "/etc/default/useradd"
-	homeMetaDir         = "/home/.rootfiles"
+	metaRoot            = "/"
 )
+
+// managedHomeBases are checked for an existing <base>/.rootfiles, which
+// means rootfiles already manages users there.
+var managedHomeBases = []string{"/home", "/raid/home", "/data/home", "/nvme/home"}
 
 // dataDriveMounts are tried in order. /mnt is excluded: cloud VMs mount
 // ephemeral scratch disks there.
@@ -150,15 +155,17 @@ var homeFS = map[string]bool{"ext4": true, "xfs": true, "btrfs": true, "zfs": tr
 
 // defaultHomeBase picks users.home_base when a config leaves it unset. An
 // existing layout wins so a host is never silently re-homed: a custom HOME
-// in /etc/default/useradd, then users rootfiles already manages under
-// /home. Otherwise a separate local data drive gets <mount>/home, on APT
+// in /etc/default/useradd, then a base where rootfiles already manages
+// users. Otherwise a separate local data drive gets <mount>/home, on APT
 // hosts only: Rocky has no SELinux home labeling for paths outside /home.
 func defaultHomeBase(sys *SystemInfo) string {
 	if hb := useraddHome(); hb != "" {
 		return hb
 	}
-	if _, err := os.Stat(homeMetaDir); err == nil {
-		return "/home"
+	for _, hb := range managedHomeBases {
+		if _, err := os.Stat(filepath.Join(metaRoot, hb, ".rootfiles")); err == nil {
+			return hb
+		}
 	}
 	if ResolveDistro(sys).PackageBackend == "apt" {
 		for _, mount := range dataDriveMounts {
