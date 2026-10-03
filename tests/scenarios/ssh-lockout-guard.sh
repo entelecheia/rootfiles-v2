@@ -32,6 +32,42 @@ rootfiles apply --profile dgx --module ssh --yes 2>&1 || true
 assert_file_contains "$CONF" "PasswordAuthentication no"
 assert_file_contains "$CONF" "PermitRootLogin no"
 
+# Step 2b: a password-only account blocks hardening until it gets a key or an
+# exception; the exception keeps password login for that user only.
+echo "--- Step 2b: password-only accounts ---"
+rm -f "$CONF"
+useradd -m -s /bin/bash pwuser
+echo "pwuser:Ci-Passw0rd-2b" | chpasswd
+if out=$(rootfiles apply --profile dgx --module ssh --yes 2>&1); then
+    fail "apply should refuse while pwuser can only log in with a password"
+elif echo "$out" | grep -q "pwuser"; then
+    pass "guard names the password-only account"
+else
+    fail "guard did not name pwuser: $out"
+fi
+cat > /tmp/site-pw.yaml <<'EOF'
+extends: dgx
+ssh:
+  password_auth_users: [pwuser]
+EOF
+rootfiles apply --config /tmp/site-pw.yaml --module ssh --yes 2>&1 || true
+assert_file_contains "$CONF" "PasswordAuthentication no"
+assert_file_contains "$CONF" "Match User pwuser"
+# The CI image has no sshd; install it so the effective config is checked
+# by sshd itself (Match scoping, drop-in Include) rather than by grep.
+if ! command -v sshd >/dev/null 2>&1; then
+    apt-get update -qq >/dev/null && apt-get install -y -qq openssh-server >/dev/null
+fi
+mkdir -p /run/sshd
+ssh-keygen -A >/dev/null
+pw_eff=$(sshd -T -C user=pwuser,host=ci,addr=10.0.0.1 | grep '^passwordauthentication ' || true)
+ops_eff=$(sshd -T -C user=opsuser,host=ci,addr=10.0.0.1 | grep '^passwordauthentication ' || true)
+if [ "$pw_eff" = "passwordauthentication yes" ] && [ "$ops_eff" = "passwordauthentication no" ]; then
+    pass "password login kept for pwuser only"
+else
+    fail "effective sshd config does not scope the exception to pwuser (pwuser: '$pw_eff', opsuser: '$ops_eff')"
+fi
+
 # Step 3: enabling UFW always admits the SSH port, even with no allowed_ports
 echo "--- Step 3: UFW admits SSH port ---"
 rootfiles apply --profile gpu-server --module network --yes 2>&1 || true

@@ -396,3 +396,21 @@ func TestLoad_TunnelTokenFile(t *testing.T) {
 		t.Errorf("env override with tunnel_token_file: token=%q err=%v", cfg.Modules.Cloudflared.TunnelToken, err)
 	}
 }
+
+func TestValidate_PasswordAuthUsers(t *testing.T) {
+	cases := map[string][]string{
+		"root":      {"root"},
+		"bad name":  {"Bob Smith"},
+		"duplicate": {"bob", "bob"},
+	}
+	for name, users := range cases {
+		cfg := &Config{SSH: SSHConfig{DisablePasswordAuth: true, PasswordAuthUsers: users}}
+		if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "password_auth_users") {
+			t.Errorf("%s: want password_auth_users error, got %v", name, err)
+		}
+	}
+	ok := &Config{SSH: SSHConfig{DisablePasswordAuth: true, PasswordAuthUsers: []string{"bob", "carol.k"}}}
+	if err := ok.Validate(); err != nil {
+		t.Errorf("valid exception list rejected: %v", err)
+	}
+}

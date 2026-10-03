@@ -83,7 +83,54 @@ func doctorSSH(ctx context.Context, rc *RunContext) []Finding {
 		f.Detail = fmt.Sprintf("key login for %s; password auth %s; root login %s",
 			strings.Join(keyed, ", "), eff["passwordauthentication"], eff["permitrootlogin"])
 	}
-	return []Finding{f}
+	out := []Finding{f}
+	pwOnly, known := passwordOnlyAccounts()
+	if len(pwOnly) == 0 {
+		return out
+	}
+	// Password auth may differ per user (ssh.password_auth_users renders a
+	// Match block), so ask sshd for each account when it is off globally.
+	var viaPassword, noLogin []string
+	for _, name := range pwOnly {
+		on := eff["passwordauthentication"] != "no"
+		if !on {
+			on = userPasswordAuth(ctx, rc, bin, name)
+		}
+		if on {
+			viaPassword = append(viaPassword, name)
+		} else {
+			noLogin = append(noLogin, name)
+		}
+	}
+	if len(viaPassword) > 0 {
+		detail := "password-only accounts (no authorized key): " + strings.Join(viaPassword, ", ")
+		if !known {
+			detail = "accounts without an authorized key (password state unknown, run as root): " + strings.Join(viaPassword, ", ")
+		}
+		out = append(out, Finding{Check: "ssh password-only", Level: LevelWarn, Detail: detail,
+			Hint: "add their keys, then drop them from ssh.password_auth_users / disable password auth"})
+	}
+	if len(noLogin) > 0 && known {
+		out = append(out, Finding{Check: "ssh no-login", Level: LevelWarn,
+			Detail: "accounts with a password but no authorized key cannot log in over SSH: " + strings.Join(noLogin, ", "),
+			Hint:   "add their keys or list them in ssh.password_auth_users"})
+	}
+	return out
+}
+
+// userPasswordAuth reports whether sshd's effective config allows password
+// auth for one user (`sshd -T -C`), so Match blocks are honoured.
+func userPasswordAuth(ctx context.Context, rc *RunContext, bin, user string) bool {
+	res, err := rc.Runner.Query(ctx, bin, "-T", "-C", "user="+user+",host=localhost,addr=127.0.0.1")
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(res.Stdout, "\n") {
+		if k, v, ok := strings.Cut(strings.TrimSpace(line), " "); ok && k == "passwordauthentication" {
+			return v == "yes"
+		}
+	}
+	return false
 }
 
 func doctorFirewall(ctx context.Context, rc *RunContext) Finding {
