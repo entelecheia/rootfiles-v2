@@ -50,7 +50,7 @@ type Module interface {
 - Tests must not touch the host: override package-level path vars and stub commands on PATH (`fakeBin`) instead of calling real systemctl/apt
 - Discovery directory mounts must contain only the configured targets file. Validate real root-owned ancestors and directory contents before launch to prevent sibling-secret exposure.
 - Verify installed firewall state and port allowances before changing SSH ports; unknown state blocks the change.
-- The `user`, `gpu`, `tunnel`, `schedule` and `backup` subcommands act on the config they are given (`--config`, `--profile`, `ROOTFILES_PROFILE`) or on the applied copy `apply` keeps in the state directory when root alone controls it and it matches the recorded run. Without either they use `minimal` with home-base detection; they never re-read a recorded path, re-resolve a recorded profile or take the profile detection suggests. Someone other than root can control a recorded file or its `extends`, and a suggested profile pins values the host never chose.
+- Commands that build their run context through `buildRunContext` or `buildConfigFreeRunContext` (`internal/cli/tunnel.go`) act on the config they are given (`--config`, `--profile`, `ROOTFILES_PROFILE`) or on the applied copy `apply` keeps in the state directory when root alone controls it and it matches the recorded run. Without either they use `minimal` with home-base detection; they never re-read a recorded path, re-resolve a recorded profile or take the profile detection suggests. Someone other than root can control a recorded file or its `extends`, and a suggested profile pins values the host never chose.
 
 ## Fleet and distro boundaries
 
