@@ -59,6 +59,9 @@ func newRollbackCmd() *cobra.Command {
 			if _, err := exec.RestoreBackup(state.BackupsDir(), args[0], false); err != nil {
 				return err
 			}
+			if err := forgetRolledBackRun(args[0]); err != nil {
+				fmt.Fprintf(cmd.ErrOrStderr(), "warning: removing the kept config of the rolled-back run: %v\n", err)
+			}
 			auditf(cmd, "rollback", "backup", args[0])
 			fmt.Fprintln(out, ui.StyleSuccess.Render(ui.MarkOK+" restored backup "+args[0]))
 			fmt.Fprintln(out, "Restart affected services (e.g. ssh, docker) for the restored files to take effect.")
@@ -66,4 +69,16 @@ func newRollbackCmd() *cobra.Command {
 		},
 	}
 	return cmd
+}
+
+// forgetRolledBackRun removes the config copy the last recorded run kept when
+// that run's backup was just restored: its files no longer reflect that
+// config, so subcommands fall back to minimal with home-base detection, which
+// follows the restored HOME=. Restoring an older backup keeps the copy.
+func forgetRolledBackRun(id string) error {
+	last, err := state.Last()
+	if err != nil || last == nil || last.BackupID != id {
+		return err
+	}
+	return state.SaveAppliedConfig(nil)
 }

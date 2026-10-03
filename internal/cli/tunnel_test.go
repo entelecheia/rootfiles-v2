@@ -391,3 +391,27 @@ func TestResolveRunTarget_FallbackAfterConfigApply(t *testing.T) {
 		t.Errorf("config apply without a kept copy: got %q %q, want minimal", p, c)
 	}
 }
+
+// Rolling back the last recorded run drops its kept copy; rolling back an
+// older backup keeps it.
+func TestForgetRolledBackRun(t *testing.T) {
+	t.Setenv("ROOTFILES_STATE_DIR", t.TempDir())
+	if err := state.Record(state.Run{BackupID: "20261004-000002", Success: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.SaveAppliedConfig([]byte("users: {}\n")); err != nil {
+		t.Fatal(err)
+	}
+	if err := forgetRolledBackRun("20261004-000001"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(state.AppliedConfigPath()); err != nil {
+		t.Errorf("rolling back an older backup removed the copy: %v", err)
+	}
+	if err := forgetRolledBackRun("20261004-000002"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(state.AppliedConfigPath()); !os.IsNotExist(err) {
+		t.Errorf("rolling back the last run kept its copy: %v", err)
+	}
+}
