@@ -3,6 +3,7 @@ package module
 import (
 	"log/slog"
 	"os"
+	"syscall"
 	"testing"
 
 	"github.com/entelecheia/rootfiles-v2/internal/config"
@@ -11,8 +12,10 @@ import (
 
 // TestMain lets the test user stand in for root as the owner of custom home
 // bases, which tests create under t.TempDir(): TMPDIR moves to a private
-// directory where the ownership walk starts.
+// directory where the ownership walk starts, and umask 022 keeps the
+// directories tests create from being group-writable.
 func TestMain(m *testing.M) {
+	syscall.Umask(0o022)
 	dir, err := os.MkdirTemp("", "rootfiles-module-test")
 	if err != nil {
 		panic(err)
