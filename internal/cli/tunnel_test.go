@@ -50,7 +50,7 @@ func TestBuildRunContext_DefaultsToMinimalProfile(t *testing.T) {
 		t.Fatal("buildRunContext returned nil")
 	}
 	if rc.Config == nil {
-		t.Fatal("rc.Config is nil — config.Load failure was silently swallowed without producing a non-nil fallback")
+		t.Fatal("rc.Config is nil")
 	}
 	if rc.Runner == nil {
 		t.Error("rc.Runner is nil")
@@ -75,7 +75,6 @@ func TestBuildRunContext_LoadErrorStopsStatefulCommands(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			t.Setenv("ROOTFILES_PROFILE", "")
 			t.Setenv("ROOTFILES_HOME_BASE", tc.homeBase)
 			root := NewRootCmd("test", "abc")
 			root.SetArgs(append(tc.args, "--dry-run"))
