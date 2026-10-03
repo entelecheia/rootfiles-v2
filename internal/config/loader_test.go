@@ -422,32 +422,47 @@ func TestMain(m *testing.M) {
 		panic(err)
 	}
 	useraddDefaultsPath = filepath.Join(dir, "useradd")
-	metaRoot = filepath.Join(dir, "root")
+	hostRoot = filepath.Join(dir, "root")
 	code := m.Run()
 	os.RemoveAll(dir)
 	os.Exit(code)
 }
 
-// isolateHomeDetection points home-base detection at temp files instead of
-// the host's /etc/default/useradd and <base>/.rootfiles directories.
-// managed, when set, is a home base that already holds .rootfiles.
-func isolateHomeDetection(t *testing.T, useradd, managed string) {
+// isolateHomeDetection points home-base detection at a temp host root owned
+// by the test user, who stands in for root. /home, /raid, /data and /nvme
+// exist with mode 0755. managed, when set, is a home base that already
+// holds .rootfiles. It returns the host root.
+func isolateHomeDetection(t *testing.T, useradd, managed string) string {
 	t.Helper()
 	dir := t.TempDir()
-	oldUseradd, oldRoot := useraddDefaultsPath, metaRoot
-	t.Cleanup(func() { useraddDefaultsPath, metaRoot = oldUseradd, oldRoot })
+	oldUseradd, oldRoot, oldUID := useraddDefaultsPath, hostRoot, rootUID
+	t.Cleanup(func() { useraddDefaultsPath, hostRoot, rootUID = oldUseradd, oldRoot, oldUID })
 	useraddDefaultsPath = filepath.Join(dir, "useradd")
-	metaRoot = filepath.Join(dir, "root")
+	hostRoot = filepath.Join(dir, "root")
+	rootUID = uint32(os.Getuid())
+	mkdir := func(rel string) {
+		t.Helper()
+		p := filepath.Join(hostRoot, rel)
+		if err := os.MkdirAll(p, 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(p, 0755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, d := range []string{"/", "/home", "/raid", "/data", "/nvme"} {
+		mkdir(d)
+	}
 	if useradd != "" {
 		if err := os.WriteFile(useraddDefaultsPath, []byte(useradd), 0644); err != nil {
 			t.Fatal(err)
 		}
 	}
 	if managed != "" {
-		if err := os.MkdirAll(filepath.Join(metaRoot, managed, ".rootfiles"), 0755); err != nil {
-			t.Fatal(err)
-		}
+		mkdir(managed)
+		mkdir(filepath.Join(managed, ".rootfiles"))
 	}
+	return hostRoot
 }
 
 func TestDefaultHomeBase(t *testing.T) {
@@ -474,7 +489,9 @@ func TestDefaultHomeBase(t *testing.T) {
 		{"users already managed under /home", mounts(data), "", "/home", "/home"},
 		{"users managed under old gpu-server pin", mounts(), "", "/data/home", "/data/home"},
 		{"dgx os data drive", &SystemInfo{OS: "dgx-os", StorageLayout: []MountPoint{data}}, "", "", "/data/home"},
-		{"rocky keeps /home", &SystemInfo{OS: "rocky", Version: "9.4", StorageLayout: []MountPoint{data}}, "HOME=/home\n", "", "/home"},
+		{"rocky keeps /home", &SystemInfo{OS: "rocky", Version: "9.4", StorageLayout: []MountPoint{data}}, "", "", "/home"},
+		{"useradd HOME cleaned", mounts(data), "HOME=/srv/home/\n", "", "/srv/home"},
+		{"relative useradd HOME ignored", mounts(data), "HOME=home\n", "", "/data/home"},
 		{"unsupported distro keeps /home", &SystemInfo{OS: "debian", StorageLayout: []MountPoint{data}}, "", "", "/home"},
 	}
 	for _, tc := range cases {
@@ -485,6 +502,59 @@ func TestDefaultHomeBase(t *testing.T) {
 			}
 		})
 	}
+}
+
+// AC2b: a base an unprivileged user could control is never chosen.
+func TestDefaultHomeBase_UntrustedBases(t *testing.T) {
+	sys := &SystemInfo{OS: "ubuntu", StorageLayout: []MountPoint{{Device: "/dev/sdb1", MountPath: "/data", FSType: "ext4"}}}
+	cases := []struct {
+		name    string
+		managed string
+		setup   func(t *testing.T, root string)
+	}{
+		{"world-writable mount root", "", func(t *testing.T, root string) {
+			chmod(t, filepath.Join(root, "data"), 0o1777)
+		}},
+		{"pre-created group-writable base", "", func(t *testing.T, root string) {
+			mkdirMode(t, filepath.Join(root, "data", "home"), 0o775)
+		}},
+		{"base is a symlink", "", func(t *testing.T, root string) {
+			target := t.TempDir()
+			if err := os.Symlink(target, filepath.Join(root, "data", "home")); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"not owned by root", "", func(t *testing.T, root string) {
+			rootUID = uint32(os.Getuid()) + 1
+		}},
+		{"managed base in world-writable mount", "/data/home", func(t *testing.T, root string) {
+			chmod(t, filepath.Join(root, "data"), 0o1777)
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := isolateHomeDetection(t, "", tc.managed)
+			tc.setup(t, root)
+			if got := defaultHomeBase(sys); got != "/home" {
+				t.Errorf("defaultHomeBase = %q, want /home", got)
+			}
+		})
+	}
+}
+
+func chmod(t *testing.T, path string, mode os.FileMode) {
+	t.Helper()
+	if err := os.Chmod(path, mode); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func mkdirMode(t *testing.T, path string, mode os.FileMode) {
+	t.Helper()
+	if err := os.Mkdir(path, mode); err != nil {
+		t.Fatal(err)
+	}
+	chmod(t, path, mode)
 }
 
 func TestLoad_HomeBaseDetectionOnlyWhenUnset(t *testing.T) {

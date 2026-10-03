@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
 )
 
 // SystemInfo holds detected system information.
@@ -136,10 +137,11 @@ func detectMemory(info *SystemInfo) {
 	}
 }
 
-// Paths consulted when users.home_base is unset; tests redirect them.
+// Host state consulted when users.home_base is unset; tests redirect it.
 var (
-	useraddDefaultsPath = "/etc/default/useradd"
-	metaRoot            = "/"
+	useraddDefaultsPath        = "/etc/default/useradd"
+	hostRoot                   = "/"
+	rootUID             uint32 = 0
 )
 
 // managedHomeBases are checked for an existing <base>/.rootfiles, which
@@ -165,14 +167,14 @@ func defaultHomeBase(sys *SystemInfo) string {
 		return hb
 	}
 	for _, hb := range managedHomeBases {
-		if _, err := os.Stat(filepath.Join(metaRoot, hb, ".rootfiles")); err == nil {
+		if _, err := os.Lstat(filepath.Join(hostRoot, hb, ".rootfiles")); err == nil && rootOnlyBase(hb) {
 			return hb
 		}
 	}
 	if ResolveDistro(sys).PackageBackend == "apt" {
 		for _, mount := range dataDriveMounts {
 			for _, m := range sys.StorageLayout {
-				if m.MountPath == mount && homeFS[m.FSType] {
+				if m.MountPath == mount && homeFS[m.FSType] && rootOnlyBase(mount+"/home") {
 					return mount + "/home"
 				}
 			}
@@ -181,8 +183,29 @@ func defaultHomeBase(sys *SystemInfo) string {
 	return "/home"
 }
 
+// rootOnlyBase reports whether only root controls base: its parent and, if
+// present, base itself are real directories owned by root that group and
+// others cannot write. Otherwise a user could pre-create the directory new
+// homes go under, for example on a world-writable scratch mount.
+func rootOnlyBase(base string) bool {
+	if !rootOnlyDir(filepath.Join(hostRoot, filepath.Dir(base))) {
+		return false
+	}
+	_, err := os.Lstat(filepath.Join(hostRoot, base))
+	return os.IsNotExist(err) || rootOnlyDir(filepath.Join(hostRoot, base))
+}
+
+func rootOnlyDir(path string) bool {
+	fi, err := os.Lstat(path)
+	if err != nil || !fi.IsDir() || fi.Mode().Perm()&0o022 != 0 {
+		return false
+	}
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	return ok && st.Uid == rootUID
+}
+
 // UseraddHome returns the last uncommented HOME= value of an
-// /etc/default/useradd file, or "".
+// /etc/default/useradd file, cleaned, or "" when it is unset or relative.
 func UseraddHome(data []byte) string {
 	hb := ""
 	for _, line := range strings.Split(string(data), "\n") {
@@ -190,7 +213,10 @@ func UseraddHome(data []byte) string {
 			hb = strings.TrimSpace(v)
 		}
 	}
-	return hb
+	if !filepath.IsAbs(hb) {
+		return ""
+	}
+	return filepath.Clean(hb)
 }
 
 func detectStorage(info *SystemInfo) {
