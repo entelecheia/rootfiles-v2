@@ -213,9 +213,7 @@ func loadRunContext(cmd *cobra.Command, tolerateLoadErr bool) (*module.RunContex
 	if sysErr != nil {
 		logger.Warn("system detection failed, using defaults", "err", sysErr)
 	}
-	// Pick the config as check and status do: flags, env, the last applied
-	// config or profile, then system detection's suggestion.
-	profileName, configPath := resolveRunTarget(cmd, sysInfo, logger)
+	profileName, configPath := resolveRunTarget(cmd, logger)
 	cfg, cfgErr := config.LoadWithHomeBase(profileName, configPath, sysInfo, homeBaseFlag(cmd))
 	if cfgErr != nil {
 		if !tolerateLoadErr {

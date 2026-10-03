@@ -112,14 +112,15 @@ var (
 )
 
 // resolveRunTarget picks the config for the user, gpu, tunnel, schedule and
-// backup subcommands: flags or env first, then what was last applied, then
-// minimal with home-base detection. A config they were not given decides what root
-// does (sudoers, groups, tunnel settings), so after a config-file apply they
-// never re-read that file, which anyone may have changed since; they reuse
-// the resolved copy apply kept in the state directory, and only when root
-// alone controls it and this process can read it. Otherwise they warn and
-// fall back.
-func resolveRunTarget(cmd *cobra.Command, sys *config.SystemInfo, logger *slog.Logger) (profile, configPath string) {
+// backup subcommands: flags or env first; then the resolved copy the last
+// recorded apply kept (from a profile or a config file, with whatever that
+// apply added), reused only when it is that run's config, root alone
+// controls it and this process can read it; otherwise minimal with
+// home-base detection. A config they were not given decides what root does
+// (sudoers, groups, tunnel settings), so they never re-read the file or
+// re-resolve the profile the apply named, and never take the profile
+// detection suggests, which on DGX pins /raid/home and a private network.
+func resolveRunTarget(cmd *cobra.Command, logger *slog.Logger) (profile, configPath string) {
 	profile, _ = cmd.Flags().GetString("profile")
 	configPath, _ = cmd.Flags().GetString("config")
 	if profile == "" {
@@ -128,8 +129,7 @@ func resolveRunTarget(cmd *cobra.Command, sys *config.SystemInfo, logger *slog.L
 	if profile != "" || configPath != "" {
 		return profile, configPath
 	}
-	last, _ := state.Last()
-	if last != nil && last.ConfigPath != "" {
+	if last, _ := state.Last(); last != nil {
 		snap := state.AppliedConfigPath()
 		err := reusableConfig(snap)
 		if err == nil {
@@ -144,16 +144,9 @@ func resolveRunTarget(cmd *cobra.Command, sys *config.SystemInfo, logger *slog.L
 			log = logger.Debug
 		}
 		log("not reusing the last applied config; pass --config or --profile to choose", "config", snap, "err", err)
-		// Fall back as before the copy existed: minimal, with the home base
-		// detected from what apply wrote (HOME= in /etc/default/useradd).
-		// A suggested profile such as dgx would pin another home base.
-		return "minimal", ""
 	}
-	if last != nil && last.Profile != "" {
-		return last.Profile, ""
-	}
-	// Never the suggested profile: on DGX that is dgx, which would pin
-	// /raid/home and a private network the host never chose.
+	// As before the copy existed: the home base is detected from what apply
+	// wrote (HOME= in /etc/default/useradd).
 	return "minimal", ""
 }
 

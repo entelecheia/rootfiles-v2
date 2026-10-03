@@ -2,6 +2,8 @@ package cli
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -195,7 +197,7 @@ func TestBuildRunContext_ConfigSelection(t *testing.T) {
 	if err := state.Record(state.Run{ConfigPath: site, ConfigSHA256: fingerprint, Success: true}); err != nil {
 		t.Fatal(err)
 	}
-	if err := saveAppliedConfig(rc.Config, site); err != nil {
+	if err := saveAppliedConfig(rc.Config); err != nil {
 		t.Fatal(err)
 	}
 	writeFile(t, filepath.Join(dir, "base.yaml"), "extends: minimal\nusers:\n  default_groups: [tampered]\n")
@@ -235,13 +237,29 @@ func TestBuildRunContext_ConfigSelection(t *testing.T) {
 	if rc, err := runContextFor(t, buildRunContext, userAdd); err != nil || rc.Config.Users.DefaultShell == "/bin/sh" {
 		t.Errorf("no kept copy: got %+v, err=%v; want the fallback profile", rc, err)
 	}
-	// A recorded profile is used when no config path was recorded.
-	t.Setenv("ROOTFILES_HOME_BASE", "")
-	if err := state.Record(state.Run{Profile: "dgx", Success: true}); err != nil {
+	// A profile apply is reused through its kept copy, with what the apply
+	// added on top of the profile; the profile name alone is not re-resolved.
+	dgx, err := config.LoadWithHomeBase("dgx", "", &config.SystemInfo{}, "/srv/override")
+	if err != nil {
 		t.Fatal(err)
 	}
-	if rc, err := runContextFor(t, buildRunContext, userAdd); err != nil || rc.Config.Users.HomeBase != "/raid/home" {
-		t.Errorf("recorded profile: got %+v, err=%v; want the dgx home base", rc, err)
+	dgxPrint, _ := dgx.Fingerprint()
+	if err := state.Record(state.Run{Profile: "dgx", ConfigSHA256: dgxPrint, Success: true}); err != nil {
+		t.Fatal(err)
+	}
+	if err := saveAppliedConfig(dgx); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ROOTFILES_HOME_BASE", "")
+	if rc, err := runContextFor(t, buildRunContext, userAdd); err != nil || rc.Config.Users.HomeBase != "/srv/override" {
+		t.Errorf("profile apply with --home-base: got %+v, err=%v; want the kept override", rc, err)
+	}
+	t.Setenv("ROOTFILES_HOME_BASE", "/home")
+	if err := state.SaveAppliedConfig(nil); err != nil {
+		t.Fatal(err)
+	}
+	if rc, err := runContextFor(t, buildRunContext, userAdd); err != nil || rc.Config.Modules.Cloudflared.PrivateNetwork.Enabled {
+		t.Errorf("profile apply without a kept copy: got %+v, err=%v; want minimal, not dgx's private network", rc, err)
 	}
 	// check and status, which read the recorded path, ignore a relative one.
 	other := t.TempDir()
@@ -257,14 +275,14 @@ func TestBuildRunContext_ConfigSelection(t *testing.T) {
 	}
 }
 
-// apply keeps the resolved config of a --config apply, mode 0600, without
-// the inline tunnel token, and a profile apply removes it.
+// apply keeps the resolved config, mode 0600, without the inline tunnel token
+// or extends, and its bytes hash to the config's fingerprint.
 func TestSaveAppliedConfig(t *testing.T) {
 	t.Setenv("ROOTFILES_STATE_DIR", t.TempDir())
 	cfg := &config.Config{Extends: "minimal"}
 	cfg.Users.HomeBase = "/srv/home"
 	cfg.Modules.Cloudflared.TunnelToken = "secret-token"
-	if err := saveAppliedConfig(cfg, "/etc/rootfiles/site.yaml"); err != nil {
+	if err := saveAppliedConfig(cfg); err != nil {
 		t.Fatal(err)
 	}
 	fi, err := os.Stat(state.AppliedConfigPath())
@@ -278,11 +296,11 @@ func TestSaveAppliedConfig(t *testing.T) {
 	if cfg.Modules.Cloudflared.TunnelToken != "secret-token" {
 		t.Error("saveAppliedConfig changed the live config")
 	}
-	if err := saveAppliedConfig(cfg, ""); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Stat(state.AppliedConfigPath()); !os.IsNotExist(err) {
-		t.Errorf("profile apply left the kept copy: %v", err)
+	if print, _ := cfg.Fingerprint(); func() string {
+		sum := sha256.Sum256(data)
+		return hex.EncodeToString(sum[:])
+	}() != print {
+		t.Error("kept copy does not hash to the config's fingerprint")
 	}
 }
 
@@ -363,14 +381,13 @@ func TestResolveRunTarget_FallbackAfterConfigApply(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	dgx := &config.SystemInfo{IsDGX: true}
-	if p, c := resolveRunTarget(sub, dgx, logger); p != "minimal" || c != "" {
-		t.Errorf("never applied: got %q %q, want minimal, not the suggested dgx", p, c)
+	if p, c := resolveRunTarget(sub, logger); p != "minimal" || c != "" {
+		t.Errorf("never applied: got %q %q, want minimal", p, c)
 	}
 	if err := state.Record(state.Run{ConfigPath: "/etc/rootfiles/site.yaml", Success: true}); err != nil {
 		t.Fatal(err)
 	}
-	if p, c := resolveRunTarget(sub, dgx, logger); p != "minimal" || c != "" {
+	if p, c := resolveRunTarget(sub, logger); p != "minimal" || c != "" {
 		t.Errorf("config apply without a kept copy: got %q %q, want minimal", p, c)
 	}
 }
