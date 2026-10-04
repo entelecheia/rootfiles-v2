@@ -52,7 +52,11 @@ func newBackupCmd() *cobra.Command {
 
 			hostname, _ := os.Hostname()
 			dirName := fmt.Sprintf("rootfiles-backup-%s-%s", hostname, time.Now().Format("20060102"))
-			backupDir := filepath.Join(outputBase, dirName)
+			// The ownership walk needs an absolute base under configTrustRoot.
+			backupDir, err := filepath.Abs(filepath.Join(outputBase, dirName))
+			if err != nil {
+				return fmt.Errorf("resolving backup directory: %w", err)
+			}
 
 			// The backup holds private keys and /etc configs, so it stays
 			// root-only: refuse a directory a user other than root could
@@ -63,6 +67,11 @@ func newBackupCmd() *cobra.Command {
 			}
 			if err := rc.Runner.MkdirAll(backupDir, 0700); err != nil {
 				return fmt.Errorf("creating backup directory: %w", err)
+			}
+			// The directory name is deterministic per day; MkdirAll keeps the
+			// mode of one an older run left behind, so tighten it explicitly.
+			if _, err := rc.Runner.Run(ctx, "chmod", "0700", backupDir); err != nil {
+				return fmt.Errorf("securing backup directory: %w", err)
 			}
 			fmt.Printf("Backup directory: %s\n\n", backupDir)
 
@@ -142,6 +151,15 @@ func newBackupCmd() *cobra.Command {
 				fmt.Println("FAIL")
 			} else {
 				fmt.Println("OK")
+			}
+
+			// A same-day re-run overwrites existing files, and overwriting
+			// keeps a file's old mode, so tighten every artifact after the
+			// writes as well.
+			if files, _ := filepath.Glob(filepath.Join(backupDir, "*")); len(files) > 0 {
+				if _, err := rc.Runner.Run(ctx, "chmod", append([]string{"0600"}, files...)...); err != nil {
+					return fmt.Errorf("securing backup files: %w", err)
+				}
 			}
 
 			fmt.Println()

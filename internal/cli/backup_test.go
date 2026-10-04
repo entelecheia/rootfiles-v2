@@ -1,11 +1,13 @@
 package cli
 
 import (
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/entelecheia/rootfiles-v2/internal/config"
 )
@@ -199,5 +201,82 @@ func TestBackupCmd_RefusesUntrustedOutputDir(t *testing.T) {
 	}
 	if entries, _ := os.ReadDir(out); len(entries) != 0 {
 		t.Errorf("refused backup still wrote into %s: %v", out, entries)
+	}
+}
+
+// The directory name is deterministic per day: a re-run into one an older
+// run left at 0755 with 0644 files tightens both to 0700 and 0600.
+func TestBackupCmd_RerunHardensExistingDir(t *testing.T) {
+	backupStubs(t)
+	backupFixtures(t)
+	stubSnapshot(t, "")
+	hostname, _ := os.Hostname()
+	dirName := fmt.Sprintf("rootfiles-backup-%s-%s", hostname, time.Now().Format("20060102"))
+	out := t.TempDir()
+	backupDir := filepath.Join(out, dirName)
+	if err := os.MkdirAll(backupDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"system-info.json", "root-ssh.tar.gz", "stale.txt"} {
+		if err := os.WriteFile(filepath.Join(backupDir, name), []byte("old"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := runBackup(t, "--output", out); err != nil {
+		t.Fatalf("backup: %v", err)
+	}
+	if fi, err := os.Stat(backupDir); err != nil || fi.Mode().Perm() != 0o700 {
+		t.Fatalf("reused backup dir mode = %v, err = %v; want 0700", fi.Mode().Perm(), err)
+	}
+	entries, err := os.ReadDir(backupDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		fi, err := e.Info()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if fi.Mode().Perm() != 0o600 {
+			t.Errorf("%s mode = %o, want 600", e.Name(), fi.Mode().Perm())
+		}
+	}
+}
+
+// A relative --output is resolved to an absolute path before the ownership
+// walk, so it is accepted like any other root-only destination.
+func TestBackupCmd_RelativeOutputDir(t *testing.T) {
+	backupStubs(t)
+	backupFixtures(t)
+	stubSnapshot(t, "")
+	// os.Getwd resolves symlinks (TMPDIR sits under /var -> /private/var on
+	// macOS), so the walk root and the work directory must use the resolved
+	// form; production walks from "/", where this cannot diverge.
+	work, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldRoot := configTrustRoot
+	if resolved, err := filepath.EvalSymlinks(configTrustRoot); err == nil {
+		configTrustRoot = resolved
+		t.Cleanup(func() { configTrustRoot = oldRoot })
+	}
+	oldWd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(work); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chdir(oldWd) })
+	if err := runBackup(t, "--output", "backups"); err != nil {
+		t.Fatalf("backup with relative --output: %v", err)
+	}
+	entries, err := os.ReadDir(filepath.Join(work, "backups"))
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("output entries = %v, err = %v; want the one backup directory", entries, err)
+	}
+	if fi, err := os.Stat(filepath.Join(work, "backups", entries[0].Name())); err != nil || fi.Mode().Perm() != 0o700 {
+		t.Errorf("backup dir mode = %v, err = %v; want 0700", fi.Mode().Perm(), err)
 	}
 }
