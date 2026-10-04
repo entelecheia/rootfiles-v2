@@ -270,7 +270,7 @@ func TestBuildRunContext_ConfigSelection(t *testing.T) {
 	}
 	root := NewRootCmd("test", "abc")
 	sub, _, _ := root.Find([]string{"check"})
-	if _, path := resolveTarget(sub, &config.SystemInfo{}); path != "" {
+	if _, path, _ := resolveTarget(sub, &config.SystemInfo{}); path != "" {
 		t.Errorf("resolveTarget used the relative recorded path %q", path)
 	}
 }

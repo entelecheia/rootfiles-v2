@@ -42,7 +42,7 @@ func runCheck(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return fmt.Errorf("detecting system: %w", err)
 	}
-	profileName, configPath := resolveTarget(cmd, sysInfo)
+	profileName, configPath, fromApplied := resolveTarget(cmd, sysInfo)
 
 	cfg, err := config.LoadWithHomeBase(profileName, configPath, sysInfo, homeBaseFlag(cmd))
 	if err != nil {
@@ -88,6 +88,9 @@ func runCheck(cmd *cobra.Command, _ []string) error {
 
 	out := cmd.OutOrStdout()
 	verbose, _ := cmd.Flags().GetBool("verbose")
+	// Reports name the recorded target when the kept applied copy was
+	// resolved, so the copy path never reaches them.
+	reportProfile, reportPath := reportedTarget(profileName, configPath, fromApplied)
 
 	satisfied := 0
 	for _, m := range modules {
@@ -117,9 +120,9 @@ func runCheck(cmd *cobra.Command, _ []string) error {
 		fmt.Fprintln(out, "# TYPE rootfiles_check_timestamp_seconds gauge")
 		fmt.Fprintf(out, "rootfiles_check_timestamp_seconds %d\n", time.Now().Unix())
 	} else if format == "json" {
-		report := checkReport{Profile: profileName, ConfigPath: configPath, Satisfied: allOK}
+		report := checkReport{Profile: reportProfile, ConfigPath: reportPath, Satisfied: allOK}
 		report.Version = buildVersion
-		report.AppliedConfigSHA256, err = appliedFingerprint(cfg, profileName, configPath)
+		report.AppliedConfigSHA256, err = appliedFingerprint(cfg, reportProfile, reportPath)
 		if err != nil {
 			return err
 		}
@@ -137,7 +140,7 @@ func runCheck(cmd *cobra.Command, _ []string) error {
 			return err
 		}
 	} else {
-		renderCheckText(out, profileName, configPath, modules, results, satisfied, verbose)
+		renderCheckText(out, reportProfile, reportPath, modules, results, satisfied, verbose)
 	}
 
 	if !allOK {

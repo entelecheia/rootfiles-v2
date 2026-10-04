@@ -4,8 +4,11 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
-	"github.com/entelecheia/rootfiles-v2/internal/config"
+	"io"
+	"strings"
 	"testing"
+
+	"github.com/entelecheia/rootfiles-v2/internal/config"
 )
 
 func TestNewCheckCmd_Basics(t *testing.T) {
@@ -55,5 +58,45 @@ func TestCheck_RejectsUnknownOutput(t *testing.T) {
 	root.SetArgs([]string{"check", "--profile", "base", "-o", "yaml"})
 	if err := root.Execute(); err == nil {
 		t.Error("unknown output format should fail")
+	}
+}
+
+// #45 AC1: after a recorded profile apply with --home-base, check reads the
+// kept copy, so it evaluates the override (never the bare profile's
+// /raid/home), claims provenance and reports the recorded target, not the
+// copy path.
+func TestCheck_UsesAppliedCopy(t *testing.T) {
+	fingerprint := recordProfileApply(t, "/home")
+	root := NewRootCmd("test", "abc")
+	var buf bytes.Buffer
+	root.SetOut(&buf)
+	root.SetErr(io.Discard)
+	root.SetArgs([]string{"check", "--module", "users", "-o", "json"})
+	err := root.Execute()
+
+	var report checkReport
+	if jerr := json.Unmarshal(buf.Bytes(), &report); jerr != nil {
+		t.Fatalf("output is not JSON: %v\n%s", jerr, buf.String())
+	}
+	if report.AppliedConfigSHA256 != fingerprint {
+		t.Errorf("applied_config_sha256 = %q, want the recorded %q", report.AppliedConfigSHA256, fingerprint)
+	}
+	if report.Profile != "dgx" || report.ConfigPath != "" {
+		t.Errorf("reported target = %q %q, want the recorded profile dgx", report.Profile, report.ConfigPath)
+	}
+	if len(report.Modules) != 1 || report.Modules[0].Name != "users" {
+		t.Fatalf("modules = %+v, want only users", report.Modules)
+	}
+	for _, c := range report.Modules[0].Changes {
+		if strings.Contains(c.Description, "/raid/home") || strings.Contains(c.Command, "/raid/home") {
+			t.Errorf("change %q ignores the applied --home-base override", c.Description)
+		}
+	}
+	var exitErr *ExitError
+	switch {
+	case report.Satisfied && err != nil:
+		t.Errorf("satisfied check should exit 0, got %v", err)
+	case !report.Satisfied && (!errors.As(err, &exitErr) || exitErr.Code != exitDrift):
+		t.Errorf("drift should exit %d, got %v", exitDrift, err)
 	}
 }

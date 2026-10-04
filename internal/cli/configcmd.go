@@ -27,10 +27,11 @@ func loadForInspection(cmd *cobra.Command) (*config.Config, string, error) {
 	if sys == nil {
 		sys = &config.SystemInfo{}
 	}
-	profile, configPath := resolveTarget(cmd, sys)
-	source := "profile " + profile
-	if configPath != "" {
-		source = "config " + configPath
+	profile, configPath, fromApplied := resolveTarget(cmd, sys)
+	reportProfile, reportPath := reportedTarget(profile, configPath, fromApplied)
+	source := "profile " + reportProfile
+	if reportPath != "" {
+		source = "config " + reportPath
 	}
 	cfg, err := config.LoadWithHomeBase(profile, configPath, sys, homeBaseFlag(cmd))
 	if err != nil {

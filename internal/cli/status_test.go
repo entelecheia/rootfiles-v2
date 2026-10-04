@@ -2,6 +2,8 @@ package cli
 
 import (
 	"bytes"
+	"encoding/json"
+	"io"
 	"strings"
 	"testing"
 
@@ -60,5 +62,42 @@ func TestStatusCmd_RendersAllSections(t *testing.T) {
 		if !strings.Contains(out, section) {
 			t.Errorf("status output missing section %q\n--- got ---\n%s", section, out)
 		}
+	}
+}
+
+// #45 AC1, AC3: after a recorded profile apply with --home-base, status reads
+// the kept copy, so it reports the override home base and claims provenance,
+// while config_path stays the recorded one (empty for a profile apply) and
+// the copy path never leaks into the report.
+func TestStatus_UsesAppliedCopy(t *testing.T) {
+	noHostCommands(t)
+	base := t.TempDir()
+	fingerprint := recordProfileApply(t, base)
+	root := NewRootCmd("test", "abc")
+	var buf bytes.Buffer
+	root.SetOut(&buf)
+	root.SetErr(io.Discard)
+	root.SetArgs([]string{"status", "-o", "json"})
+	if err := root.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	var r statusReport
+	if err := json.Unmarshal(buf.Bytes(), &r); err != nil {
+		t.Fatalf("output is not JSON: %v\n%s", err, buf.String())
+	}
+	if r.Users.HomeBase != base {
+		t.Errorf("home base = %q, want the applied override %q", r.Users.HomeBase, base)
+	}
+	if r.AppliedConfigSHA256 != fingerprint {
+		t.Errorf("applied_config_sha256 = %q, want the recorded %q", r.AppliedConfigSHA256, fingerprint)
+	}
+	if r.Profile != "dgx" || r.ConfigPath != "" {
+		t.Errorf("reported target = %q %q, want the recorded profile dgx", r.Profile, r.ConfigPath)
+	}
+	if r.ConfigErr != "" || r.HomeBaseAmbiguous {
+		t.Errorf("config_error = %q, home_base_ambiguous = %v; want a clean load", r.ConfigErr, r.HomeBaseAmbiguous)
+	}
+	if strings.Contains(buf.String(), "applied-config.yaml") {
+		t.Error("the copy path leaked into the report")
 	}
 }

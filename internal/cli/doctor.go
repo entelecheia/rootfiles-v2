@@ -36,7 +36,8 @@ func runDoctor(cmd *cobra.Command, _ []string) error {
 	if sys == nil {
 		sys = &config.SystemInfo{}
 	}
-	profile, configPath := resolveTarget(cmd, sys)
+	profile, configPath, fromApplied := resolveTarget(cmd, sys)
+	reportProfile, reportPath := reportedTarget(profile, configPath, fromApplied)
 	cfg, loadErr := config.LoadWithHomeBase(profile, configPath, sys, homeBaseFlag(cmd))
 	if loadErr != nil {
 		cfg = config.Fallback(sys, homeBaseFlag(cmd))
@@ -87,7 +88,7 @@ func runDoctor(cmd *cobra.Command, _ []string) error {
 			fmt.Fprintf(out, "rootfiles_doctor_check_ok{check=%q} %d\n", f.Check, boolMetric(f.Level == module.LevelOK || f.Level == module.LevelSkip))
 		}
 	} else if format == "json" {
-		fingerprint, err := appliedFingerprint(cfg, profile, configPath)
+		fingerprint, err := appliedFingerprint(cfg, reportProfile, reportPath)
 		if err != nil {
 			return err
 		}

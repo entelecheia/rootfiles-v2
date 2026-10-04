@@ -9,7 +9,10 @@ import (
 )
 
 // appliedFingerprint only claims provenance for a successful apply of the
-// same target. Legacy state without a stored digest remains unverified.
+// same target. Callers pass the reported target (reportedTarget), which is
+// the recorded profile and path when the verified applied copy was loaded,
+// so the copy's proven run claims provenance too. Legacy state without a
+// stored digest remains unverified.
 func appliedFingerprint(cfg *config.Config, profile, path string) (string, error) {
 	last, err := state.Last()
 	if err != nil {

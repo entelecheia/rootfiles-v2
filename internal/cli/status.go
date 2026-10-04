@@ -50,7 +50,10 @@ func runStatus(cmd *cobra.Command, _ []string) error {
 	}
 
 	last, lastErr := state.Last()
-	active, configPath := resolveTarget(cmd, sysInfo)
+	active, configPath, fromApplied := resolveTarget(cmd, sysInfo)
+	// Reports name the recorded target when the kept applied copy was
+	// resolved, so status JSON keeps config_path as the recorded path.
+	reportProfile, reportPath := reportedTarget(active, configPath, fromApplied)
 
 	cfg, cfgErr := config.LoadWithHomeBase(active, configPath, sysInfo, homeBaseFlag(cmd))
 	if cfgErr != nil {
@@ -71,13 +74,13 @@ func runStatus(cmd *cobra.Command, _ []string) error {
 		module.WarnUntrustedMetadata(rc) // on stderr, so JSON stays clean
 	}
 	if format == "json" {
-		return writeJSON(out, collectStatus(ctx, rc, sysInfo, active, configPath, cfgErr, last))
+		return writeJSON(out, collectStatus(ctx, rc, sysInfo, reportProfile, reportPath, cfgErr, last))
 	}
 
 	ui.WriteHeader(out, "rootfiles status")
 
 	renderSystemSection(out, sysInfo)
-	renderProfileSection(out, active, profileName, sysInfo, configPath, cfgErr)
+	renderProfileSection(out, reportProfile, profileName, sysInfo, reportPath, cfgErr)
 	renderLastApplySection(out, last, lastErr)
 	renderModulesSection(ctx, out, rc)
 	renderGPUSection(out, rc)
