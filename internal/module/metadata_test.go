@@ -125,6 +125,9 @@ func TestBackupUsersLeavesOutUntrustedDatabase(t *testing.T) {
 			parent := t.TempDir()
 			mustChmod(t, parent, 0o755)
 			rc := newDryRunRC(t)
+			// BackupUsers writes through the runner, which a dry run gates.
+			rc.DryRun = false
+			rc.Runner = exec.NewRunner(false, rc.Runner.Logger)
 			rc.Config.Users.HomeBase = tc.setup(t, parent)
 			var warn bytes.Buffer
 			old := warnOut
