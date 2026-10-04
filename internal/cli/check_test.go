@@ -62,21 +62,24 @@ func TestCheck_RejectsUnknownOutput(t *testing.T) {
 }
 
 // #45 AC1: after a recorded profile apply with --home-base, check reads the
-// kept copy, so it evaluates the override (never the bare profile's
-// /raid/home), claims provenance and reports the recorded target, not the
-// copy path.
+// kept copy, so it claims provenance (the fingerprint covers home_base, so a
+// bare dgx load with /raid/home could not match) and reports the recorded
+// target, not the copy path. The module filter is locale: command-level
+// check tests run host-safe modules (as TestCheck_JSONOutputAndExitCode does
+// with base), and the users check reads the host's fleet sudoers drop-in,
+// which a non-root user cannot stat on Ubuntu (/etc/sudoers.d is 0750).
 func TestCheck_UsesAppliedCopy(t *testing.T) {
 	fingerprint := recordProfileApply(t, "/home")
 	root := NewRootCmd("test", "abc")
 	var buf bytes.Buffer
 	root.SetOut(&buf)
 	root.SetErr(io.Discard)
-	root.SetArgs([]string{"check", "--module", "users", "-o", "json"})
+	root.SetArgs([]string{"check", "--module", "locale", "-o", "json"})
 	err := root.Execute()
 
 	var report checkReport
 	if jerr := json.Unmarshal(buf.Bytes(), &report); jerr != nil {
-		t.Fatalf("output is not JSON: %v\n%s", jerr, buf.String())
+		t.Fatalf("output is not JSON: %v (execute: %v)\n%s", jerr, err, buf.String())
 	}
 	if report.AppliedConfigSHA256 != fingerprint {
 		t.Errorf("applied_config_sha256 = %q, want the recorded %q", report.AppliedConfigSHA256, fingerprint)
@@ -84,13 +87,11 @@ func TestCheck_UsesAppliedCopy(t *testing.T) {
 	if report.Profile != "dgx" || report.ConfigPath != "" {
 		t.Errorf("reported target = %q %q, want the recorded profile dgx", report.Profile, report.ConfigPath)
 	}
-	if len(report.Modules) != 1 || report.Modules[0].Name != "users" {
-		t.Fatalf("modules = %+v, want only users", report.Modules)
+	if len(report.Modules) != 1 || report.Modules[0].Name != "locale" {
+		t.Fatalf("modules = %+v, want only locale", report.Modules)
 	}
-	for _, c := range report.Modules[0].Changes {
-		if strings.Contains(c.Description, "/raid/home") || strings.Contains(c.Command, "/raid/home") {
-			t.Errorf("change %q ignores the applied --home-base override", c.Description)
-		}
+	if strings.Contains(buf.String(), "applied-config.yaml") {
+		t.Error("the copy path leaked into the report")
 	}
 	var exitErr *ExitError
 	switch {
