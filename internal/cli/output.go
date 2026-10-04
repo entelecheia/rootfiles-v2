@@ -78,30 +78,58 @@ func writeJSON(w io.Writer, v any) error {
 }
 
 // resolveTarget picks the profile/config to evaluate: explicit flags or
-// env first, then what was last applied on this host, then the profile
-// suggested by system detection.
-func resolveTarget(cmd *cobra.Command, sys *config.SystemInfo) (profile, configPath string) {
+// env first, then the resolved copy the last recorded apply kept, reused
+// only when it is that run's config, root alone controls it and this
+// process can read it (the same checks as resolveRunTarget), then the
+// recorded config path, the recorded profile and the profile suggested by
+// system detection. When the kept copy is selected, applied carries the
+// recorded run it was validated against (nil otherwise); reports name that
+// run's target (reportedTarget) so the copy path never reaches them and a
+// later apply cannot relabel the copy with another run's metadata.
+func resolveTarget(cmd *cobra.Command, sys *config.SystemInfo) (profile, configPath string, applied *state.Run) {
 	profile, _ = cmd.Flags().GetString("profile")
 	configPath, _ = cmd.Flags().GetString("config")
 	if profile == "" {
 		profile = os.Getenv("ROOTFILES_PROFILE")
 	}
 	if profile != "" || configPath != "" {
-		return profile, configPath
+		return profile, configPath, nil
 	}
 	if last, err := state.Last(); err == nil && last != nil {
+		snap := state.AppliedConfigPath()
+		err = reusableConfig(snap)
+		if err == nil {
+			err = sameRun(snap, last.ConfigSHA256)
+		}
+		if err == nil {
+			return "", snap, last
+		}
+		// Fall back silently: a non-root operator running fleet status is
+		// expected to fail the permission check on the root-only copy.
 		// Only an absolute recorded path names the applied file; a relative
 		// one would resolve against the current directory.
 		if filepath.IsAbs(last.ConfigPath) {
 			if _, err := os.Stat(last.ConfigPath); err == nil {
-				return "", last.ConfigPath
+				return "", last.ConfigPath, nil
 			}
 		}
 		if last.Profile != "" {
-			return last.Profile, ""
+			return last.Profile, "", nil
 		}
 	}
-	return sys.SuggestProfile(), ""
+	return sys.SuggestProfile(), "", nil
+}
+
+// reportedTarget is what reports name as the evaluated target: with the
+// kept applied copy in use, the profile and path of the recorded run the
+// copy was validated against, so the copy path never leaks into reports
+// and provenance matches that run, even if a later apply has since
+// recorded another.
+func reportedTarget(profile, configPath string, applied *state.Run) (string, string) {
+	if applied == nil {
+		return profile, configPath
+	}
+	return applied.Profile, applied.ConfigPath
 }
 
 // Where the ownership walk of a reused config starts and the uid that must
