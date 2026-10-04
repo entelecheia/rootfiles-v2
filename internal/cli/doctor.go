@@ -36,8 +36,8 @@ func runDoctor(cmd *cobra.Command, _ []string) error {
 	if sys == nil {
 		sys = &config.SystemInfo{}
 	}
-	profile, configPath, fromApplied := resolveTarget(cmd, sys)
-	reportProfile, reportPath := reportedTarget(profile, configPath, fromApplied)
+	profile, configPath, applied := resolveTarget(cmd, sys)
+	reportProfile, reportPath := reportedTarget(profile, configPath, applied)
 	cfg, loadErr := config.LoadWithHomeBase(profile, configPath, sys, homeBaseFlag(cmd))
 	if loadErr != nil {
 		cfg = config.Fallback(sys, homeBaseFlag(cmd))

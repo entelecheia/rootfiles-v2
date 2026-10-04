@@ -50,10 +50,10 @@ func runStatus(cmd *cobra.Command, _ []string) error {
 	}
 
 	last, lastErr := state.Last()
-	active, configPath, fromApplied := resolveTarget(cmd, sysInfo)
+	active, configPath, applied := resolveTarget(cmd, sysInfo)
 	// Reports name the recorded target when the kept applied copy was
 	// resolved, so status JSON keeps config_path as the recorded path.
-	reportProfile, reportPath := reportedTarget(active, configPath, fromApplied)
+	reportProfile, reportPath := reportedTarget(active, configPath, applied)
 
 	cfg, cfgErr := config.LoadWithHomeBase(active, configPath, sysInfo, homeBaseFlag(cmd))
 	if cfgErr != nil {

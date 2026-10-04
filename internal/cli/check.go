@@ -42,7 +42,7 @@ func runCheck(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return fmt.Errorf("detecting system: %w", err)
 	}
-	profileName, configPath, fromApplied := resolveTarget(cmd, sysInfo)
+	profileName, configPath, applied := resolveTarget(cmd, sysInfo)
 
 	cfg, err := config.LoadWithHomeBase(profileName, configPath, sysInfo, homeBaseFlag(cmd))
 	if err != nil {
@@ -90,7 +90,7 @@ func runCheck(cmd *cobra.Command, _ []string) error {
 	verbose, _ := cmd.Flags().GetBool("verbose")
 	// Reports name the recorded target when the kept applied copy was
 	// resolved, so the copy path never reaches them.
-	reportProfile, reportPath := reportedTarget(profileName, configPath, fromApplied)
+	reportProfile, reportPath := reportedTarget(profileName, configPath, applied)
 
 	satisfied := 0
 	for _, m := range modules {

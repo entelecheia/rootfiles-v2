@@ -27,8 +27,8 @@ func loadForInspection(cmd *cobra.Command) (*config.Config, string, error) {
 	if sys == nil {
 		sys = &config.SystemInfo{}
 	}
-	profile, configPath, fromApplied := resolveTarget(cmd, sys)
-	reportProfile, reportPath := reportedTarget(profile, configPath, fromApplied)
+	profile, configPath, applied := resolveTarget(cmd, sys)
+	reportProfile, reportPath := reportedTarget(profile, configPath, applied)
 	source := "profile " + reportProfile
 	if reportPath != "" {
 		source = "config " + reportPath

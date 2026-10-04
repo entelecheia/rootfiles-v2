@@ -45,11 +45,12 @@ func TestResolveTarget_PrefersAppliedCopy(t *testing.T) {
 	snap := state.AppliedConfigPath()
 
 	// The copy wins over re-resolving the recorded profile.
-	if p, c, fromCopy := resolveTarget(sub, sys); p != "" || c != snap || !fromCopy {
-		t.Errorf("kept copy: got %q %q %v, want the copy", p, c, fromCopy)
+	p, c, applied := resolveTarget(sub, sys)
+	if p != "" || c != snap || applied == nil {
+		t.Errorf("kept copy: got %q %q %v, want the copy", p, c, applied)
 	}
 	// Reports name the recorded profile and path, never the copy path.
-	if p, c := reportedTarget("", snap, true); p != "dgx" || c != "" {
+	if p, c := reportedTarget("", snap, applied); p != "dgx" || c != "" {
 		t.Errorf("reported target: got %q %q, want the recorded profile dgx", p, c)
 	}
 
@@ -61,8 +62,8 @@ func TestResolveTarget_PrefersAppliedCopy(t *testing.T) {
 	if err := explicit.ParseFlags([]string{"--profile", "base"}); err != nil {
 		t.Fatal(err)
 	}
-	if p, c, fromCopy := resolveTarget(explicit, sys); p != "base" || c != "" || fromCopy {
-		t.Errorf("explicit --profile: got %q %q %v, want base", p, c, fromCopy)
+	if p, c, applied := resolveTarget(explicit, sys); p != "base" || c != "" || applied != nil {
+		t.Errorf("explicit --profile: got %q %q %v, want base", p, c, applied)
 	}
 
 	// A copy left by another run is not reused; the recorded profile is, as
@@ -70,8 +71,8 @@ func TestResolveTarget_PrefersAppliedCopy(t *testing.T) {
 	if err := state.Record(state.Run{Profile: "dgx", ConfigSHA256: "another run", Success: true}); err != nil {
 		t.Fatal(err)
 	}
-	if p, c, fromCopy := resolveTarget(sub, sys); p != "dgx" || c != "" || fromCopy {
-		t.Errorf("other run's copy: got %q %q %v, want the recorded profile", p, c, fromCopy)
+	if p, c, applied := resolveTarget(sub, sys); p != "dgx" || c != "" || applied != nil {
+		t.Errorf("other run's copy: got %q %q %v, want the recorded profile", p, c, applied)
 	}
 
 	// A recorded config apply also reuses its copy, and reports its recorded
@@ -81,22 +82,50 @@ func TestResolveTarget_PrefersAppliedCopy(t *testing.T) {
 	if err := state.Record(state.Run{ConfigPath: site, ConfigSHA256: fingerprint, Success: true}); err != nil {
 		t.Fatal(err)
 	}
-	if p, c, fromCopy := resolveTarget(sub, sys); p != "" || c != snap || !fromCopy {
-		t.Errorf("config apply with a kept copy: got %q %q %v, want the copy", p, c, fromCopy)
+	p, c, applied = resolveTarget(sub, sys)
+	if p != "" || c != snap || applied == nil {
+		t.Errorf("config apply with a kept copy: got %q %q %v, want the copy", p, c, applied)
 	}
-	if p, c := reportedTarget("", snap, true); p != "" || c != site {
+	if p, c := reportedTarget("", snap, applied); p != "" || c != site {
 		t.Errorf("reported target: got %q %q, want the recorded path", p, c)
 	}
 	if err := state.SaveAppliedConfig(nil); err != nil {
 		t.Fatal(err)
 	}
-	if p, c, fromCopy := resolveTarget(sub, sys); p != "" || c != site || fromCopy {
-		t.Errorf("no kept copy: got %q %q %v, want the recorded path", p, c, fromCopy)
+	if p, c, applied := resolveTarget(sub, sys); p != "" || c != site || applied != nil {
+		t.Errorf("no kept copy: got %q %q %v, want the recorded path", p, c, applied)
 	}
 
 	// Without any record the detection suggestion is used.
 	t.Setenv("ROOTFILES_STATE_DIR", t.TempDir())
-	if p, c, fromCopy := resolveTarget(sub, sys); p != sys.SuggestProfile() || c != "" || fromCopy {
-		t.Errorf("no record: got %q %q %v, want the suggestion", p, c, fromCopy)
+	if p, c, applied := resolveTarget(sub, sys); p != sys.SuggestProfile() || c != "" || applied != nil {
+		t.Errorf("no record: got %q %q %v, want the suggestion", p, c, applied)
+	}
+}
+
+// Reports label the kept copy with the recorded run it was validated
+// against, even if a later apply has recorded another run since
+// resolveTarget read the state.
+func TestReportedTarget_UsesResolvedSnapshot(t *testing.T) {
+	recordProfileApply(t, "/srv/h")
+	sys := &config.SystemInfo{}
+	sub, _, err := NewRootCmd("test", "abc").Find([]string{"check"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, snap, applied := resolveTarget(sub, sys)
+	if applied == nil {
+		t.Fatal("resolveTarget did not return the recorded run")
+	}
+	// A concurrent apply records another run before the report names its
+	// target; the report still belongs to the run the copy matched.
+	if err := state.Record(state.Run{Profile: "full", ConfigSHA256: "newer run", Success: true}); err != nil {
+		t.Fatal(err)
+	}
+	if p, c := reportedTarget("", snap, applied); p != "dgx" || c != "" {
+		t.Errorf("reported target: got %q %q, want the run the copy was validated against (dgx)", p, c)
+	}
+	if p, c := reportedTarget("base", "", nil); p != "base" || c != "" {
+		t.Errorf("reported target without a copy: got %q %q, want the selected target", p, c)
 	}
 }
