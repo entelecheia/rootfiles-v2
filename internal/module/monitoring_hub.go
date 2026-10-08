@@ -757,14 +757,14 @@ const monitoringHubRules = `groups:
         labels:
           severity: critical
         annotations:
-          summary: 'GPU XID error on {{ if $labels.host }}{{ $labels.host }}{{ else }}unknown host{{ end }}{{ if $labels.GPU }} GPU {{ $labels.GPU }}{{ end }}'
+          summary: 'GPU XID error on {{ if $labels.host }}{{ $labels.host }}{{ else }}unknown host{{ end }}{{ if $labels.gpu }} GPU {{ $labels.gpu }}{{ end }}'
           description: 'DCGM reports XID code {{ $value }}. Check current GPU health and the host driver logs; this metric can retain the last XID after recovery.'
       - alert: GPUUncorrectableECCError
         expr: increase(DCGM_FI_DEV_ECC_DBE_VOL_TOTAL[5m]) > 0
         labels:
           severity: critical
         annotations:
-          summary: 'Uncorrectable GPU ECC error on {{ if $labels.host }}{{ $labels.host }}{{ else }}unknown host{{ end }}{{ if $labels.GPU }} GPU {{ $labels.GPU }}{{ end }}'
+          summary: 'Uncorrectable GPU ECC error on {{ if $labels.host }}{{ $labels.host }}{{ else }}unknown host{{ end }}{{ if $labels.gpu }} GPU {{ $labels.gpu }}{{ end }}'
           description: 'The uncorrectable ECC counter increased during the last five minutes. Check current GPU health and DCGM counters, then follow the hardware vendor remediation guidance.'
       - alert: GPUHighTemperature
         expr: DCGM_FI_DEV_GPU_TEMP > 85
@@ -772,6 +772,6 @@ const monitoringHubRules = `groups:
         labels:
           severity: warning
         annotations:
-          summary: 'GPU temperature high on {{ if $labels.host }}{{ $labels.host }}{{ else }}unknown host{{ end }}{{ if $labels.GPU }} GPU {{ $labels.GPU }}{{ end }}'
+          summary: 'GPU temperature high on {{ if $labels.host }}{{ $labels.host }}{{ else }}unknown host{{ end }}{{ if $labels.gpu }} GPU {{ $labels.gpu }}{{ end }}'
           description: 'GPU temperature is {{ $value }} C, above the configured 85 C alert threshold for 10 minutes. Check cooling, airflow and current device temperature.'
 `

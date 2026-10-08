@@ -658,16 +658,17 @@ receivers:
         # Add the operator-owned chat_id here.
         send_resolved: true
         message: |-
-          {{ range .Alerts.Firing }}[{{ .Labels.severity }}] {{ .Annotations.summary }}
-          {{ .Annotations.description }}
-          {{ if .Annotations.runbook_url }}Runbook: {{ .Annotations.runbook_url }}{{ end }}
-          {{ end }}{{ range .Alerts.Resolved }}[resolved] {{ .Annotations.summary }}
-          {{ .Annotations.description }}
-          {{ if .Annotations.runbook_url }}Runbook: {{ .Annotations.runbook_url }}{{ end }}
-          {{ end }}
+          {{ $firing := .Alerts.Firing }}{{ range $index, $alert := $firing }}{{ if lt $index 4 }}[{{ $alert.Labels.severity }}] {{ printf "%.120s" $alert.Annotations.summary }}
+          {{ printf "%.160s" $alert.Annotations.description }}
+          {{ if and $alert.Annotations.runbook_url (le (len $alert.Annotations.runbook_url) 128) }}Runbook: {{ $alert.Annotations.runbook_url }}{{ end }}
+          {{ end }}{{ end }}{{ if gt (len $firing) 4 }}{{ len (slice $firing 4) }} additional firing alert(s) omitted.{{ if and .ExternalURL (le (len .ExternalURL) 160) }} Details: {{ .ExternalURL }}{{ else }} Details link unavailable; verify Alertmanager externalURL.{{ end }}{{ end }}
+          {{ $resolved := .Alerts.Resolved }}{{ range $index, $alert := $resolved }}{{ if lt $index 4 }}[resolved] {{ printf "%.120s" $alert.Annotations.summary }}
+          {{ printf "%.160s" $alert.Annotations.description }}
+          {{ if and $alert.Annotations.runbook_url (le (len $alert.Annotations.runbook_url) 128) }}Runbook: {{ $alert.Annotations.runbook_url }}{{ end }}
+          {{ end }}{{ end }}{{ if gt (len $resolved) 4 }}{{ len (slice $resolved 4) }} additional resolved alert(s) omitted.{{ if and .ExternalURL (le (len .ExternalURL) 160) }} Details: {{ .ExternalURL }}{{ else }} Details link unavailable; verify Alertmanager externalURL.{{ end }}{{ end }}
 ```
 
-The managed rules provide a concise summary and diagnostic description. The example keeps firing and resolved alerts visibly distinct and prints `runbook_url` only when an operator-supplied rule provides it. Add only a URL reachable by the intended recipients; do not use Prometheus's generated `GeneratorURL`, which can point at the hub's container-only service name. The generated rules do not invent a host-derived detail URL. Rootfiles continues to leave the default receiver inert, and the deployment owner controls notification grouping, repeat intervals, acknowledgement and maintenance policy in this complete receiver file.
+The managed rules provide a concise summary and diagnostic description. The example keeps firing and resolved alerts visibly distinct, renders at most four of each, limits summary and description lengths, and states how many alerts were omitted. It includes Alertmanager's `ExternalURL` in an overflow notice only when present and within the template's length bound; configure and verify that URL is reachable by recipients before using the template. It prints `runbook_url` only when an operator-supplied rule provides one of usable length. Do not use Prometheus's generated `GeneratorURL`, which can point at the hub's container-only service name, or derive a URL from a host label. Rootfiles does not configure receiver URLs, and its default receiver remains inert. The deployment owner controls notification grouping, repeat intervals, acknowledgement and maintenance policy in this complete receiver file.
 
 Configure exporter hosts with the addresses reachable from the hub and the appropriate node/DCGM exporters. Inventory group labels are published as `group_<name>=true`, alongside `host` and `exporter=node|dcgm`. Prometheus also adds `instance=<address>:<port>`; use the inventory `host` label to identify a machine because the DCGM container's own `Hostname` label may be its container hostname.
 

@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -142,7 +143,7 @@ func TestMonitoringHubRulesAlertOnDoctorFailuresAndGPUHealth(t *testing.T) {
 			t.Fatal(err)
 		}
 		var output strings.Builder
-		err = parsedTemplate.Execute(&output, map[string]any{"Labels": map[string]string{"host": "gpu-a", "GPU": "0"}, "Value": "42"})
+		err = parsedTemplate.Execute(&output, map[string]any{"Labels": map[string]string{"host": "gpu-a", "gpu": "0"}, "Value": "42"})
 		if err != nil {
 			t.Fatalf("render %s summary: %v", alert, err)
 		}
@@ -150,9 +151,42 @@ func TestMonitoringHubRulesAlertOnDoctorFailuresAndGPUHealth(t *testing.T) {
 			t.Errorf("%s summary omits host/GPU identity: %q", alert, output.String())
 		}
 		output.Reset()
+		err = parsedTemplate.Execute(&output, map[string]any{"Labels": map[string]string{"host": "gpu-a"}, "Value": "42"})
+		if err != nil || strings.Contains(output.String(), " GPU ") {
+			t.Errorf("%s summary should omit a missing GPU label: %q, error: %v", alert, output.String(), err)
+		}
+		output.Reset()
 		err = parsedTemplate.Execute(&output, map[string]any{"Labels": map[string]string{}, "Value": "42"})
 		if err != nil || !strings.Contains(output.String(), "unknown host") {
 			t.Errorf("%s summary is unsafe for missing labels: %q, error: %v", alert, output.String(), err)
+		}
+	}
+	xidRule := func() (summary, description string) {
+		for _, group := range parsed.Groups {
+			for _, rule := range group.Rules {
+				if rule.Alert == "GPUXIDError" {
+					return rule.Annotations["summary"], rule.Annotations["description"]
+				}
+			}
+		}
+		return "", ""
+	}
+	xidSummary, xidDescription := xidRule()
+	for _, gpuID := range []string{"0", "1"} {
+		labels := map[string]string{"host": "gpu-a", "gpu": gpuID, "Hostname": "dcgm-container", "modelName": "NVIDIA H100"}
+		var rendered strings.Builder
+		for _, annotation := range []string{xidSummary, xidDescription} {
+			parsedTemplate, err := template.New("xid").Parse("{{ $labels := .Labels }}{{ $value := .Value }}" + annotation)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := parsedTemplate.Execute(&rendered, map[string]any{"Labels": labels, "Value": "79"}); err != nil {
+				t.Fatalf("render XID annotation for GPU %s: %v", gpuID, err)
+			}
+			rendered.WriteByte('\n')
+		}
+		if !strings.Contains(rendered.String(), "GPU "+gpuID) || !strings.Contains(rendered.String(), "XID code 79") {
+			t.Errorf("XID notification omits distinct GPU identity or code for GPU %s: %q", gpuID, rendered.String())
 		}
 	}
 }
@@ -201,6 +235,58 @@ func TestMonitoringHubREADMEReceiverTemplateShowsFiringResolvedAndOptionalRunboo
 	if strings.Contains(receiver.Message, "GeneratorURL") {
 		t.Fatal("README Telegram template must not expose the container-local Prometheus generator URL")
 	}
+	type alert struct {
+		Labels       map[string]string
+		Annotations  map[string]string
+		GeneratorURL string
+	}
+	type notification struct {
+		Alerts struct {
+			Firing   []alert
+			Resolved []alert
+		}
+		ExternalURL string
+	}
+	data := notification{ExternalURL: "https://alerts.example.test"}
+	for i := 0; i < 8; i++ {
+		data.Alerts.Firing = append(data.Alerts.Firing, alert{
+			Labels: map[string]string{"severity": "critical"},
+			Annotations: map[string]string{
+				"summary":     "GPU " + strconv.Itoa(i) + " XID error",
+				"description": strings.Repeat("Inspect current device health. ", 400),
+				"runbook_url": "https://runbooks.example.test/xid",
+			},
+			GeneratorURL: "http://prometheus:9090/graph?g0.expr=fixture",
+		})
+	}
+	for i := 0; i < 7; i++ {
+		data.Alerts.Resolved = append(data.Alerts.Resolved, alert{
+			Annotations: map[string]string{"summary": "GPU " + strconv.Itoa(i) + " recovered", "description": "Condition cleared."},
+		})
+	}
+	parsedTemplate, err := template.New("telegram-message").Parse(receiver.Message)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rendered strings.Builder
+	if err := parsedTemplate.Execute(&rendered, data); err != nil {
+		t.Fatalf("render synthetic grouped notification: %v", err)
+	}
+	message := rendered.String()
+	for _, expected := range []string{"GPU 0 XID error", "GPU 1 XID error", "Runbook: https://runbooks.example.test/xid", "4 additional firing alert(s) omitted", "3 additional resolved alert(s) omitted", data.ExternalURL} {
+		if !strings.Contains(message, expected) {
+			t.Errorf("grouped notification omits %q: %q", expected, message)
+		}
+	}
+	if strings.Contains(message, "GPU 4 XID error") {
+		t.Fatal("notification rendered an alert beyond its four-alert limit")
+	}
+	if len(message) > 4096 {
+		t.Errorf("grouped notification is %d bytes, exceeding Telegram's 4096-byte limit", len(message))
+	}
+	if strings.Contains(message, "prometheus:9090") {
+		t.Fatal("grouped notification rendered a container-local generator URL")
+	}
 }
 
 func TestMonitoringHubPromtoolReportsOnlyHostMissingScheduledTimestamp(t *testing.T) {
@@ -227,6 +313,10 @@ func TestMonitoringHubPromtoolReportsOnlyHostMissingScheduledTimestamp(t *testin
 		"exp_alerts": []any{map[string]any{
 			"exp_labels": map[string]string{
 				"exporter": "node", "host": "gpu02", "instance": "10.0.0.12:9100", "job": "fleet", "severity": "warning",
+			},
+			"exp_annotations": map[string]string{
+				"summary":     "Rootfiles report stale on gpu02",
+				"description": "The latest scheduled rootfiles check report is older than 48 hours or has no timestamp. Confirm the schedule and inspect the latest check result on the host.",
 			},
 		}},
 	}}
