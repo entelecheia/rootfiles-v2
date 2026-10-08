@@ -655,8 +655,19 @@ receivers:
   - name: operations
     telegram_configs:
       - bot_token_file: /run/secrets/telegram-bot-token
-        chat_id: 123456789
+        # Add the operator-owned chat_id here.
+        send_resolved: true
+        message: |-
+          {{ range .Alerts.Firing }}[{{ .Labels.severity }}] {{ .Annotations.summary }}
+          {{ .Annotations.description }}
+          {{ if .Annotations.runbook_url }}Runbook: {{ .Annotations.runbook_url }}{{ end }}
+          {{ end }}{{ range .Alerts.Resolved }}[resolved] {{ .Annotations.summary }}
+          {{ .Annotations.description }}
+          {{ if .Annotations.runbook_url }}Runbook: {{ .Annotations.runbook_url }}{{ end }}
+          {{ end }}
 ```
+
+The managed rules provide a concise summary and diagnostic description. The example keeps firing and resolved alerts visibly distinct and prints `runbook_url` only when an operator-supplied rule provides it. Add only a URL reachable by the intended recipients; do not use Prometheus's generated `GeneratorURL`, which can point at the hub's container-only service name. The generated rules do not invent a host-derived detail URL. Rootfiles continues to leave the default receiver inert, and the deployment owner controls notification grouping, repeat intervals, acknowledgement and maintenance policy in this complete receiver file.
 
 Configure exporter hosts with the addresses reachable from the hub and the appropriate node/DCGM exporters. Inventory group labels are published as `group_<name>=true`, alongside `host` and `exporter=node|dcgm`. Prometheus also adds `instance=<address>:<port>`; use the inventory `host` label to identify a machine because the DCGM container's own `Hostname` label may be its container hostname.
 

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"text/template"
 
 	"github.com/entelecheia/rootfiles-v2/internal/config"
 	"gopkg.in/yaml.v3"
@@ -70,26 +71,135 @@ func TestMonitoringHubRenderHonorsConfiguredListenAddress(t *testing.T) {
 }
 
 func TestMonitoringHubRulesAlertOnDoctorFailuresAndGPUHealth(t *testing.T) {
-	var parsed any
+	var parsed struct {
+		Groups []struct {
+			Rules []struct {
+				Alert       string            `yaml:"alert"`
+				Expr        string            `yaml:"expr"`
+				For         string            `yaml:"for"`
+				Labels      map[string]string `yaml:"labels"`
+				Annotations map[string]string `yaml:"annotations"`
+			} `yaml:"rules"`
+		} `yaml:"groups"`
+	}
 	if err := yaml.Unmarshal([]byte(monitoringHubRules), &parsed); err != nil {
 		t.Fatalf("parse alert rules YAML: %v", err)
 	}
-	for _, expected := range []string{
-		"rootfiles_doctor_findings{level=\"fail\"} > 0",
-		"rootfiles_module_satisfied == 0",
-		"rootfiles_check_timestamp_seconds > 172800",
-		"unless on(host) rootfiles_check_timestamp_seconds",
-		"up{job=\"fleet\",exporter=\"node\"} == 1",
-		"DCGM_FI_DEV_XID_ERRORS > 0",
-		"increase(DCGM_FI_DEV_ECC_DBE_VOL_TOTAL[5m]) > 0",
-		"DCGM_FI_DEV_GPU_TEMP > 85",
-	} {
-		if !strings.Contains(monitoringHubRules, expected) {
-			t.Errorf("alert rules missing %q", expected)
+	type expectedRule struct{ expr, hold, severity string }
+	want := map[string]expectedRule{
+		"FleetTargetDown":             {`up{job="fleet"} == 0`, "5m", "critical"},
+		"FleetFilesystemNearlyFull":   {`(node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs"} - node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs"}) / node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs"} > 0.9`, "10m", "warning"},
+		"RootfilesConfigurationDrift": {"rootfiles_module_satisfied == 0", "5m", "warning"},
+		"RootfilesDoctorFailure":      {`rootfiles_doctor_findings{level="fail"} > 0`, "5m", "critical"},
+		"RootfilesReportStale":        {`(time() - rootfiles_check_timestamp_seconds > 172800) or ((up{job="fleet",exporter="node"} == 1) unless on(host) rootfiles_check_timestamp_seconds)`, "15m", "warning"},
+		"GPUXIDError":                 {"DCGM_FI_DEV_XID_ERRORS > 0", "", "critical"},
+		"GPUUncorrectableECCError":    {"increase(DCGM_FI_DEV_ECC_DBE_VOL_TOTAL[5m]) > 0", "", "critical"},
+		"GPUHighTemperature":          {"DCGM_FI_DEV_GPU_TEMP > 85", "10m", "warning"},
+	}
+	seen := make(map[string]bool, len(want))
+	for _, group := range parsed.Groups {
+		for _, rule := range group.Rules {
+			expected, ok := want[rule.Alert]
+			if !ok {
+				t.Errorf("unexpected alert rule %q", rule.Alert)
+				continue
+			}
+			seen[rule.Alert] = true
+			if rule.Expr != expected.expr || rule.For != expected.hold || rule.Labels["severity"] != expected.severity {
+				t.Errorf("%s changed its expression/hold/severity: expr=%q for=%q severity=%q", rule.Alert, rule.Expr, rule.For, rule.Labels["severity"])
+			}
+			for _, key := range []string{"summary", "description"} {
+				content := rule.Annotations[key]
+				if strings.TrimSpace(content) == "" {
+					t.Errorf("%s has no %s annotation", rule.Alert, key)
+					continue
+				}
+				if _, err := template.New(rule.Alert + "." + key).Parse("{{ $labels := .Labels }}{{ $value := .Value }}" + content); err != nil {
+					t.Errorf("%s %s annotation template is invalid: %v", rule.Alert, key, err)
+				}
+			}
+		}
+	}
+	for alert := range want {
+		if !seen[alert] {
+			t.Errorf("missing alert rule %q", alert)
 		}
 	}
 	if strings.Contains(monitoringHubRules, "rootfiles_doctor_check_ok") {
 		t.Fatal("doctor alert uses warning-inclusive check metric")
+	}
+	for _, alert := range []string{"GPUXIDError", "GPUUncorrectableECCError", "GPUHighTemperature"} {
+		var summary string
+		for _, group := range parsed.Groups {
+			for _, rule := range group.Rules {
+				if rule.Alert == alert {
+					summary = rule.Annotations["summary"]
+				}
+			}
+		}
+		parsedTemplate, err := template.New(alert).Parse("{{ $labels := .Labels }}{{ $value := .Value }}" + summary)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var output strings.Builder
+		err = parsedTemplate.Execute(&output, map[string]any{"Labels": map[string]string{"host": "gpu-a", "GPU": "0"}, "Value": "42"})
+		if err != nil {
+			t.Fatalf("render %s summary: %v", alert, err)
+		}
+		if !strings.Contains(output.String(), "gpu-a") || !strings.Contains(output.String(), "GPU 0") {
+			t.Errorf("%s summary omits host/GPU identity: %q", alert, output.String())
+		}
+		output.Reset()
+		err = parsedTemplate.Execute(&output, map[string]any{"Labels": map[string]string{}, "Value": "42"})
+		if err != nil || !strings.Contains(output.String(), "unknown host") {
+			t.Errorf("%s summary is unsafe for missing labels: %q, error: %v", alert, output.String(), err)
+		}
+	}
+}
+
+func TestMonitoringHubREADMEReceiverTemplateShowsFiringResolvedAndOptionalRunbook(t *testing.T) {
+	readme, err := os.ReadFile("../../README.md")
+	if err != nil {
+		t.Fatalf("read monitoring hub README example: %v", err)
+	}
+	const start = "route:\n  receiver: operations"
+	startAt := strings.Index(string(readme), start)
+	if startAt < 0 {
+		t.Fatal("README monitoring receiver example is missing")
+	}
+	endAt := strings.Index(string(readme[startAt:]), "\n```")
+	if endAt < 0 {
+		t.Fatal("README monitoring receiver example is not closed")
+	}
+	example := []byte(string(readme[startAt : startAt+endAt]))
+	var config struct {
+		Receivers []struct {
+			Telegram []struct {
+				SendResolved bool   `yaml:"send_resolved"`
+				Message      string `yaml:"message"`
+			} `yaml:"telegram_configs"`
+		} `yaml:"receivers"`
+	}
+	if err := yaml.Unmarshal(example, &config); err != nil {
+		t.Fatalf("parse README monitoring receiver example: %v", err)
+	}
+	if len(config.Receivers) != 1 || len(config.Receivers[0].Telegram) != 1 {
+		t.Fatal("README example must define one Telegram receiver")
+	}
+	receiver := config.Receivers[0].Telegram[0]
+	if !receiver.SendResolved {
+		t.Fatal("README receiver example does not request resolved notifications")
+	}
+	if _, err := template.New("telegram-message").Parse(receiver.Message); err != nil {
+		t.Fatalf("parse README Telegram message template: %v", err)
+	}
+	for _, expected := range []string{".Alerts.Firing", ".Alerts.Resolved", ".Annotations.summary", ".Annotations.description", ".Annotations.runbook_url"} {
+		if !strings.Contains(receiver.Message, expected) {
+			t.Errorf("README Telegram template does not render %q", expected)
+		}
+	}
+	if strings.Contains(receiver.Message, "GeneratorURL") {
+		t.Fatal("README Telegram template must not expose the container-local Prometheus generator URL")
 	}
 }
 

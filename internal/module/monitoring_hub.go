@@ -717,37 +717,61 @@ const monitoringHubRules = `groups:
         for: 5m
         labels:
           severity: critical
+        annotations:
+          summary: 'Exporter unavailable on {{ if $labels.host }}{{ $labels.host }}{{ else }}unknown host{{ end }}'
+          description: 'The fleet scrape target is down. Check exporter service health and reachability from the monitoring hub.'
       - alert: FleetFilesystemNearlyFull
         expr: (node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs"} - node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs"}) / node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs"} > 0.9
         for: 10m
         labels:
           severity: warning
+        annotations:
+          summary: 'Filesystem nearly full on {{ if $labels.host }}{{ $labels.host }}{{ else }}unknown host{{ end }}'
+          description: 'Filesystem {{ if $labels.mountpoint }}{{ $labels.mountpoint }}{{ else }}with an unknown mount point{{ end }} is above 90% use. Check disk usage and free or expand space before writes fail.'
       - alert: RootfilesConfigurationDrift
         expr: rootfiles_module_satisfied == 0
         for: 5m
         labels:
           severity: warning
+        annotations:
+          summary: 'Rootfiles configuration drift on {{ if $labels.host }}{{ $labels.host }}{{ else }}unknown host{{ end }}'
+          description: 'At least one managed module is not satisfied. Run a read-only rootfiles check on the host and review the reported changes before applying them.'
       - alert: RootfilesDoctorFailure
         expr: rootfiles_doctor_findings{level="fail"} > 0
         for: 5m
         labels:
           severity: critical
+        annotations:
+          summary: 'Rootfiles doctor failure on {{ if $labels.host }}{{ $labels.host }}{{ else }}unknown host{{ end }}'
+          description: 'The host reports {{ $value }} doctor finding(s) at level {{ if $labels.level }}{{ $labels.level }}{{ else }}fail{{ end }}. Run rootfiles doctor and inspect each finding before remediation.'
       - alert: RootfilesReportStale
         expr: (time() - rootfiles_check_timestamp_seconds > 172800) or ((up{job="fleet",exporter="node"} == 1) unless on(host) rootfiles_check_timestamp_seconds)
         for: 15m
         labels:
           severity: warning
+        annotations:
+          summary: 'Rootfiles report stale on {{ if $labels.host }}{{ $labels.host }}{{ else }}unknown host{{ end }}'
+          description: 'The latest scheduled rootfiles check report is older than 48 hours or has no timestamp. Confirm the schedule and inspect the latest check result on the host.'
       - alert: GPUXIDError
         expr: DCGM_FI_DEV_XID_ERRORS > 0
         labels:
           severity: critical
+        annotations:
+          summary: 'GPU XID error on {{ if $labels.host }}{{ $labels.host }}{{ else }}unknown host{{ end }}{{ if $labels.GPU }} GPU {{ $labels.GPU }}{{ end }}'
+          description: 'DCGM reports XID code {{ $value }}. Check current GPU health and the host driver logs; this metric can retain the last XID after recovery.'
       - alert: GPUUncorrectableECCError
         expr: increase(DCGM_FI_DEV_ECC_DBE_VOL_TOTAL[5m]) > 0
         labels:
           severity: critical
+        annotations:
+          summary: 'Uncorrectable GPU ECC error on {{ if $labels.host }}{{ $labels.host }}{{ else }}unknown host{{ end }}{{ if $labels.GPU }} GPU {{ $labels.GPU }}{{ end }}'
+          description: 'The uncorrectable ECC counter increased during the last five minutes. Check current GPU health and DCGM counters, then follow the hardware vendor remediation guidance.'
       - alert: GPUHighTemperature
         expr: DCGM_FI_DEV_GPU_TEMP > 85
         for: 10m
         labels:
           severity: warning
+        annotations:
+          summary: 'GPU temperature high on {{ if $labels.host }}{{ $labels.host }}{{ else }}unknown host{{ end }}{{ if $labels.GPU }} GPU {{ $labels.GPU }}{{ end }}'
+          description: 'GPU temperature is {{ $value }} C, above the configured 85 C alert threshold for 10 minutes. Check cooling, airflow and current device temperature.'
 `
