@@ -657,6 +657,7 @@ receivers:
       - bot_token_file: /run/secrets/telegram-bot-token
         # Add the operator-owned chat_id here.
         send_resolved: true
+        parse_mode: ""
         message: |-
           {{ $firing := .Alerts.Firing }}{{ range $index, $alert := $firing }}{{ if lt $index 4 }}[{{ $alert.Labels.severity }}] {{ printf "%.120s" $alert.Annotations.summary }}
           {{ printf "%.160s" $alert.Annotations.description }}

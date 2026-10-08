@@ -209,8 +209,9 @@ func TestMonitoringHubREADMEReceiverTemplateShowsFiringResolvedAndOptionalRunboo
 	var config struct {
 		Receivers []struct {
 			Telegram []struct {
-				SendResolved bool   `yaml:"send_resolved"`
-				Message      string `yaml:"message"`
+				SendResolved bool    `yaml:"send_resolved"`
+				ParseMode    *string `yaml:"parse_mode"`
+				Message      string  `yaml:"message"`
 			} `yaml:"telegram_configs"`
 		} `yaml:"receivers"`
 	}
@@ -223,6 +224,9 @@ func TestMonitoringHubREADMEReceiverTemplateShowsFiringResolvedAndOptionalRunboo
 	receiver := config.Receivers[0].Telegram[0]
 	if !receiver.SendResolved {
 		t.Fatal("README receiver example does not request resolved notifications")
+	}
+	if receiver.ParseMode == nil || *receiver.ParseMode != "" {
+		t.Fatal("README Telegram receiver must explicitly select plain-text parse_mode")
 	}
 	if _, err := template.New("telegram-message").Parse(receiver.Message); err != nil {
 		t.Fatalf("parse README Telegram message template: %v", err)
@@ -253,7 +257,7 @@ func TestMonitoringHubREADMEReceiverTemplateShowsFiringResolvedAndOptionalRunboo
 			Labels: map[string]string{"severity": "critical"},
 			Annotations: map[string]string{
 				"summary":     "GPU " + strconv.Itoa(i) + " XID error",
-				"description": strings.Repeat("Inspect current device health. ", 400),
+				"description": "Inspect <device & check \"driver\"> " + strings.Repeat("Inspect current device health. ", 400),
 				"runbook_url": "https://runbooks.example.test/xid",
 			},
 			GeneratorURL: "http://prometheus:9090/graph?g0.expr=fixture",
@@ -277,6 +281,9 @@ func TestMonitoringHubREADMEReceiverTemplateShowsFiringResolvedAndOptionalRunboo
 		if !strings.Contains(message, expected) {
 			t.Errorf("grouped notification omits %q: %q", expected, message)
 		}
+	}
+	if !strings.Contains(message, "<device & check \"driver\">") || strings.Contains(message, "&lt;") || strings.Contains(message, "&amp;") {
+		t.Errorf("plain-text Telegram body escaped HTML-significant annotation text: %q", message)
 	}
 	if strings.Contains(message, "GPU 4 XID error") {
 		t.Fatal("notification rendered an alert beyond its four-alert limit")
