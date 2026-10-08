@@ -514,6 +514,9 @@ func validateMonitoringHubConfig(h config.MonitoringHubConfig) error {
 	if h.Retention == "" || strings.ContainsAny(h.Retention, " \t\r\n") {
 		return fmt.Errorf("monitoring hub retention must be a Prometheus duration")
 	}
+	if h.AlertmanagerRetention != "" && !config.IsValidPrometheusDuration(h.AlertmanagerRetention) {
+		return fmt.Errorf("monitoring hub alertmanager_retention must be a positive Prometheus duration")
+	}
 	if strings.ContainsAny(h.ListenAddress, "\r\n") {
 		return fmt.Errorf("monitoring hub listen_address is invalid")
 	}
@@ -597,6 +600,10 @@ func monitoringHubDataDirs(root string) []string {
 
 func renderMonitoringHubFiles(h config.MonitoringHubConfig, passwordFile string) (map[string][]byte, error) {
 	alertConfig := monitoringHubDefaultAlertConfig
+	alertmanagerArgs := []string{"--config.file=/etc/alertmanager/alertmanager.yml", "--storage.path=/alertmanager"}
+	if h.AlertmanagerRetention != "" {
+		alertmanagerArgs = append(alertmanagerArgs, "--data.retention="+h.AlertmanagerRetention)
+	}
 	prometheus := map[string]any{
 		"global":     map[string]any{"scrape_interval": "30s", "evaluation_interval": "30s"},
 		"rule_files": []string{"/etc/prometheus/alert-rules.yaml"},
@@ -609,7 +616,7 @@ func renderMonitoringHubFiles(h config.MonitoringHubConfig, passwordFile string)
 	compose := map[string]any{
 		"services": map[string]any{
 			"prometheus":   monitoringHubService(h, h.PrometheusImage, []string{"--config.file=/etc/prometheus/prometheus.yaml", "--storage.tsdb.path=/prometheus", "--storage.tsdb.retention.time=" + h.Retention, "--web.enable-lifecycle"}, h.PrometheusPort, 9090, []monitoringHubMount{bindMount(filepath.Join(monitoringHubConfigDir, "prometheus.yaml"), "/etc/prometheus/prometheus.yaml", true), bindMount(monitoringHubAlertRules, "/etc/prometheus/alert-rules.yaml", true), bindMount(filepath.Dir(h.TargetsFile), "/etc/prometheus/discovery", true), bindMount(filepath.Join(h.DataDir, "prometheus"), "/prometheus", false)}, false),
-			"alertmanager": monitoringHubService(h, h.AlertmanagerImage, []string{"--config.file=/etc/alertmanager/alertmanager.yml", "--storage.path=/alertmanager"}, h.AlertmanagerPort, 9093, monitoringAlertmanagerVolumes(h), false),
+			"alertmanager": monitoringHubService(h, h.AlertmanagerImage, alertmanagerArgs, h.AlertmanagerPort, 9093, monitoringAlertmanagerVolumes(h), false),
 			"grafana":      monitoringHubService(h, h.GrafanaImage, nil, h.GrafanaPort, 3000, []monitoringHubMount{bindMount(filepath.Join(h.DataDir, "grafana"), "/var/lib/grafana", false), bindMount(filepath.Join(monitoringHubConfigDir, "grafana-datasource.yaml"), "/etc/grafana/provisioning/datasources/rootfiles.yaml", true), bindMount(passwordFile, "/run/secrets/grafana_admin_password", true)}, true),
 		},
 	}

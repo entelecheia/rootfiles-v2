@@ -1,9 +1,35 @@
 package config
 
 import (
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
+
+func TestLoadSiteValidatesOptionalAlertmanagerRetention(t *testing.T) {
+	base := "extends: base\nmodules:\n  monitoring:\n    hub:\n      enabled: true\n      alertmanager_retention: %s\nusers:\n  home_base: /home\n"
+	valid := filepath.Join(t.TempDir(), "site.yaml")
+	if err := os.WriteFile(valid, []byte(strings.Replace(base, "%s", "36h", 1)), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadSite(valid)
+	if err != nil {
+		t.Fatalf("LoadSite with a positive Alertmanager retention: %v", err)
+	}
+	if got := cfg.Modules.Monitoring.Hub.AlertmanagerRetention; got != "36h" {
+		t.Fatalf("alertmanager_retention = %q, want 36h", got)
+	}
+	for _, value := range []string{"0s", "-1h", "invalid", "1h30m", "999999999999999999999h"} {
+		invalid := filepath.Join(t.TempDir(), "site.yaml")
+		if err := os.WriteFile(invalid, []byte(strings.Replace(base, "%s", value, 1)), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := LoadSite(invalid); err == nil || !strings.Contains(err.Error(), "alertmanager_retention") {
+			t.Errorf("LoadSite with invalid Alertmanager retention %q returned %v", value, err)
+		}
+	}
+}
 
 func TestValidateMonitoringDiscoveryPathAllowsDefaultAndDedicatedDirs(t *testing.T) {
 	defaultHub := (MonitoringHubConfig{}).WithDefaults()

@@ -644,9 +644,12 @@ modules:
       grafana_port: 3000
       prometheus_port: 9090
       alertmanager_port: 9093
+      # Optional: alertmanager_retention: <positive-duration>
 ```
 
 `alert_receiver_file` is a complete Alertmanager configuration. For a Telegram receiver, point `bot_token_file` at the fixed container path shown below; rootfiles mounts the configured host token file there. The receiver file, token file and any configured Grafana password file must be regular files owned by root with mode `0600`.
+
+When configured, `alertmanager_retention` adds Alertmanager's `--data.retention` flag. When unset, rootfiles leaves the flag out and preserves the pinned image's default. Choose a duration at least as long as the receiver's repeat interval so unchanged firing alerts do not repeat solely because Alertmanager discarded its notification log.
 
 ```yaml
 route:

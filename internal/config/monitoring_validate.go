@@ -4,11 +4,37 @@ import (
 	"net/netip"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
+	"time"
 )
 
 var monitoringImage = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9./:_@-]*$`)
-var prometheusRetention = regexp.MustCompile(`^[1-9][0-9]*(ms|s|m|h|d|w|y)$`)
+var prometheusRetention = regexp.MustCompile(`^([1-9][0-9]*)(ms|s|m|h|d|w|y)$`)
+
+// IsValidPrometheusDuration reports whether value is a positive Prometheus duration
+// that fits in time.Duration.
+func IsValidPrometheusDuration(value string) bool {
+	parts := prometheusRetention.FindStringSubmatch(value)
+	if len(parts) != 3 {
+		return false
+	}
+	amount, err := strconv.ParseUint(parts[1], 10, 64)
+	if err != nil {
+		return false
+	}
+	unit := map[string]time.Duration{
+		"ms": time.Millisecond,
+		"s":  time.Second,
+		"m":  time.Minute,
+		"h":  time.Hour,
+		"d":  24 * time.Hour,
+		"w":  7 * 24 * time.Hour,
+		"y":  365 * 24 * time.Hour,
+	}[parts[2]]
+	const maxDuration = int64(1<<63 - 1)
+	return unit > 0 && amount <= uint64(maxDuration/int64(unit))
+}
 
 func (c *Config) validateMonitoring(add func(string, ...any)) {
 	m := c.Modules.Monitoring
@@ -75,8 +101,11 @@ func (c *Config) validateMonitoring(add func(string, ...any)) {
 		if filepath.Clean(h.DataDir) == "/" {
 			add("modules.monitoring.hub.data_dir: refusing filesystem root")
 		}
-		if !prometheusRetention.MatchString(h.Retention) {
+		if !IsValidPrometheusDuration(h.Retention) {
 			add("modules.monitoring.hub.retention: invalid duration")
+		}
+		if h.AlertmanagerRetention != "" && !IsValidPrometheusDuration(h.AlertmanagerRetention) {
+			add("modules.monitoring.hub.alertmanager_retention: invalid positive duration")
 		}
 		image("hub.prometheus_image", h.PrometheusImage)
 		image("hub.alertmanager_image", h.AlertmanagerImage)

@@ -71,6 +71,53 @@ func TestMonitoringHubRenderHonorsConfiguredListenAddress(t *testing.T) {
 	}
 }
 
+func TestMonitoringHubAlertmanagerRetentionFlagIsOptionalAndValidated(t *testing.T) {
+	for _, test := range []struct {
+		name              string
+		retention         string
+		wantRetentionFlag string
+	}{
+		{name: "unset"},
+		{name: "configured", retention: "36h", wantRetentionFlag: "--data.retention=36h"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			h := (config.MonitoringHubConfig{}).WithDefaults()
+			h.AlertmanagerRetention = test.retention
+			files, err := renderMonitoringHubFiles(h, monitoringHubPassword)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var compose struct {
+				Services map[string]struct {
+					Command []string `yaml:"command"`
+				} `yaml:"services"`
+			}
+			if err := yaml.Unmarshal(files[monitoringHubCompose], &compose); err != nil {
+				t.Fatalf("parse compose: %v", err)
+			}
+			found := false
+			for _, arg := range compose.Services["alertmanager"].Command {
+				if strings.HasPrefix(arg, "--data.retention=") {
+					if arg != test.wantRetentionFlag {
+						t.Errorf("unexpected Alertmanager retention flag %q", arg)
+					}
+					found = true
+				}
+			}
+			if found != (test.wantRetentionFlag != "") {
+				t.Errorf("retention flag present=%t, want=%t", found, test.wantRetentionFlag != "")
+			}
+		})
+	}
+	for _, retention := range []string{"0s", "-1h", "invalid", "1h30m", "999999999999999999999h"} {
+		h := (config.MonitoringHubConfig{}).WithDefaults()
+		h.AlertmanagerRetention = retention
+		if err := validateMonitoringHubConfig(h); err == nil || !strings.Contains(err.Error(), "alertmanager_retention") {
+			t.Errorf("invalid retention %q returned %v", retention, err)
+		}
+	}
+}
+
 func TestMonitoringHubRulesAlertOnDoctorFailuresAndGPUHealth(t *testing.T) {
 	var parsed struct {
 		Groups []struct {
@@ -152,7 +199,12 @@ func TestMonitoringHubRulesAlertOnDoctorFailuresAndGPUHealth(t *testing.T) {
 		}
 		output.Reset()
 		err = parsedTemplate.Execute(&output, map[string]any{"Labels": map[string]string{"host": "gpu-a"}, "Value": "42"})
-		if err != nil || strings.Contains(output.String(), " GPU ") {
+		want := map[string]string{
+			"GPUXIDError":              "GPU XID error on gpu-a",
+			"GPUUncorrectableECCError": "Uncorrectable GPU ECC error on gpu-a",
+			"GPUHighTemperature":       "GPU temperature high on gpu-a",
+		}[alert]
+		if err != nil || output.String() != want {
 			t.Errorf("%s summary should omit a missing GPU label: %q, error: %v", alert, output.String(), err)
 		}
 		output.Reset()
@@ -552,9 +604,14 @@ func TestMonitoringHubLifecycleRecoveryAndStartupFailureWithFakeCommands(t *test
 	rc := newRealRC(t)
 	rc.Config.Modules.Monitoring.Hub = config.MonitoringHubConfig{
 		Enabled: true, DataDir: filepath.Join(tmp, "data"), TargetsFile: filepath.Join(tmp, "discovery", "targets.json"),
+		AlertmanagerRetention: "36h",
 	}
 	if _, err := applyMonitoringHub(context.Background(), rc); err != nil {
 		t.Fatalf("first apply: %v", err)
+	}
+	compose, err := os.ReadFile(monitoringHubCompose)
+	if err != nil || !strings.Contains(string(compose), "--data.retention=36h") {
+		t.Fatalf("configured Alertmanager retention was not applied: content=%q err=%v", compose, err)
 	}
 	changes, err := checkMonitoringHub(context.Background(), rc)
 	if err != nil || len(changes) != 0 {
