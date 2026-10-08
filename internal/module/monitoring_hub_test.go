@@ -5,9 +5,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
+	"text/template"
 
 	"github.com/entelecheia/rootfiles-v2/internal/config"
 	"gopkg.in/yaml.v3"
@@ -69,27 +71,281 @@ func TestMonitoringHubRenderHonorsConfiguredListenAddress(t *testing.T) {
 	}
 }
 
+func TestMonitoringHubAlertmanagerRetentionFlagIsOptionalAndValidated(t *testing.T) {
+	for _, test := range []struct {
+		name              string
+		retention         string
+		wantRetentionFlag string
+	}{
+		{name: "unset"},
+		{name: "configured", retention: "36h", wantRetentionFlag: "--data.retention=36h"},
+		{name: "beyond-image-default", retention: "240h", wantRetentionFlag: "--data.retention=240h"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			h := (config.MonitoringHubConfig{}).WithDefaults()
+			h.AlertmanagerRetention = test.retention
+			files, err := renderMonitoringHubFiles(h, monitoringHubPassword)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var compose struct {
+				Services map[string]struct {
+					Command []string `yaml:"command"`
+				} `yaml:"services"`
+			}
+			if err := yaml.Unmarshal(files[monitoringHubCompose], &compose); err != nil {
+				t.Fatalf("parse compose: %v", err)
+			}
+			found := false
+			for _, arg := range compose.Services["alertmanager"].Command {
+				if strings.HasPrefix(arg, "--data.retention=") {
+					if arg != test.wantRetentionFlag {
+						t.Errorf("unexpected Alertmanager retention flag %q", arg)
+					}
+					found = true
+				}
+			}
+			if found != (test.wantRetentionFlag != "") {
+				t.Errorf("retention flag present=%t, want=%t", found, test.wantRetentionFlag != "")
+			}
+		})
+	}
+	for _, retention := range []string{"0s", "-1h", "invalid", "1y", "999999999999999999999h"} {
+		h := (config.MonitoringHubConfig{}).WithDefaults()
+		h.AlertmanagerRetention = retention
+		if err := validateMonitoringHubConfig(h); err == nil || !strings.Contains(err.Error(), "alertmanager_retention") {
+			t.Errorf("invalid retention %q returned %v", retention, err)
+		}
+	}
+}
+
 func TestMonitoringHubRulesAlertOnDoctorFailuresAndGPUHealth(t *testing.T) {
-	var parsed any
+	var parsed struct {
+		Groups []struct {
+			Rules []struct {
+				Alert       string            `yaml:"alert"`
+				Expr        string            `yaml:"expr"`
+				For         string            `yaml:"for"`
+				Labels      map[string]string `yaml:"labels"`
+				Annotations map[string]string `yaml:"annotations"`
+			} `yaml:"rules"`
+		} `yaml:"groups"`
+	}
 	if err := yaml.Unmarshal([]byte(monitoringHubRules), &parsed); err != nil {
 		t.Fatalf("parse alert rules YAML: %v", err)
 	}
-	for _, expected := range []string{
-		"rootfiles_doctor_findings{level=\"fail\"} > 0",
-		"rootfiles_module_satisfied == 0",
-		"rootfiles_check_timestamp_seconds > 172800",
-		"unless on(host) rootfiles_check_timestamp_seconds",
-		"up{job=\"fleet\",exporter=\"node\"} == 1",
-		"DCGM_FI_DEV_XID_ERRORS > 0",
-		"increase(DCGM_FI_DEV_ECC_DBE_VOL_TOTAL[5m]) > 0",
-		"DCGM_FI_DEV_GPU_TEMP > 85",
-	} {
-		if !strings.Contains(monitoringHubRules, expected) {
-			t.Errorf("alert rules missing %q", expected)
+	type expectedRule struct{ expr, hold, severity string }
+	want := map[string]expectedRule{
+		"FleetTargetDown":             {`up{job="fleet"} == 0`, "5m", "critical"},
+		"FleetFilesystemNearlyFull":   {`(node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs"} - node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs"}) / node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs"} > 0.9`, "10m", "warning"},
+		"RootfilesConfigurationDrift": {"rootfiles_module_satisfied == 0", "5m", "warning"},
+		"RootfilesDoctorFailure":      {`rootfiles_doctor_findings{level="fail"} > 0`, "5m", "critical"},
+		"RootfilesReportStale":        {`(time() - rootfiles_check_timestamp_seconds > 172800) or ((up{job="fleet",exporter="node"} == 1) unless on(host) rootfiles_check_timestamp_seconds)`, "15m", "warning"},
+		"GPUXIDError":                 {"DCGM_FI_DEV_XID_ERRORS > 0", "", "critical"},
+		"GPUUncorrectableECCError":    {"increase(DCGM_FI_DEV_ECC_DBE_VOL_TOTAL[5m]) > 0", "", "critical"},
+		"GPUHighTemperature":          {"DCGM_FI_DEV_GPU_TEMP > 85", "10m", "warning"},
+	}
+	seen := make(map[string]bool, len(want))
+	for _, group := range parsed.Groups {
+		for _, rule := range group.Rules {
+			expected, ok := want[rule.Alert]
+			if !ok {
+				t.Errorf("unexpected alert rule %q", rule.Alert)
+				continue
+			}
+			seen[rule.Alert] = true
+			if rule.Expr != expected.expr || rule.For != expected.hold || rule.Labels["severity"] != expected.severity {
+				t.Errorf("%s changed its expression/hold/severity: expr=%q for=%q severity=%q", rule.Alert, rule.Expr, rule.For, rule.Labels["severity"])
+			}
+			for _, key := range []string{"summary", "description"} {
+				content := rule.Annotations[key]
+				if strings.TrimSpace(content) == "" {
+					t.Errorf("%s has no %s annotation", rule.Alert, key)
+					continue
+				}
+				if _, err := template.New(rule.Alert + "." + key).Parse("{{ $labels := .Labels }}{{ $value := .Value }}" + content); err != nil {
+					t.Errorf("%s %s annotation template is invalid: %v", rule.Alert, key, err)
+				}
+			}
+		}
+	}
+	for alert := range want {
+		if !seen[alert] {
+			t.Errorf("missing alert rule %q", alert)
 		}
 	}
 	if strings.Contains(monitoringHubRules, "rootfiles_doctor_check_ok") {
 		t.Fatal("doctor alert uses warning-inclusive check metric")
+	}
+	for _, alert := range []string{"GPUXIDError", "GPUUncorrectableECCError", "GPUHighTemperature"} {
+		var summary string
+		for _, group := range parsed.Groups {
+			for _, rule := range group.Rules {
+				if rule.Alert == alert {
+					summary = rule.Annotations["summary"]
+				}
+			}
+		}
+		parsedTemplate, err := template.New(alert).Parse("{{ $labels := .Labels }}{{ $value := .Value }}" + summary)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var output strings.Builder
+		err = parsedTemplate.Execute(&output, map[string]any{"Labels": map[string]string{"host": "gpu-a", "gpu": "0"}, "Value": "42"})
+		if err != nil {
+			t.Fatalf("render %s summary: %v", alert, err)
+		}
+		if !strings.Contains(output.String(), "gpu-a") || !strings.Contains(output.String(), "GPU 0") {
+			t.Errorf("%s summary omits host/GPU identity: %q", alert, output.String())
+		}
+		output.Reset()
+		err = parsedTemplate.Execute(&output, map[string]any{"Labels": map[string]string{"host": "gpu-a"}, "Value": "42"})
+		want := map[string]string{
+			"GPUXIDError":              "GPU XID error on gpu-a",
+			"GPUUncorrectableECCError": "Uncorrectable GPU ECC error on gpu-a",
+			"GPUHighTemperature":       "GPU temperature high on gpu-a",
+		}[alert]
+		if err != nil || output.String() != want {
+			t.Errorf("%s summary should omit a missing GPU label: %q, error: %v", alert, output.String(), err)
+		}
+		output.Reset()
+		err = parsedTemplate.Execute(&output, map[string]any{"Labels": map[string]string{}, "Value": "42"})
+		if err != nil || !strings.Contains(output.String(), "unknown host") {
+			t.Errorf("%s summary is unsafe for missing labels: %q, error: %v", alert, output.String(), err)
+		}
+	}
+	xidRule := func() (summary, description string) {
+		for _, group := range parsed.Groups {
+			for _, rule := range group.Rules {
+				if rule.Alert == "GPUXIDError" {
+					return rule.Annotations["summary"], rule.Annotations["description"]
+				}
+			}
+		}
+		return "", ""
+	}
+	xidSummary, xidDescription := xidRule()
+	for _, gpuID := range []string{"0", "1"} {
+		labels := map[string]string{"host": "gpu-a", "gpu": gpuID, "Hostname": "dcgm-container", "modelName": "NVIDIA H100"}
+		var rendered strings.Builder
+		for _, annotation := range []string{xidSummary, xidDescription} {
+			parsedTemplate, err := template.New("xid").Parse("{{ $labels := .Labels }}{{ $value := .Value }}" + annotation)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := parsedTemplate.Execute(&rendered, map[string]any{"Labels": labels, "Value": "79"}); err != nil {
+				t.Fatalf("render XID annotation for GPU %s: %v", gpuID, err)
+			}
+			rendered.WriteByte('\n')
+		}
+		if !strings.Contains(rendered.String(), "GPU "+gpuID) || !strings.Contains(rendered.String(), "XID code 79") {
+			t.Errorf("XID notification omits distinct GPU identity or code for GPU %s: %q", gpuID, rendered.String())
+		}
+	}
+}
+
+func TestMonitoringHubREADMEReceiverTemplateShowsFiringResolvedAndOptionalRunbook(t *testing.T) {
+	readme, err := os.ReadFile("../../README.md")
+	if err != nil {
+		t.Fatalf("read monitoring hub README example: %v", err)
+	}
+	const start = "route:\n  receiver: operations"
+	startAt := strings.Index(string(readme), start)
+	if startAt < 0 {
+		t.Fatal("README monitoring receiver example is missing")
+	}
+	endAt := strings.Index(string(readme[startAt:]), "\n```")
+	if endAt < 0 {
+		t.Fatal("README monitoring receiver example is not closed")
+	}
+	example := []byte(string(readme[startAt : startAt+endAt]))
+	var config struct {
+		Receivers []struct {
+			Telegram []struct {
+				SendResolved bool    `yaml:"send_resolved"`
+				ParseMode    *string `yaml:"parse_mode"`
+				Message      string  `yaml:"message"`
+			} `yaml:"telegram_configs"`
+		} `yaml:"receivers"`
+	}
+	if err := yaml.Unmarshal(example, &config); err != nil {
+		t.Fatalf("parse README monitoring receiver example: %v", err)
+	}
+	if len(config.Receivers) != 1 || len(config.Receivers[0].Telegram) != 1 {
+		t.Fatal("README example must define one Telegram receiver")
+	}
+	receiver := config.Receivers[0].Telegram[0]
+	if !receiver.SendResolved {
+		t.Fatal("README receiver example does not request resolved notifications")
+	}
+	if receiver.ParseMode == nil || *receiver.ParseMode != "" {
+		t.Fatal("README Telegram receiver must explicitly select plain-text parse_mode")
+	}
+	if _, err := template.New("telegram-message").Parse(receiver.Message); err != nil {
+		t.Fatalf("parse README Telegram message template: %v", err)
+	}
+	for _, expected := range []string{".Alerts.Firing", ".Alerts.Resolved", ".Annotations.summary", ".Annotations.description", ".Annotations.runbook_url"} {
+		if !strings.Contains(receiver.Message, expected) {
+			t.Errorf("README Telegram template does not render %q", expected)
+		}
+	}
+	if strings.Contains(receiver.Message, "GeneratorURL") {
+		t.Fatal("README Telegram template must not expose the container-local Prometheus generator URL")
+	}
+	type alert struct {
+		Labels       map[string]string
+		Annotations  map[string]string
+		GeneratorURL string
+	}
+	type notification struct {
+		Alerts struct {
+			Firing   []alert
+			Resolved []alert
+		}
+		ExternalURL string
+	}
+	data := notification{ExternalURL: "https://alerts.example.test"}
+	for i := 0; i < 8; i++ {
+		data.Alerts.Firing = append(data.Alerts.Firing, alert{
+			Labels: map[string]string{"severity": "critical"},
+			Annotations: map[string]string{
+				"summary":     "GPU " + strconv.Itoa(i) + " XID error",
+				"description": "Inspect <device & check \"driver\"> " + strings.Repeat("Inspect current device health. ", 400),
+				"runbook_url": "https://runbooks.example.test/xid",
+			},
+			GeneratorURL: "http://prometheus:9090/graph?g0.expr=fixture",
+		})
+	}
+	for i := 0; i < 7; i++ {
+		data.Alerts.Resolved = append(data.Alerts.Resolved, alert{
+			Annotations: map[string]string{"summary": "GPU " + strconv.Itoa(i) + " recovered", "description": "Condition cleared."},
+		})
+	}
+	parsedTemplate, err := template.New("telegram-message").Parse(receiver.Message)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rendered strings.Builder
+	if err := parsedTemplate.Execute(&rendered, data); err != nil {
+		t.Fatalf("render synthetic grouped notification: %v", err)
+	}
+	message := rendered.String()
+	for _, expected := range []string{"GPU 0 XID error", "GPU 1 XID error", "Runbook: https://runbooks.example.test/xid", "4 additional firing alert(s) omitted", "3 additional resolved alert(s) omitted", data.ExternalURL} {
+		if !strings.Contains(message, expected) {
+			t.Errorf("grouped notification omits %q: %q", expected, message)
+		}
+	}
+	if !strings.Contains(message, "<device & check \"driver\">") || strings.Contains(message, "&lt;") || strings.Contains(message, "&amp;") {
+		t.Errorf("plain-text Telegram body escaped HTML-significant annotation text: %q", message)
+	}
+	if strings.Contains(message, "GPU 4 XID error") {
+		t.Fatal("notification rendered an alert beyond its four-alert limit")
+	}
+	if len(message) > 4096 {
+		t.Errorf("grouped notification is %d bytes, exceeding Telegram's 4096-byte limit", len(message))
+	}
+	if strings.Contains(message, "prometheus:9090") {
+		t.Fatal("grouped notification rendered a container-local generator URL")
 	}
 }
 
@@ -117,6 +373,10 @@ func TestMonitoringHubPromtoolReportsOnlyHostMissingScheduledTimestamp(t *testin
 		"exp_alerts": []any{map[string]any{
 			"exp_labels": map[string]string{
 				"exporter": "node", "host": "gpu02", "instance": "10.0.0.12:9100", "job": "fleet", "severity": "warning",
+			},
+			"exp_annotations": map[string]string{
+				"summary":     "Rootfiles report stale on gpu02",
+				"description": "The latest scheduled rootfiles check report is older than 48 hours or has no timestamp. Confirm the schedule and inspect the latest check result on the host.",
 			},
 		}},
 	}}
@@ -345,9 +605,14 @@ func TestMonitoringHubLifecycleRecoveryAndStartupFailureWithFakeCommands(t *test
 	rc := newRealRC(t)
 	rc.Config.Modules.Monitoring.Hub = config.MonitoringHubConfig{
 		Enabled: true, DataDir: filepath.Join(tmp, "data"), TargetsFile: filepath.Join(tmp, "discovery", "targets.json"),
+		AlertmanagerRetention: "36h",
 	}
 	if _, err := applyMonitoringHub(context.Background(), rc); err != nil {
 		t.Fatalf("first apply: %v", err)
+	}
+	compose, err := os.ReadFile(monitoringHubCompose)
+	if err != nil || !strings.Contains(string(compose), "--data.retention=36h") {
+		t.Fatalf("configured Alertmanager retention was not applied: content=%q err=%v", compose, err)
 	}
 	changes, err := checkMonitoringHub(context.Background(), rc)
 	if err != nil || len(changes) != 0 {

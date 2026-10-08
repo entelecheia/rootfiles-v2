@@ -157,6 +157,9 @@ tests:
               host: scenario-down
               job: fleet
               severity: critical
+            exp_annotations:
+              summary: Exporter unavailable on scenario-down
+              description: The fleet scrape target is down. Check exporter service health and reachability from the monitoring hub.
 YAML
 "${COMPOSE_CMD[@]}" run --rm --no-deps \
     --volume "$WORK_TMP/fleet-targetdown.test.yml:/tmp/fleet-targetdown.test.yml:ro" \

@@ -80,6 +80,7 @@ type MonitoringHubConfig struct {
 	Enabled                  bool   `yaml:"enabled"`
 	DataDir                  string `yaml:"data_dir,omitempty"`
 	Retention                string `yaml:"retention,omitempty"`
+	AlertmanagerRetention    string `yaml:"alertmanager_retention,omitempty"`
 	TargetsFile              string `yaml:"targets_file,omitempty"`
 	AlertReceiverFile        string `yaml:"alert_receiver_file,omitempty"`
 	ListenAddress            string `yaml:"listen_address,omitempty"`

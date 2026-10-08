@@ -514,6 +514,9 @@ func validateMonitoringHubConfig(h config.MonitoringHubConfig) error {
 	if h.Retention == "" || strings.ContainsAny(h.Retention, " \t\r\n") {
 		return fmt.Errorf("monitoring hub retention must be a Prometheus duration")
 	}
+	if h.AlertmanagerRetention != "" && !config.IsValidAlertmanagerDuration(h.AlertmanagerRetention) {
+		return fmt.Errorf("monitoring hub alertmanager_retention must be a positive Alertmanager duration")
+	}
 	if strings.ContainsAny(h.ListenAddress, "\r\n") {
 		return fmt.Errorf("monitoring hub listen_address is invalid")
 	}
@@ -597,6 +600,10 @@ func monitoringHubDataDirs(root string) []string {
 
 func renderMonitoringHubFiles(h config.MonitoringHubConfig, passwordFile string) (map[string][]byte, error) {
 	alertConfig := monitoringHubDefaultAlertConfig
+	alertmanagerArgs := []string{"--config.file=/etc/alertmanager/alertmanager.yml", "--storage.path=/alertmanager"}
+	if h.AlertmanagerRetention != "" {
+		alertmanagerArgs = append(alertmanagerArgs, "--data.retention="+h.AlertmanagerRetention)
+	}
 	prometheus := map[string]any{
 		"global":     map[string]any{"scrape_interval": "30s", "evaluation_interval": "30s"},
 		"rule_files": []string{"/etc/prometheus/alert-rules.yaml"},
@@ -609,7 +616,7 @@ func renderMonitoringHubFiles(h config.MonitoringHubConfig, passwordFile string)
 	compose := map[string]any{
 		"services": map[string]any{
 			"prometheus":   monitoringHubService(h, h.PrometheusImage, []string{"--config.file=/etc/prometheus/prometheus.yaml", "--storage.tsdb.path=/prometheus", "--storage.tsdb.retention.time=" + h.Retention, "--web.enable-lifecycle"}, h.PrometheusPort, 9090, []monitoringHubMount{bindMount(filepath.Join(monitoringHubConfigDir, "prometheus.yaml"), "/etc/prometheus/prometheus.yaml", true), bindMount(monitoringHubAlertRules, "/etc/prometheus/alert-rules.yaml", true), bindMount(filepath.Dir(h.TargetsFile), "/etc/prometheus/discovery", true), bindMount(filepath.Join(h.DataDir, "prometheus"), "/prometheus", false)}, false),
-			"alertmanager": monitoringHubService(h, h.AlertmanagerImage, []string{"--config.file=/etc/alertmanager/alertmanager.yml", "--storage.path=/alertmanager"}, h.AlertmanagerPort, 9093, monitoringAlertmanagerVolumes(h), false),
+			"alertmanager": monitoringHubService(h, h.AlertmanagerImage, alertmanagerArgs, h.AlertmanagerPort, 9093, monitoringAlertmanagerVolumes(h), false),
 			"grafana":      monitoringHubService(h, h.GrafanaImage, nil, h.GrafanaPort, 3000, []monitoringHubMount{bindMount(filepath.Join(h.DataDir, "grafana"), "/var/lib/grafana", false), bindMount(filepath.Join(monitoringHubConfigDir, "grafana-datasource.yaml"), "/etc/grafana/provisioning/datasources/rootfiles.yaml", true), bindMount(passwordFile, "/run/secrets/grafana_admin_password", true)}, true),
 		},
 	}
@@ -717,37 +724,61 @@ const monitoringHubRules = `groups:
         for: 5m
         labels:
           severity: critical
+        annotations:
+          summary: 'Exporter unavailable on {{ if $labels.host }}{{ $labels.host }}{{ else }}unknown host{{ end }}'
+          description: 'The fleet scrape target is down. Check exporter service health and reachability from the monitoring hub.'
       - alert: FleetFilesystemNearlyFull
         expr: (node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs"} - node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs"}) / node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs"} > 0.9
         for: 10m
         labels:
           severity: warning
+        annotations:
+          summary: 'Filesystem nearly full on {{ if $labels.host }}{{ $labels.host }}{{ else }}unknown host{{ end }}'
+          description: 'Filesystem {{ if $labels.mountpoint }}{{ $labels.mountpoint }}{{ else }}with an unknown mount point{{ end }} is above 90% use. Check disk usage and free or expand space before writes fail.'
       - alert: RootfilesConfigurationDrift
         expr: rootfiles_module_satisfied == 0
         for: 5m
         labels:
           severity: warning
+        annotations:
+          summary: 'Rootfiles configuration drift on {{ if $labels.host }}{{ $labels.host }}{{ else }}unknown host{{ end }}'
+          description: 'At least one managed module is not satisfied. Run a read-only rootfiles check on the host and review the reported changes before applying them.'
       - alert: RootfilesDoctorFailure
         expr: rootfiles_doctor_findings{level="fail"} > 0
         for: 5m
         labels:
           severity: critical
+        annotations:
+          summary: 'Rootfiles doctor failure on {{ if $labels.host }}{{ $labels.host }}{{ else }}unknown host{{ end }}'
+          description: 'The host reports {{ $value }} doctor finding(s) at level {{ if $labels.level }}{{ $labels.level }}{{ else }}fail{{ end }}. Run rootfiles doctor and inspect each finding before remediation.'
       - alert: RootfilesReportStale
         expr: (time() - rootfiles_check_timestamp_seconds > 172800) or ((up{job="fleet",exporter="node"} == 1) unless on(host) rootfiles_check_timestamp_seconds)
         for: 15m
         labels:
           severity: warning
+        annotations:
+          summary: 'Rootfiles report stale on {{ if $labels.host }}{{ $labels.host }}{{ else }}unknown host{{ end }}'
+          description: 'The latest scheduled rootfiles check report is older than 48 hours or has no timestamp. Confirm the schedule and inspect the latest check result on the host.'
       - alert: GPUXIDError
         expr: DCGM_FI_DEV_XID_ERRORS > 0
         labels:
           severity: critical
+        annotations:
+          summary: 'GPU XID error on {{ if $labels.host }}{{ $labels.host }}{{ else }}unknown host{{ end }}{{ if $labels.gpu }} GPU {{ $labels.gpu }}{{ end }}'
+          description: 'DCGM reports XID code {{ $value }}. Check current GPU health and the host driver logs; this metric can retain the last XID after recovery.'
       - alert: GPUUncorrectableECCError
         expr: increase(DCGM_FI_DEV_ECC_DBE_VOL_TOTAL[5m]) > 0
         labels:
           severity: critical
+        annotations:
+          summary: 'Uncorrectable GPU ECC error on {{ if $labels.host }}{{ $labels.host }}{{ else }}unknown host{{ end }}{{ if $labels.gpu }} GPU {{ $labels.gpu }}{{ end }}'
+          description: 'The uncorrectable ECC counter increased during the last five minutes. Check current GPU health and DCGM counters, then follow the hardware vendor remediation guidance.'
       - alert: GPUHighTemperature
         expr: DCGM_FI_DEV_GPU_TEMP > 85
         for: 10m
         labels:
           severity: warning
+        annotations:
+          summary: 'GPU temperature high on {{ if $labels.host }}{{ $labels.host }}{{ else }}unknown host{{ end }}{{ if $labels.gpu }} GPU {{ $labels.gpu }}{{ end }}'
+          description: 'GPU temperature is {{ $value }} C, above the configured 85 C alert threshold for 10 minutes. Check cooling, airflow and current device temperature.'
 `
