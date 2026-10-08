@@ -8,19 +8,28 @@ import (
 )
 
 func TestLoadSiteValidatesOptionalAlertmanagerRetention(t *testing.T) {
+	if !IsValidPrometheusDuration("1y") {
+		t.Fatal("Prometheus retention should continue accepting year units")
+	}
+	if IsValidAlertmanagerDuration("1y") {
+		t.Fatal("Alertmanager retention must reject the unsupported year unit")
+	}
 	base := "extends: base\nmodules:\n  monitoring:\n    hub:\n      enabled: true\n      alertmanager_retention: %s\nusers:\n  home_base: /home\n"
-	valid := filepath.Join(t.TempDir(), "site.yaml")
-	if err := os.WriteFile(valid, []byte(strings.Replace(base, "%s", "36h", 1)), 0600); err != nil {
-		t.Fatal(err)
+	for _, value := range []string{"1ns", "1us", "1µs", "1μs", "1ms", "1s", "1m", "1h", "1d", "1w", "1h30m", "240h"} {
+		valid := filepath.Join(t.TempDir(), "site.yaml")
+		if err := os.WriteFile(valid, []byte(strings.Replace(base, "%s", value, 1)), 0600); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := LoadSite(valid)
+		if err != nil {
+			t.Errorf("LoadSite with Alertmanager-supported duration %q: %v", value, err)
+			continue
+		}
+		if got := cfg.Modules.Monitoring.Hub.AlertmanagerRetention; got != value {
+			t.Errorf("alertmanager_retention = %q, want %q", got, value)
+		}
 	}
-	cfg, err := LoadSite(valid)
-	if err != nil {
-		t.Fatalf("LoadSite with a positive Alertmanager retention: %v", err)
-	}
-	if got := cfg.Modules.Monitoring.Hub.AlertmanagerRetention; got != "36h" {
-		t.Fatalf("alertmanager_retention = %q, want 36h", got)
-	}
-	for _, value := range []string{"0s", "-1h", "invalid", "1h30m", "999999999999999999999h"} {
+	for _, value := range []string{"0s", "-1h", "invalid", "1y", "999999999999999999999h"} {
 		invalid := filepath.Join(t.TempDir(), "site.yaml")
 		if err := os.WriteFile(invalid, []byte(strings.Replace(base, "%s", value, 1)), 0600); err != nil {
 			t.Fatal(err)

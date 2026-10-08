@@ -11,6 +11,7 @@ import (
 
 var monitoringImage = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9./:_@-]*$`)
 var prometheusRetention = regexp.MustCompile(`^([1-9][0-9]*)(ms|s|m|h|d|w|y)$`)
+var alertmanagerRetentionPart = regexp.MustCompile(`^([0-9]+)(ns|us|µs|μs|ms|s|m|h|d|w)`)
 
 // IsValidPrometheusDuration reports whether value is a positive Prometheus duration
 // that fits in time.Duration.
@@ -34,6 +35,46 @@ func IsValidPrometheusDuration(value string) bool {
 	}[parts[2]]
 	const maxDuration = int64(1<<63 - 1)
 	return unit > 0 && amount <= uint64(maxDuration/int64(unit))
+}
+
+// IsValidAlertmanagerDuration accepts positive integer duration components
+// supported by the pinned Alertmanager Kingpin parser.
+func IsValidAlertmanagerDuration(value string) bool {
+	units := map[string]uint64{
+		"ns": 1,
+		"us": 1_000,
+		"µs": 1_000,
+		"μs": 1_000,
+		"ms": 1_000_000,
+		"s":  1_000_000_000,
+		"m":  60 * 1_000_000_000,
+		"h":  60 * 60 * 1_000_000_000,
+		"d":  24 * 60 * 60 * 1_000_000_000,
+		"w":  7 * 24 * 60 * 60 * 1_000_000_000,
+	}
+	const maxDuration = uint64(1<<63 - 1)
+	var total uint64
+	for value != "" {
+		parts := alertmanagerRetentionPart.FindStringSubmatch(value)
+		if len(parts) != 3 {
+			return false
+		}
+		amount, err := strconv.ParseUint(parts[1], 10, 64)
+		if err != nil {
+			return false
+		}
+		unit := units[parts[2]]
+		if amount > maxDuration/unit {
+			return false
+		}
+		component := amount * unit
+		if total > maxDuration-component {
+			return false
+		}
+		total += component
+		value = value[len(parts[0]):]
+	}
+	return total > 0
 }
 
 func (c *Config) validateMonitoring(add func(string, ...any)) {
@@ -104,7 +145,7 @@ func (c *Config) validateMonitoring(add func(string, ...any)) {
 		if !IsValidPrometheusDuration(h.Retention) {
 			add("modules.monitoring.hub.retention: invalid duration")
 		}
-		if h.AlertmanagerRetention != "" && !IsValidPrometheusDuration(h.AlertmanagerRetention) {
+		if h.AlertmanagerRetention != "" && !IsValidAlertmanagerDuration(h.AlertmanagerRetention) {
 			add("modules.monitoring.hub.alertmanager_retention: invalid positive duration")
 		}
 		image("hub.prometheus_image", h.PrometheusImage)

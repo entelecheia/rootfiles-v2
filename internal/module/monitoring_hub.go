@@ -514,8 +514,8 @@ func validateMonitoringHubConfig(h config.MonitoringHubConfig) error {
 	if h.Retention == "" || strings.ContainsAny(h.Retention, " \t\r\n") {
 		return fmt.Errorf("monitoring hub retention must be a Prometheus duration")
 	}
-	if h.AlertmanagerRetention != "" && !config.IsValidPrometheusDuration(h.AlertmanagerRetention) {
-		return fmt.Errorf("monitoring hub alertmanager_retention must be a positive Prometheus duration")
+	if h.AlertmanagerRetention != "" && !config.IsValidAlertmanagerDuration(h.AlertmanagerRetention) {
+		return fmt.Errorf("monitoring hub alertmanager_retention must be a positive Alertmanager duration")
 	}
 	if strings.ContainsAny(h.ListenAddress, "\r\n") {
 		return fmt.Errorf("monitoring hub listen_address is invalid")

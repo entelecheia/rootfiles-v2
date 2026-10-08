@@ -79,6 +79,7 @@ func TestMonitoringHubAlertmanagerRetentionFlagIsOptionalAndValidated(t *testing
 	}{
 		{name: "unset"},
 		{name: "configured", retention: "36h", wantRetentionFlag: "--data.retention=36h"},
+		{name: "beyond-image-default", retention: "240h", wantRetentionFlag: "--data.retention=240h"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			h := (config.MonitoringHubConfig{}).WithDefaults()
@@ -109,7 +110,7 @@ func TestMonitoringHubAlertmanagerRetentionFlagIsOptionalAndValidated(t *testing
 			}
 		})
 	}
-	for _, retention := range []string{"0s", "-1h", "invalid", "1h30m", "999999999999999999999h"} {
+	for _, retention := range []string{"0s", "-1h", "invalid", "1y", "999999999999999999999h"} {
 		h := (config.MonitoringHubConfig{}).WithDefaults()
 		h.AlertmanagerRetention = retention
 		if err := validateMonitoringHubConfig(h); err == nil || !strings.Contains(err.Error(), "alertmanager_retention") {
