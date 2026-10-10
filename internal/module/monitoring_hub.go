@@ -728,13 +728,13 @@ const monitoringHubRules = `groups:
           summary: 'Exporter unavailable on {{ if $labels.host }}{{ $labels.host }}{{ else }}unknown host{{ end }}'
           description: 'The fleet scrape target is down. Check exporter service health and reachability from the monitoring hub.'
       - alert: FleetFilesystemNearlyFull
-        expr: (node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs"} - node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs"}) / node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs"} > 0.9
+        expr: (node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs"} - node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs"}) / node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs"} > 0.99
         for: 10m
         labels:
           severity: warning
         annotations:
           summary: 'Filesystem nearly full on {{ if $labels.host }}{{ $labels.host }}{{ else }}unknown host{{ end }}'
-          description: 'Filesystem {{ if $labels.mountpoint }}{{ $labels.mountpoint }}{{ else }}with an unknown mount point{{ end }} is above 90% use. Check disk usage and free or expand space before writes fail.'
+          description: 'Filesystem {{ if $labels.mountpoint }}{{ $labels.mountpoint }}{{ else }}with an unknown mount point{{ end }} is above 99% use. Check disk usage and free or expand space before writes fail.'
       - alert: RootfilesConfigurationDrift
         expr: rootfiles_module_satisfied == 0
         for: 5m

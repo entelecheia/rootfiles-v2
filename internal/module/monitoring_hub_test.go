@@ -137,7 +137,7 @@ func TestMonitoringHubRulesAlertOnDoctorFailuresAndGPUHealth(t *testing.T) {
 	type expectedRule struct{ expr, hold, severity string }
 	want := map[string]expectedRule{
 		"FleetTargetDown":             {`up{job="fleet"} == 0`, "5m", "critical"},
-		"FleetFilesystemNearlyFull":   {`(node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs"} - node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs"}) / node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs"} > 0.9`, "10m", "warning"},
+		"FleetFilesystemNearlyFull":   {`(node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs"} - node_filesystem_avail_bytes{fstype!~"tmpfs|overlay|squashfs"}) / node_filesystem_size_bytes{fstype!~"tmpfs|overlay|squashfs"} > 0.99`, "10m", "warning"},
 		"RootfilesConfigurationDrift": {"rootfiles_module_satisfied == 0", "5m", "warning"},
 		"RootfilesDoctorFailure":      {`rootfiles_doctor_findings{level="fail"} > 0`, "5m", "critical"},
 		"RootfilesReportStale":        {`(time() - rootfiles_check_timestamp_seconds > 172800) or ((up{job="fleet",exporter="node"} == 1) unless on(host) rootfiles_check_timestamp_seconds)`, "15m", "warning"},
